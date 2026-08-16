@@ -18,7 +18,6 @@ node_modules/
 out/
 build/
 *.tsbuildinfo
-next-env.d.ts
 
 # Env / secrets
 .env
