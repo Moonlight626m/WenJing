@@ -194,11 +194,16 @@ class InteractionDesigner:
     """
     交互设计器，每次剧情推进后调用。
     决定下一轮的交互模式（A/B/C），并生成交互点。
+    
+    模式值对齐 design_02 的线协议（InteractionMessage.content.mode）：
+      A = "options"                 # 选项驱动
+      B = "free_input"              # 玩家自由输入
+      C = "options_with_fallback"   # 选项 + 自定义回退
     """
     
-    MODE_A = "galgame_options"     # 选项驱动
-    MODE_B = "player_free_input"   # 玩家自由输入
-    MODE_C = "mixed"               # 交替模式
+    MODE_A = "options"               # 选项驱动
+    MODE_B = "free_input"            # 玩家自由输入
+    MODE_C = "options_with_fallback" # 交替模式
     
     def decide_mode(
         self,
@@ -643,15 +648,95 @@ async def respond(self, stage, mode, game_state) -> str:
     
     # 4. 解析响应
     # 响应可能是两种格式：
-    #   a) 直接发言（普通对话）
-    #   b) 结构化提议（给交互设计器的输入）
-    # 通过响应中是否包含特定标记来区分
-    
-    # 5. 写入记忆
-    self.memory.record_personal_event(f"我说：{response}")
-    
-    return response
+    #   a) 直接发言（普通对话）—— 纯文本
+    #   b) 结构化提议（给交互设计器的输入）—— 包裹在 ```proposal JSON``` 代码块中
+    # 区分方式：用正则匹配 JSON 代码块标记。命中则解析为 Proposal 并剥离标记文本；
+    #           未命中则整体视为直接发言。
+    proposal_match = re.search(
+        r"```proposal\s*(\{.*?\})\s*```", response, re.DOTALL
+    )
+    if proposal_match:
+        proposal = Proposal.parse_raw(proposal_match.group(1))
+        self.memory.record_personal_event(
+            f"我提议：{proposal.description}(期待 {proposal.expected_outcome})"
+        )
+        return proposal
+    else:
+        self.memory.record_personal_event(f"我说：{response}")
+        return response
 ```
+
+### 4.6 Character Agent 管理（CharacterAgentManager）
+
+角色 Agent 由 `CharacterAgentManager` 统一管理（design_03 的 `self.characters`）。它在引擎与各个角色 Agent 之间做一对多编排，负责实例创建、并行提议/反应、剧情上下文广播与记忆恢复。
+
+```python
+class CharacterAgentManager:
+    """
+    角色 Agent 集群管理器。
+    职责：
+    - 按剧本初始化角色 Agent（identity 来自 ScriptOutput.character_settings）
+    - 向所有角色并行分发"提议/反应"任务
+    - 统一广播 plot_context / direction 给各角色
+    - 处理单角色重提（被验证驳回后）与记忆快照恢复
+    """
+    
+    def __init__(self):
+        self.agents: dict[str, CharacterAgent] = {}
+        self.player_role: str | None = None
+    
+    def create_agents(self, character_settings: list[dict]) -> None:
+        """Stage1 结束后，按角色设定初始化所有角色 Agent。"""
+        for setting in character_settings:
+            name = setting["name"]
+            self.agents[name] = CharacterAgent(setting)
+            if setting.get("is_player_playable"):
+                self.player_role = name
+    
+    def active_names(self, include_player: bool = False) -> list[str]:
+        """返回参与本轮调度的角色名。玩家扮演的角色默认可选排除。"""
+        return [
+            name for name in self.agents
+            if include_player or name != self.player_role
+        ]
+    
+    async def propose_action(self, name: str, stage: str) -> Proposal:
+        """让单个角色提出行动提议（一轮一次 LLM）。"""
+        return await self.agents[name].respond(stage=stage, mode="options")
+    
+    async def retry_proposal(
+        self, original: Proposal, rejections: list[dict]
+    ) -> Proposal | None:
+        """
+        被验证驳回后，携带 suggestion 让角色调整并重提。
+        角色选择放弃时返回 None。
+        """
+        agent = self.agents[original.proposed_by]
+        return await agent.revise_proposal(original, rejections)
+    
+    async def react(self, name: str, player_action: dict) -> str:
+        """角色对玩家操作做出反应（Mode B/C 时也用于自由输入反应）。"""
+        return await self.agents[name].respond(
+            stage="current", mode="free_input", player_action=player_action
+        )
+    
+    def broadcast_plot_context(self, summary: str) -> None:
+        for agent in self.agents.values():
+            agent.memory.plot_context = summary
+    
+    def broadcast_direction(self, direction: dict) -> None:
+        """广播 D5 方向确认的结果（当前矛盾/关键处境）。"""
+        for agent in self.agents.values():
+            agent.memory.current_direction = direction
+    
+    def restore_memories(self, snapshot: dict) -> None:
+        """回溯/恢复时还原各角色记忆。"""
+        for name, memory in snapshot.items():
+            self.agents[name].memory = memory
+```
+
+> 与 design_03 衔接：`CharacterAgentManager` 被 `GameEngine._collect_character_proposals`、`_verify_proposals`（重试）、`_collect_character_reactions`、`_execute_rollback`（记忆恢复）调用。
+> 并行性（`asyncio.gather`）与并发上限由引擎的 AgentScheduler（design_03 §5）负责，Manager 只做任务的组织与结果聚合。
 
 ---
 

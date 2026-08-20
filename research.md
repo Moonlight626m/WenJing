@@ -223,7 +223,7 @@ backend/src/
    - **两阶段 Agent Group 切换**：Stage2（低自由度）vs Stage3（高自由度）可能需要不同配置的 Agent
    - **课文作为"剧本"**：剧本生成逻辑从 AI 自由创造变为基于课文的改编和补充
 
-3. **关键取舍点**（已收敛，决议见 `.trellis/tasks/08-16-brainstorm-requirements-techstack/prd.md` D6–D13）：
+3. **关键取舍点**（已收敛，决议见 [`design/design_00_tech_decisions.md`](design/design_00_tech_decisions.md) D6–D13）：
    - 上下文窗口 vs RAG 记忆
    - 单 LLM 共享 vs 每 Agent 独立 LLM
    - 确定性阶段流 vs LLM 动态规划

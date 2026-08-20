@@ -2,7 +2,7 @@
 
 面向学生的语文课文情景演绎 multi-agent 角色扮演平台。基于课文由编剧 Agent 生成剧本，玩家与角色 Agents 共同演绎剧情，还原课文后进入同人续写。
 
-> 功能设计与技术决议见 [`design/`](design/design.md) 与 `.trellis/`（Trellis 管理）。
+> 功能设计见 [`design/design.md`](design/design.md)；技术决议（D1–D15）见 [`design/design_00_tech_decisions.md`](design/design_00_tech_decisions.md)。
 
 ## 技术栈
 
@@ -57,4 +57,4 @@ make dev-frontend   # http://localhost:3000
 
 ## 当前状态
 
-骨架搭建阶段（scaffold）：仅基础框架与占位端点，业务逻辑（游戏引擎 / Agent 编排 / 消息协议实现）逐步以 Trellis 任务填充。
+骨架搭建阶段（scaffold）：仅基础框架与占位端点，业务逻辑（游戏引擎 / Agent 编排 / 消息协议实现）按 `design/` 逐步填充。

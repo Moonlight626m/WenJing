@@ -2,6 +2,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.agents.model_config import KNOWN_PROVIDERS, ModelConfig
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="WENJING_", extra="ignore")
@@ -11,9 +13,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
     llm_provider: str = "openai"
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = ""
     llm_api_key: str = ""
     llm_base_url: str = ""
+    llm_temperature: float = 0.7
 
     max_concurrent_llm: int = 5
     llm_timeout_seconds: int = 30
@@ -22,6 +25,22 @@ class Settings(BaseSettings):
     checkpoint_interval: int = 20
     max_rollback_steps: int = 100
     max_proposal_retries: int = 2
+
+    def llm_model_config(self) -> ModelConfig:
+        """根据环境配置构建当前生效的 `ModelConfig`（provider 多路分发）。
+
+        未显式指定 model 时回落到该 provider 的默认模型。
+        """
+        provider = self.llm_provider.lower()
+        default_model = KNOWN_PROVIDERS.get(provider, {}).get("default_model", "")
+        return ModelConfig(
+            provider=provider,
+            model=self.llm_model or default_model or None,
+            api_key=self.llm_api_key,
+            base_url=self.llm_base_url or None,
+            temperature=self.llm_temperature,
+            extra={"max_concurrency": self.max_concurrent_llm},
+        )
 
 
 @lru_cache

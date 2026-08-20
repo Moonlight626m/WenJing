@@ -26,42 +26,46 @@
 
 ```
 frontend/
-├── app/
-│   ├── layout.tsx                # 根布局
-│   ├── page.tsx                  # 首页（课文导入、会话创建）
-│   └── game/
-│       ├── page.tsx              # 游戏主界面（受保护，需 session_id）
-│       ├── layout.tsx
-│       └── loading.tsx           # 会话恢复加载态
-├── components/
-│   ├── layout/
-│   │   ├── GameShell.tsx         # 主布局（叙事+输入+角色+控制栏）
-│   │   ├── Header.tsx            # 标题/设置/保存/退出
-│   │   ├── Sidebar.tsx           # 角色面板
-│   │   └── ControlBar.tsx        # 回溯控制栏
-│   ├── narrative/
-│   │   ├── NarrativePanel.tsx    # 叙事主面板（消息流渲染）
-│   │   ├── MessageBubble.tsx     # 角色发言气泡（流式）
-│   │   ├── SceneDivider.tsx      # 场景分割线
-│   │   └── SystemNotice.tsx      # 系统消息
-│   ├── interaction/
-│   │   ├── InputArea.tsx         # 输入区域（三模式分发）
-│   │   ├── OptionsInput.tsx      # 模式 A/C：选项
-│   │   ├── FreeInput.tsx         # 模式 B：自由输入
-│   │   └── ActionTypeTabs.tsx    # 行为类型切换（说话/行动）
-│   └── phase/
-│       └── PhaseTransition.tsx   # 阶段切换过场
-├── stores/
-│   ├── gameStore.ts              # 游戏状态（消息列表、阶段、交互点）
-│   ├── wsStore.ts                # WebSocket 连接状态与消息分发
-│   └── uiStore.ts                # UI 状态（面板开关、流式动画状态）
-├── lib/
-│   ├── ws.ts                     # WebSocket client 封装（重连、心跳）
-│   ├── api.ts                    # REST 接口封装
-│   └── types.ts                  # 消息协议类型定义（design_02）
-└── styles/
-    └── globals.css
+└── src/
+    ├── app/
+    │   ├── layout.tsx                # 根布局
+    │   ├── page.tsx                  # 首页（课文导入、会话创建）
+    │   ├── globals.css               # 全局样式
+    │   └── game/
+    │       ├── page.tsx              # 游戏主界面（受保护，需 session_id）
+    │       ├── layout.tsx
+    │       └── loading.tsx           # 会话恢复加载态
+    ├── components/
+    │   ├── layout/
+    │   │   ├── GameShell.tsx         # 主布局（叙事+输入+角色+控制栏）
+    │   │   ├── Header.tsx            # 标题/设置/保存/退出
+    │   │   ├── Sidebar.tsx           # 角色面板
+    │   │   └── ControlBar.tsx        # 回溯控制栏
+    │   ├── narrative/
+    │   │   ├── NarrativePanel.tsx    # 叙事主面板（消息流渲染）
+    │   │   ├── MessageBubble.tsx     # 角色发言气泡（流式）
+    │   │   ├── SceneDivider.tsx      # 场景分割线
+    │   │   └── SystemNotice.tsx      # 系统消息
+    │   ├── interaction/
+    │   │   ├── InputArea.tsx         # 输入区域（三模式分发）
+    │   │   ├── OptionsInput.tsx      # 模式 A/C：选项
+    │   │   ├── FreeInput.tsx         # 模式 B：自由输入
+    │   │   └── ActionTypeTabs.tsx    # 行为类型切换（说话/行动）
+    │   └── phase/
+    │       └── PhaseTransition.tsx   # 阶段切换过场
+    ├── stores/
+    │   ├── gameStore.ts              # 游戏状态（消息列表、阶段、交互点）
+    │   ├── wsStore.ts                # WebSocket 连接状态与消息分发
+    │   └── uiStore.ts                # UI 状态（面板开关、流式动画状态）
+    ├── lib/
+    │   ├── ws.ts                     # WebSocket client 封装（重连、心跳）
+    │   ├── api.ts                    # REST 接口封装
+    │   └── types.ts                  # 消息协议类型定义（design_02）
+    └── styles/
+        └── globals.css
 ```
+
+> 注：当前骨架已落地 `src/app|stores|lib`；`components/`（含 GameShell/NarrativePanel/InputArea/ControlBar 等）按 Phase 1/3/4 逐步补齐。
 
 ---
 
@@ -148,6 +152,9 @@ WebSocket 收到 JSON
 | POST | `/api/sessions/{id}/load` | 读档 |
 
 > 实时交互全部走 WebSocket；REST 仅用于会话管理类操作。
+>
+> **落地注**（见 `design_06` Phase 1）：`POST /api/sessions` 与 `GET /api/sessions/{id}` 在骨架阶段为占位，
+> `materials / save / load` 端点待 Phase 1/2/4 实现后接入 DB。
 
 ---
 

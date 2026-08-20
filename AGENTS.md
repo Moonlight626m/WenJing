@@ -1,21 +1,19 @@
-<!-- TRELLIS:START -->
-# Trellis Instructions
+# Wenjing — Agent Instructions
 
-These instructions are for AI assistants working in this project.
+## Agent skills
 
-This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+### Issue tracker
 
-- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
-- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
-- `.trellis/workspace/` — per-developer journals and session traces
-- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+Issues live in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
-If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+### Triage labels
 
-If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
-- `.agents/skills/` — reusable Trellis skills
-- `.codex/agents/` — optional custom subagents
+Five canonical triage roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
 
-Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+### Domain docs
 
-<!-- TRELLIS:END -->
+Single-context layout: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
+### 回复语言
+
+回复用户时的最终总结部分请使用中文。

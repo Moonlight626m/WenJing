@@ -9,14 +9,17 @@
 
 | 文件 | 内容 | 状态 |
 |------|------|------|
+| `design_00_tech_decisions.md` | **技术决议**（D1–D15 决议表 + R1–R5 需求基线 + 架构边界） | 稳定 |
 | `design.md` | **当前** — 核心概念、全景、MVP Scope、技术栈决议、待讨论事项 | 稳定 |
 | `design_01_agent_architecture.md` | Agent 体系：编剧/验证/角色 Agent 三层分离设计 | 稳定 |
 | `design_02_interaction_system.md` | 交互系统：消息协议、前端界面、交互流程、WebSocket 管理 | 稳定 |
 | `design_03_game_engine.md` | 游戏引擎：状态机、事件循环、Agent 编排、回溯实现 | 稳定 |
 | `design_04_data_persistence.md` | 数据持久化：事件溯源、checkpoint、PostgreSQL、会话存档 | 稳定 |
 | `design_05_frontend_architecture.md` | 前端架构：Next.js、状态管理、WebSocket 消息流 | 稳定 |
+| `design_06_mvp_implementation.md` | **MVP 实现规划**：分阶段实施路线（Phase 0–4）、任务-设计-骨架映射、完成判据 | 建议作为实施主索引 |
 
-> 技术选型决议（D1–D15）见 `.trellis/tasks/08-16-brainstorm-requirements-techstack/prd.md`。
+> 技术选型决议（D1–D15）与需求基线（R1–R5）见 [`design_00_tech_decisions.md`](design_00_tech_decisions.md)。
+> 从骨架走向可玩 MVP 的**分阶段实施步骤**见 [`design_06_mvp_implementation.md`](design_06_mvp_implementation.md)。
 
 ---
 
@@ -140,7 +143,7 @@ Stage 3: 剧情续写（高自由度，模式 A/B/C 切换）
 
 ## 七、技术栈决议
 
-> 来自需求收敛（brainstorm，D6–D13），作为实现选型基线。
+> 完整决议表（D1–D15）见 [`design_00_tech_decisions.md`](design_00_tech_decisions.md)。此处为直接涉及的选型速览。
 
 | 维度 | 决议 |
 |------|------|
@@ -154,7 +157,7 @@ Stage 3: 剧情续写（高自由度，模式 A/B/C 切换）
 
 ## 八、待讨论事项（已收敛）
 
-> 经需求收敛（D1–D15）后，以下产品级事项均已决议，详见 `.trellis/tasks/08-16-brainstorm-requirements-techstack/prd.md`。
+> 经需求收敛（D1–D15）后，以下产品级事项均已决议，详见 [`design_00_tech_decisions.md`](design_00_tech_decisions.md)。
 
 | 事项 | 决议 |
 |------|------|

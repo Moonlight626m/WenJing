@@ -71,6 +71,7 @@ class InteractionPhase(Enum):
     每个 Stage 内会循环经历这些 phase
     """
     NARRATIVE = "narrative"              # 编剧推送场景描述
+    DIRECTION = "direction"              # 方向确认（D5 两段式第一步：确认当前矛盾/关键处境）
     AGENT_PROPOSAL = "agent_proposal"    # 角色 Agent 提议
     VERIFICATION = "verification"        # 验证审核
     INTERACTION_DESIGN = "interaction_design"  # 交互设计
@@ -244,7 +245,10 @@ Stage2 和 Stage3 共享同一个循环结构，只有内部策略不同：
 
 ### 3.3 单次 Phase Cycle
 
-这是引擎最核心的方法，一次 `_execute_phase_cycle` 对应一次完整的"方向确认→提议→验证→交互→反应"：
+这是引擎最核心的方法，一次 `_execute_phase_cycle` 对应一次完整的"方向确认→提议→验证→交互→反应"。
+
+> 该 cycle 含 **8 个 phase**，与 §2.1 `InteractionPhase` 枚举一一对应（NARRATIVE → DIRECTION → AGENT_PROPOSAL → VERIFICATION → INTERACTION_DESIGN → PLAYER_TURN → AGENT_REACTION → STAGE_CHECK）。
+> 其中 DIRECTION 是 D5"方向确认 + 行为选项两段式"的第一步，其余七个 phase 构成常规推进。
 
 ```python
     async def _execute_phase_cycle(self, stage: str) -> PhaseCycleResult:
@@ -333,7 +337,10 @@ Stage2 和 Stage3 共享同一个循环结构，只有内部策略不同：
 
 ### 3.4 并行 Agent 调度
 
-Step 3（角色提议）和 Step 4（验证审核）中，多个角色 Agent 的调用是并行的：
+Step 3（角色提议）和 Step 4（验证审核）中，多个角色 Agent 的调用是并行的。
+
+> **提议重试（D4 / R2.3）**：被驳回的提议带着 Verifier 的 `suggestion` 退回提出者，角色 Agent 依据反馈调整后最多重提 2 次（`EngineConfig.max_proposal_retries`）。
+> 若某条提议 2 次重试后仍被驳回，则放弃该提议；若全部提议均被放弃，`InteractionDesigner` 检测到僵局，切到模式 B 放权给玩家（见 `design_01` §3.4 / §2.5 Rule 1）。
 
 ```python
     async def _collect_character_proposals(self, stage: str) -> list[Proposal]:
@@ -357,24 +364,44 @@ Step 3（角色提议）和 Step 4（验证审核）中，多个角色 Agent 的
         
         return proposals
     
-    async def _verify_proposals(self, proposals: list[Proposal], stage: str) -> list[Proposal]:
+    async def _verify_proposals(
+        self, proposals: list[Proposal], stage: str
+    ) -> list[Proposal]:
         """
-        并行验证所有提议。
+        并行验证所有提议；被驳回的提议退回提出者并允许重试（最多 2 次）。
+        重试时携带 Verifier 的 suggestion 作为反馈。
         """
-        tasks = []
-        for prop in proposals:
-            task = self.verifier.verify_proposal(prop, stage)
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        valid = []
-        for prop, result in zip(proposals, results):
-            if isinstance(result, Exception) or result.verdict == "reject":
-                logger.info(f"提议 {prop.proposed_by}:{prop.action_id} 被驳回")
-                continue
-            valid.append(prop)
-        
+        valid: list[Proposal] = []
+        pending = proposals
+        attempts_left = self.config.max_proposal_retries  # 默认 2
+
+        while pending and attempts_left >= 0:
+            tasks = [self.verifier.verify_proposal(p, stage) for p in pending]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            still_pending = []
+            for prop, result in zip(pending, results):
+                if isinstance(result, Exception):
+                    logger.error(f"验证 {prop.proposed_by}:{prop.action_id} 失败: {result}")
+                    continue  # 降级视为条件通过，保留提议
+                if result.verdict == "reject" and attempts_left > 0:
+                    # 退回提出者，携带修改建议重提
+                    revised = await self.characters.retry_proposal(
+                        prop, result.rejections
+                    )
+                    if revised is None:
+                        logger.info(f"角色 {prop.proposed_by} 放弃提议")
+                        continue
+                    still_pending.append(revised)
+                    continue
+                if result.verdict in ("pass", "conditional_pass") or attempts_left == 0:
+                    # 通过 / 条件通过直接进入候选池；重试用尽则按降级收录
+                    valid.append(prop)
+                    continue
+
+            pending = still_pending
+            attempts_left -= 1
+
         return valid
 ```
 
