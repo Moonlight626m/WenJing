@@ -1,0 +1,76 @@
+{
+  "schema": "wenjing-shared-contracts",
+  "version": 1,
+  "contracts": [
+    {
+      "name": "MaterialInput",
+      "module": "app.contracts.material",
+      "fixture": "material_input.json",
+      "schema_version": 1,
+      "ts_type": "MaterialInput"
+    },
+    {
+      "name": "Material",
+      "module": "app.contracts.material",
+      "fixture": "material.json",
+      "schema_version": 1,
+      "ts_type": "Material"
+    },
+    {
+      "name": "ScriptPackage",
+      "module": "app.contracts.script",
+      "fixture": "script_package.json",
+      "schema_version": 1,
+      "ts_type": "ScriptPackage"
+    },
+    {
+      "name": "PlayerCommand",
+      "module": "app.contracts.commands",
+      "fixture": "player_command.json",
+      "schema_version": 1,
+      "ts_type": "PlayerCommand"
+    },
+    {
+      "name": "DomainEvent",
+      "module": "app.contracts.events",
+      "fixture": "domain_event.json",
+      "schema_version": 1,
+      "ts_type": "DomainEvent"
+    },
+    {
+      "name": "RuntimeState",
+      "module": "app.contracts.runtime",
+      "fixture": "runtime_state.json",
+      "schema_version": 1,
+      "ts_type": "RuntimeState"
+    },
+    {
+      "name": "RuntimeUpdate",
+      "module": "app.contracts.runtime",
+      "fixture": "runtime_update.json",
+      "schema_version": 1,
+      "ts_type": "RuntimeUpdate"
+    },
+    {
+      "name": "ErrorEnvelope",
+      "module": "app.contracts.errors",
+      "fixture": "error_envelope.json",
+      "schema_version": 1,
+      "ts_type": "ErrorEnvelope"
+    },
+    {
+      "name": "SessionView",
+      "module": "app.contracts.protocol",
+      "fixture": "session_view.json",
+      "schema_version": 1,
+      "ts_type": "SessionView"
+    },
+    {
+      "name": "RuntimeView",
+      "module": "app.contracts.protocol",
+      "fixture": "runtime_view.json",
+      "schema_version": 1,
+      "ts_type": "RuntimeView"
+    }
+  ]
+}

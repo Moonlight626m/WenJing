@@ -1,6 +1,8 @@
-# Issue tracker: GitHub
+# Issue tracker: GitHub (upstream)
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Issues and specs for this repo live in the **upstream** repository `Moonlight626m/WenJing`. The local clone's `origin` is the `Zewang0217/WenJing` fork, so `gh` will default to the wrong repo inside this checkout: **always pass `--repo Moonlight626m/WenJing`** to every `gh` command. The fork does not track issues.
+
+Use the `gh` CLI for all operations.
 
 ## Conventions
 
@@ -10,8 +12,6 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Comment on an issue**: `gh issue comment <number> --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
-
-Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
 ## Pull requests as a triage surface
 

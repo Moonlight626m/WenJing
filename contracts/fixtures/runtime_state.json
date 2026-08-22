@@ -1,0 +1,37 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "stage": "stage2_reenacting",
+  "phase": "player_turn",
+  "active_branch_id": "00000000-0000-4000-8000-000000000002",
+  "head_event_id": 7,
+  "event_count": 8,
+  "beat_index": 1,
+  "total_beats": 4,
+  "stage2_ending_confirmed": false,
+  "stage3_goal": null,
+  "stage3_round_taken": 0,
+  "player_role": "小芸",
+  "characters": [
+    {
+      "name": "陈师傅",
+      "is_player": false,
+      "memory": [
+        "雨夜捡到银戒指，寻主三个月未果"
+      ],
+      "meta": {}
+    },
+    {
+      "name": "小芸",
+      "is_player": true,
+      "memory": [
+        "母亲有一枚刻着云字的银戒指"
+      ],
+      "meta": {}
+    }
+  ],
+  "plot_context": [
+    "Stage2 关键事件 1/4：雨夜拾戒",
+    "Stage2 关键事件 2/4：寻主未果"
+  ],
+  "schema_version": 1
+}

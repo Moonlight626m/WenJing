@@ -1,0 +1,127 @@
+{
+  "script_id": "00000000-0000-4000-8000-000000000006",
+  "title": "巷口的修鞋摊",
+  "genre": "narrative_prose",
+  "characters": [
+    {
+      "name": "陈师傅",
+      "role": "修鞋匠",
+      "description": "在巷口修鞋三十年的老人",
+      "personality": "朴实、寡言、心细",
+      "background": "本地老巷的修鞋匠",
+      "is_player_playable": true
+    },
+    {
+      "name": "小芸",
+      "role": "学生",
+      "description": "来修鞋的女孩，母亲早年离世",
+      "personality": "安静、念旧",
+      "background": "",
+      "is_player_playable": true
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": 1,
+      "title": "巷口修鞋摊",
+      "setting": "雨后天晴的清晨",
+      "beats": [
+        {
+          "beat_id": 1,
+          "title": "雨夜拾戒",
+          "description": "雨夜，陈师傅在水洼里捡到一枚刻着「云」字的银戒指。"
+        },
+        {
+          "beat_id": 2,
+          "title": "寻主未果",
+          "description": "陈师傅逢人便问，三个月无人认领，戒指收进旧铁盒。"
+        },
+        {
+          "beat_id": 3,
+          "title": "小芸认戒",
+          "description": "三年后小芸来修鞋，认出铁盒里的戒指是母亲的遗物。"
+        },
+        {
+          "beat_id": 4,
+          "title": "物归原主",
+          "description": "陈师傅把戒指还给小芸，「物归原主，正好」。"
+        }
+      ]
+    }
+  ],
+  "stage2_beats": [
+    {
+      "beat_id": 1,
+      "title": "雨夜拾戒",
+      "description": "雨夜，陈师傅在水洼里捡到一枚刻着「云」字的银戒指。",
+      "character_ids": [
+        "陈师傅"
+      ],
+      "evidence": [
+        {
+          "source_type": "original",
+          "excerpt": "他在水洼里捡到一枚银戒指",
+          "paragraph_id": 1
+        }
+      ]
+    },
+    {
+      "beat_id": 2,
+      "title": "寻主未果",
+      "description": "陈师傅逢人便问，三个月无人认领，戒指收进旧铁盒。",
+      "character_ids": [
+        "陈师傅"
+      ],
+      "evidence": [
+        {
+          "source_type": "original",
+          "excerpt": "三个月过去，无人认领，他只好把它收进旧铁盒",
+          "paragraph_id": 2
+        }
+      ]
+    },
+    {
+      "beat_id": 3,
+      "title": "小芸认戒",
+      "description": "三年后小芸来修鞋，认出铁盒里的戒指是母亲的遗物。",
+      "character_ids": [
+        "陈师傅",
+        "小芸"
+      ],
+      "evidence": [
+        {
+          "source_type": "original",
+          "excerpt": "这戒指上刻着云字，是我妈妈的",
+          "paragraph_id": 3
+        }
+      ]
+    },
+    {
+      "beat_id": 4,
+      "title": "物归原主",
+      "description": "陈师傅把戒指还给小芸，「物归原主，正好」。",
+      "character_ids": [
+        "陈师傅",
+        "小芸"
+      ],
+      "evidence": [
+        {
+          "source_type": "original",
+          "excerpt": "物归原主，正好",
+          "paragraph_id": 4
+        }
+      ]
+    }
+  ],
+  "teaching_focus": [
+    "关键事件还原",
+    "人物对话细节",
+    "结尾反转"
+  ],
+  "player_playable_roles": [
+    "小芸"
+  ],
+  "stage2_ending_beat_id": 4,
+  "stage3_resume": "物归原主后，小芸坐在摊前，听陈师傅讲起母亲年轻时的故事……",
+  "schema_version": 1
+}

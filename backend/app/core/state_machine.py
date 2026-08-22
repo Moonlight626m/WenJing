@@ -1,37 +1,15 @@
 """游戏状态机：GameStage（顶层阶段）+ InteractionPhase（8 步交互阶段）。
 
 基于 design_03 §2 的实现；MVP 阶段砍掉 LangGraph，改为纯枚举 + 显式转换表。
+
+`GameStage` / `InteractionPhase` 自 Shared Contracts（app.contracts.runtime）提升，
+此处仅转发引用；值向后兼容（ticket #2 冻结契约层，ticket #7 重构引擎时消费）。
 """
 
 from __future__ import annotations
 
-from enum import Enum
-
+from app.contracts.runtime import GameStage, InteractionPhase
 from app.errx import codes, new
-
-
-class GameStage(Enum):
-    INIT = "init"
-    STAGE1_CREATING = "stage1_creating"
-    STAGE1_COMPLETE = "stage1_complete"
-    STAGE2_REENACTING = "stage2_reenacting"
-    STAGE2_COMPLETE = "stage2_complete"
-    STAGE3_EXTENDING = "stage3_extending"
-    ENDED = "ended"
-
-
-class InteractionPhase(Enum):
-    """Stage2/3 内部的 8 步交互阶段。"""
-
-    NARRATIVE = "narrative"
-    DIRECTION = "direction"
-    AGENT_PROPOSAL = "agent_proposal"
-    VERIFICATION = "verification"
-    INTERACTION_DESIGN = "interaction_design"
-    PLAYER_TURN = "player_turn"
-    AGENT_REACTION = "agent_reaction"
-    STAGE_CHECK = "stage_check"
-
 
 # 允许的顶层阶段转换（INIT 仅由引擎注入剧本后跳过创建进入 Stage1_complete）
 _TRANSITIONS: dict[GameStage, set[GameStage]] = {

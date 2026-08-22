@@ -1,0 +1,32 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "stage": "stage2_reenacting",
+  "phase": "player_turn",
+  "interaction": {
+    "mode": "options",
+    "prompt": "戒指再无人认领，陈师傅决定……",
+    "options": [
+      "贴出招领启事",
+      "继续询问街坊",
+      "收进铁盒等失主"
+    ],
+    "hint": "",
+    "character_name": "陈师傅"
+  },
+  "allowed_commands": [
+    "choose_option",
+    "free_input",
+    "rollback"
+  ],
+  "status": "waiting_player",
+  "event_count": 8,
+  "head_event_id": 7,
+  "character_names": [
+    "陈师傅",
+    "小芸"
+  ],
+  "player_role": "小芸",
+  "stage2_ending_confirmed": false,
+  "stage3_goal": null,
+  "schema_version": 1
+}
