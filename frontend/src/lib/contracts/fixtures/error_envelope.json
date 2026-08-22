@@ -1,0 +1,10 @@
+{
+  "error_id": "00000000-0000-4000-8000-000000000009",
+  "code": "CONTENT_UNSUPPORTED_GENRE",
+  "message": "当前仅支持叙事类课文，请提供小说、叙事散文、戏剧或人物故事",
+  "retryable": false,
+  "details": {
+    "genre_hint": "narrative"
+  },
+  "schema_version": 1
+}
