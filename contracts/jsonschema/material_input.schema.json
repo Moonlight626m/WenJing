@@ -1,0 +1,48 @@
+{
+  "$defs": {
+    "MaterialSource": {
+      "description": "材料来源：粘贴文本或上传文件。",
+      "enum": [
+        "paste",
+        "upload"
+      ],
+      "title": "MaterialSource",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "用户提交的课文原文输入（未经规范化）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/MaterialSource"
+    },
+    "filename": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Filename"
+    },
+    "raw_text": {
+      "minLength": 1,
+      "title": "Raw Text",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "raw_text"
+  ],
+  "title": "MaterialInput",
+  "type": "object"
+}

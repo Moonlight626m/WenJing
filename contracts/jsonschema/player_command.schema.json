@@ -1,0 +1,64 @@
+{
+  "$defs": {
+    "CommandKind": {
+      "description": "PlayerCommand 的类型集合：玩家唯一合法的游戏输入入口。",
+      "enum": [
+        "select_role",
+        "choose_option",
+        "free_input",
+        "rollback_to_event",
+        "enter_stage3",
+        "confirm_ending",
+        "exit_game"
+      ],
+      "title": "CommandKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "玩家命令：唯一游戏输入入口；command_id 幂等键。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "command_id": {
+      "format": "uuid",
+      "title": "Command Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/CommandKind"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "issued_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Issued At"
+    }
+  },
+  "required": [
+    "session_id",
+    "kind"
+  ],
+  "title": "PlayerCommand",
+  "type": "object"
+}

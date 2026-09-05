@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "description": "服务端 WS 消息封套；seq 用于确认与重连补发。\n\n- `seq` 在会话内单调递增，客户端以 last_confirmed_seq 恢复。\n- `payload` 按 type 判别（见 ClientMessage 侧注释）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "type": {
+      "description": "session_init|narrative|character_speech|system|interaction|error",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "session_id",
+    "seq"
+  ],
+  "title": "ServerMessage",
+  "type": "object"
+}

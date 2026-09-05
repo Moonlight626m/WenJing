@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "EventType": {
+      "description": "领域事件类型：游戏事实的载体。",
+      "enum": [
+        "session_started",
+        "material_imported",
+        "script_generated",
+        "role_selected",
+        "narrative_advanced",
+        "proposals_generated",
+        "proposals_verified",
+        "interaction_offered",
+        "player_action_recorded",
+        "agent_reactions_done",
+        "stage_transitioned",
+        "rollback_executed"
+      ],
+      "title": "EventType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "已发生的游戏事实；只追加，不可变。\n\nsequence 在 (session_id, branch_id) 内单调递增；\ncausation_id 指向引发本事件的命令/事件 ID，correlation_id 串联同一命令的因果链。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "branch_id": {
+      "format": "uuid",
+      "title": "Branch Id",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "event_type": {
+      "$ref": "#/$defs/EventType"
+    },
+    "causation_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "correlation_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Correlation Id"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    },
+    "occurred_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Occurred At"
+    }
+  },
+  "required": [
+    "session_id",
+    "branch_id",
+    "sequence",
+    "event_type"
+  ],
+  "title": "DomainEvent",
+  "type": "object"
+}

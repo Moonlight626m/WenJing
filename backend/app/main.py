@@ -1,3 +1,4 @@
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,23 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
     app.include_router(router)
+
+    @app.middleware("http")
+    async def correlation_and_metrics(request, call_next):  # type: ignore[no-untyped-def]
+        from app.diagnostics.context import bind_request, reset_ids
+        from app.diagnostics.metrics import metrics, observe_latency
+
+        reset_ids()
+        req_id = bind_request()
+        started = time.perf_counter()
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        observe_latency(metrics, "wenjing_command", time.perf_counter() - started)
+        metrics.inc("wenjing_requests_total")
+        if response.status_code >= 500:
+            metrics.inc("wenjing_errors_total")
+        return response
+
     return app
 
 

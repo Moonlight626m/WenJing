@@ -1,0 +1,74 @@
+{
+  "$defs": {
+    "ErrorDomain": {
+      "description": "对外错误域命名空间（spec 错误决策）。",
+      "enum": [
+        "input",
+        "content",
+        "search",
+        "llm",
+        "game",
+        "session",
+        "persistence",
+        "protocol",
+        "internal"
+      ],
+      "title": "ErrorDomain",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "对外错误 envelope；跨 REST 与 WS 统一使用。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "error_id": {
+      "format": "uuid",
+      "title": "Error Id",
+      "type": "string"
+    },
+    "code": {
+      "description": "稳定错误码，如 CONTENT_UNSUPPORTED_GENRE",
+      "minLength": 1,
+      "title": "Code",
+      "type": "string"
+    },
+    "domain": {
+      "$ref": "#/$defs/ErrorDomain"
+    },
+    "message": {
+      "description": "对用户安全、可展示的消息",
+      "minLength": 1,
+      "title": "Message",
+      "type": "string"
+    },
+    "retryable": {
+      "default": false,
+      "title": "Retryable",
+      "type": "boolean"
+    },
+    "details": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Details"
+    }
+  },
+  "required": [
+    "code",
+    "domain",
+    "message"
+  ],
+  "title": "ErrorEnvelope",
+  "type": "object"
+}

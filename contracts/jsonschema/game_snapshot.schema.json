@@ -1,0 +1,284 @@
+{
+  "$defs": {
+    "ActiveInteraction": {
+      "additionalProperties": false,
+      "description": "当前等待玩家响应的交互点（稳定交互点语义）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "interaction_id": {
+          "minLength": 1,
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/InteractionMode"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/OptionItem"
+          },
+          "title": "Options",
+          "type": "array"
+        },
+        "hint": {
+          "default": "",
+          "title": "Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "interaction_id",
+        "mode",
+        "prompt"
+      ],
+      "title": "ActiveInteraction",
+      "type": "object"
+    },
+    "InteractionMode": {
+      "description": "交互设计器产出的三种输入模式（design_02 / spec 决策）。",
+      "enum": [
+        "options",
+        "free_input",
+        "options_with_fallback"
+      ],
+      "title": "InteractionMode",
+      "type": "string"
+    },
+    "OptionItem": {
+      "additionalProperties": false,
+      "description": "交互点的单个选项。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "option_id": {
+          "title": "Option Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "option_id",
+        "label"
+      ],
+      "title": "OptionItem",
+      "type": "object"
+    },
+    "RuntimeState": {
+      "additionalProperties": false,
+      "description": "显式、可序列化的运行时状态；恢复/回放的重建目标。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "branch_id": {
+          "format": "uuid",
+          "title": "Branch Id",
+          "type": "string"
+        },
+        "last_sequence": {
+          "minimum": 0,
+          "title": "Last Sequence",
+          "type": "integer"
+        },
+        "stage": {
+          "$ref": "#/$defs/StageValue"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "scene_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Id"
+        },
+        "beat_cursor": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Beat Cursor"
+        },
+        "plot_context": {
+          "additionalProperties": true,
+          "title": "Plot Context",
+          "type": "object"
+        },
+        "character_memories": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Character Memories",
+          "type": "object"
+        },
+        "active_interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActiveInteraction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "stage3_goals": {
+          "items": {
+            "$ref": "#/$defs/Stage3Goal"
+          },
+          "title": "Stage3 Goals",
+          "type": "array"
+        }
+      },
+      "required": [
+        "session_id",
+        "branch_id",
+        "last_sequence",
+        "stage"
+      ],
+      "title": "RuntimeState",
+      "type": "object"
+    },
+    "Stage3Goal": {
+      "additionalProperties": false,
+      "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "goal_id": {
+          "title": "Goal Id",
+          "type": "integer"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "achieved": {
+          "default": false,
+          "title": "Achieved",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "goal_id",
+        "description"
+      ],
+      "title": "Stage3Goal",
+      "type": "object"
+    },
+    "StageValue": {
+      "description": "游戏顶层阶段的契约值（与 core.state_machine.GameStage 对齐）。",
+      "enum": [
+        "init",
+        "stage1_creating",
+        "stage1_complete",
+        "stage2_reenacting",
+        "stage2_complete",
+        "stage3_extending",
+        "ended"
+      ],
+      "title": "StageValue",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "运行时快照：性能优化而非真相；从兼容快照 + 后续事件恢复（spec 决策）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "format": "uuid",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "branch_id": {
+      "format": "uuid",
+      "title": "Branch Id",
+      "type": "string"
+    },
+    "last_sequence": {
+      "minimum": 0,
+      "title": "Last Sequence",
+      "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/RuntimeState"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    }
+  },
+  "required": [
+    "session_id",
+    "branch_id",
+    "last_sequence",
+    "state"
+  ],
+  "title": "GameSnapshot",
+  "type": "object"
+}

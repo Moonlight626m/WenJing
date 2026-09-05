@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "description": "规范化后的课文材料：内容 hash 是去重与证据引用的锚点。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "content_hash": {
+      "description": "SHA-256 hex of normalized text",
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "normalized_text": {
+      "title": "Normalized Text",
+      "type": "string"
+    },
+    "char_count": {
+      "minimum": 1,
+      "title": "Char Count",
+      "type": "integer"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    }
+  },
+  "required": [
+    "content_hash",
+    "normalized_text",
+    "char_count"
+  ],
+  "title": "Material",
+  "type": "object"
+}

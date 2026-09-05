@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
+from app.models.event import EVENTS_SCHEMA_VERSION
 
 
 def _utcnow() -> datetime:
@@ -19,7 +20,7 @@ def _utcnow() -> datetime:
 
 
 class Snapshot(Base):
-    """一次回溯可用的状态快照。"""
+    """一次回溯可用的状态快照（性能优化而非真相）。"""
 
     __tablename__ = "snapshots"
     __table_args__ = (
@@ -38,6 +39,9 @@ class Snapshot(Base):
     character_memories: Mapped[dict] = mapped_column(JSONB, default=dict)
     plot_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     event_count: Mapped[int] = mapped_column(Integer, default=0)
+    schema_version: Mapped[str] = mapped_column(
+        Text, default=EVENTS_SCHEMA_VERSION
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

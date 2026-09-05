@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "11a2b3c4-d5e6-4f70-8192-a3b4c5d6e7f8",
+  "session_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
+  "branch_id": "2b3c4d5e-6f70-4819-a2b3-c4d5e6f70819",
+  "sequence": 7,
+  "event_type": "player_action_recorded",
+  "causation_id": "6f96f8e0-1a2b-4c3d-9e4f-5a6b7c8d9012",
+  "correlation_id": "6f96f8e0-1a2b-4c3d-9e4f-5a6b7c8d9012",
+  "payload": {
+    "kind": "choose_option",
+    "option_id": "opt_buy_oranges_reply"
+  },
+  "occurred_at": "2026-08-27T08:05:01Z"
+}

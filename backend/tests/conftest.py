@@ -1,10 +1,9 @@
-"""pytest 共享夹具：FakeLLMService + 最小集剧本 + 引擎工厂。
+"""pytest 共享夹具：FakeLLMService + 最小集剧本 + 运行时工厂。
 
-本 MVP 阶段聚焦引擎机制（不测剧情质量、不测剧本生成链路），
-因此：
+机制测试（不测剧情质量、不测剧本生成链路）：
 - `FakeLLMService` 返回预设确定性输出（默认 pass，可配置 reject）
 - `minimal_script` 是写死的最小集（1 主角 + 2 配角 + 3 beat）
-- `make_engine` 工厂快速构造引擎实例
+- `make_runtime` 工厂构造 command/step 运行时实例
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.engine_config import EngineConfig
-from app.core.game_engine import GameEngine
+from app.core.game_runtime import GameRuntime
 from app.core.types import Beat, CharacterSetting, Scene, Script
 
 
@@ -90,9 +89,9 @@ def engine_config() -> EngineConfig:
 
 
 @pytest.fixture
-def make_engine(minimal_script, fake_llm, engine_config):
-    def _make(session_id: str = "test-session") -> GameEngine:
-        return GameEngine(
+def make_runtime(minimal_script, fake_llm, engine_config):
+    def _make(session_id: str = "test-session") -> GameRuntime:
+        return GameRuntime(
             session_id=session_id,
             script=minimal_script,
             llm=fake_llm,
@@ -101,3 +100,47 @@ def make_engine(minimal_script, fake_llm, engine_config):
         )
 
     return _make
+
+
+def _is_ending_confirm(result_active_interaction: dict | None) -> bool:
+    """结局确认交互点：由 system 提议的选项。"""
+    if not result_active_interaction:
+        return False
+    return any(o.get("proposed_by") == "system" for o in result_active_interaction["options"])
+
+
+async def play_until_terminal(rt: GameRuntime, *, end_at_ending: bool = False):
+    """命令序列驱动器：自动选角并按阶段提交合法命令直到终态。"""
+    counter = {"n": 0}
+
+    async def send(kind: str, payload: dict | None = None):
+        counter["n"] += 1
+        return await rt.submit(
+            command_id=f"cmd-{counter['n']}", kind=kind, payload=payload or {}
+        )
+
+    result = await rt.start()
+    assert result.state["stage"] in ("stage1_complete",)
+
+    while True:
+        if result.terminal:
+            return result
+        stage = result.state["stage"]
+        if stage == "stage1_complete":
+            result = await send("select_role", {"role_name": "李白"})
+        elif stage == "stage2_reenacting":
+            if result.active_interaction is None:
+                raise AssertionError("stage2 中必须有活动交互点")
+            if _is_ending_confirm(result.active_interaction):
+                choice = 1 if end_at_ending else 0
+                result = await send(
+                    "choose_option", {"option_id": str(choice)}
+                )
+            else:
+                result = await send("choose_option", {"option_id": "0"})
+        elif stage == "stage2_complete":
+            result = await send("enter_stage3")
+        elif stage == "stage3_extending":
+            result = await send("choose_option", {"option_id": "0"})
+        else:
+            raise AssertionError(f"非预期阶段 {stage}")

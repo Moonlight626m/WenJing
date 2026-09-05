@@ -30,7 +30,9 @@ class Error(Exception):
         self.code = code
         self._message = message if message is not None else _registry.lookup(code).message
         self.cause = cause
-        self.extra: dict[str, str] = dict(extra) if extra else {}
+        self.extra: dict[str, str] = {
+            k: str(v) for k, v in extra.items()
+        } if extra else {}
         self.is_affect_stability = _registry.lookup(code).is_affect_stability
         self.stack = traceback.format_stack()[:-1] if capture_stack else ""
         self._message = self._format_message(self._message, self.extra)
@@ -39,7 +41,7 @@ class Error(Exception):
     @staticmethod
     def _format_message(message: str, extra: dict[str, str]) -> str:
         for key, value in extra.items():
-            message = message.replace("{" + key + "}", value)
+            message = message.replace("{" + key + "}", str(value))
         return message
 
     def _build_string(self) -> str:

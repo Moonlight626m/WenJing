@@ -1,0 +1,74 @@
+{
+  "schema_version": "1.0.0",
+  "title": "背影",
+  "characters": [
+    {
+      "name": "父亲",
+      "public_background": "中年丧母、失业在家的父亲，言语不多却爱子心切",
+      "personality_traits": ["隐忍", "慈爱", "笨拙而真诚"],
+      "speech_style": "简短、平实，常以宽慰之语收尾",
+      "is_player_playable": true
+    },
+    {
+      "name": "儿子",
+      "public_background": "二十岁的青年，从北京到徐州奔丧后返京",
+      "personality_traits": ["聪明过分", "事后追悔"],
+      "speech_style": "内心独白丰富，对父爱后知后觉",
+      "is_player_playable": true
+    }
+  ],
+  "scenes": [
+    {
+      "scene_id": 1,
+      "title": "浦口送别",
+      "participants": ["父亲", "儿子"],
+      "beats": [
+        {
+          "beat_id": 1,
+          "description": "父亲坚持亲自送行，与脚夫讲价钱、叮嘱路上小心",
+          "is_key_event": true,
+          "evidence_refs": [
+            {
+              "source_type": "original_text",
+              "excerpt": "他再三嘱咐茶房，甚是仔细。他终于决定还是自己送我去。",
+              "paragraph_index": 2,
+              "char_start": 0,
+              "char_end": 25
+            }
+          ]
+        },
+        {
+          "beat_id": 2,
+          "description": "父亲穿过铁道爬上月台为儿子买橘子",
+          "is_key_event": true,
+          "evidence_refs": [
+            {
+              "source_type": "original_text",
+              "excerpt": "我看见他戴着黑布小帽，穿着黑布大马褂，深青布棉袍，蹒跚地走到铁道边，慢慢探身下去。",
+              "paragraph_index": 5,
+              "char_start": 10,
+              "char_end": 48
+            }
+          ]
+        },
+        {
+          "beat_id": 3,
+          "description": "父子分别，背影混入来来往往的人群",
+          "is_key_event": true,
+          "evidence_refs": [
+            {
+              "source_type": "original_text",
+              "excerpt": "等他的背影混入来来往往的人里，再找不着了，我便进来坐下，我的眼泪又来了。",
+              "paragraph_index": 6,
+              "char_start": 0,
+              "char_end": 36
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "teaching_focus": ["白描手法", "线索：四次背影", "朴素语言中的深情"],
+  "playable_roles": ["父亲", "儿子"],
+  "stage2_ending_beat_id": 3
+}

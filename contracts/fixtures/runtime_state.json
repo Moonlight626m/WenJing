@@ -1,0 +1,29 @@
+{
+  "schema_version": "1.0.0",
+  "session_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
+  "branch_id": "2b3c4d5e-6f70-4819-a2b3-c4d5e6f70819",
+  "last_sequence": 7,
+  "stage": "stage2_reenacting",
+  "phase": "player_turn",
+  "scene_id": 1,
+  "beat_cursor": 2,
+  "plot_context": {
+    "current_scene_title": "浦口送别",
+    "conflict": "儿子坚持自己回去，父亲执意送行与买橘子"
+  },
+  "character_memories": {
+    "父亲": ["儿子聪明过分，总不放心他", "已嘱咐茶房，茶房不理睬"],
+    "儿子": ["祖母去世，父亲失业", "父亲说要亲自送我"]
+  },
+  "active_interaction": {
+    "interaction_id": "ix-scene1-beat2-003",
+    "mode": "options_with_fallback",
+    "prompt": "父亲蹒跚着要去月台买橘子，你（儿子）望着他的背影，会说什么或做什么？",
+    "options": [
+      { "option_id": "opt_stop_him", "label": "拦住他说：爸爸，我自己去买" },
+      { "option_id": "opt_watch_silently", "label": "沉默注视，看着他的背影" }
+    ],
+    "hint": "课文中的「我」两次说不要父亲送，此刻你会怎么选？"
+  },
+  "stage3_goals": []
+}

@@ -1,12 +1,14 @@
 """ORM 模型统一入口。
 
-导入本包即把 `session.py` / `material.py` / `script.py` / `event.py` / `snapshot.py`
-的全部模型注册到 `app.db.session.Base.metadata`（供 `alembic autogenerate` 与建表使用）。
+导入本包即把全部模型注册到 `app.db.session.Base.metadata`
+（供 Alembic autogenerate 与建表使用）。
 """
 
 from __future__ import annotations
 
-from app.models.event import GameEventRecord
+from app.models.command import CommandRecord, CommandStatus
+from app.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
+from app.models.event_branch import EventBranchRecord
 from app.models.material import Material
 from app.models.script import Script
 from app.models.session import Session
@@ -16,9 +18,21 @@ __all__ = [
     "Session",
     "Material",
     "Script",
+    "EventBranchRecord",
     "GameEventRecord",
+    "EVENTS_SCHEMA_VERSION",
+    "CommandRecord",
+    "CommandStatus",
     "Snapshot",
 ]
 
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
-_ = (Session, Material, Script, GameEventRecord, Snapshot)
+_ = (
+    Session,
+    Material,
+    Script,
+    EventBranchRecord,
+    GameEventRecord,
+    CommandRecord,
+    Snapshot,
+)
