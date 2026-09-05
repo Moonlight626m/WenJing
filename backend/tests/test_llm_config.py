@@ -57,7 +57,7 @@ def test_temperature_and_max_tokens_pass_through():
 
 
 def test_settings_llm_model_config_deepseek():
-    settings = Settings(llm_provider="deepseek", llm_api_key="k")
+    settings = Settings(llm_provider="deepseek", llm_api_key="k", llm_model="")
     cfg = settings.llm_model_config()
     assert cfg.provider == "deepseek"
     assert cfg.api_key == "k"

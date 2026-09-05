@@ -15,6 +15,31 @@ from app.core.game_runtime import GameRuntime
 from app.core.types import Beat, CharacterSetting, Scene, Script
 
 
+async def reset_baseline_schema(conn) -> None:
+    """DB 集成测试清场：drop_all/create_all 并同步移除 alembic_version。
+
+    只 drop_all 不动 alembic_version 会留下"版本戳在、表已清"的脏状态，
+    后续 alembic upgrade head 变 no-op，迁移测试必炸（自愈缺口）。
+    """
+    from sqlalchemy import text
+
+    from app.db.session import Base
+
+    await conn.run_sync(Base.metadata.drop_all)
+    await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+    await conn.run_sync(Base.metadata.create_all)
+
+
+async def drop_baseline_schema(conn) -> None:
+    """测试后清场：连同 alembic_version 一起移除，交还干净库。"""
+    from sqlalchemy import text
+
+    from app.db.session import Base
+
+    await conn.run_sync(Base.metadata.drop_all)
+    await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+
 class FakeLLMService:
     """确定性 LLM 假实现：按调用上游分类返回预设输出。"""
 

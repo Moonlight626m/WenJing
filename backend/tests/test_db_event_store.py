@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401  # 注册元数据
 from app.db.event_store import PersistentEventStore
-from app.db.session import Base
 from app.models.session import Session
 
 S1 = str(uuid4())
@@ -52,8 +51,9 @@ async def session_factory():
         pytest.skip("PostgreSQL 未可用，跳过 DB 集成测试")
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        from conftest import reset_baseline_schema
+
+        await reset_baseline_schema(conn)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     # events/commands.material 等表外键 sessions.id：预置测试会话行
     async with factory() as session:
@@ -64,7 +64,9 @@ async def session_factory():
         yield factory
     finally:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+            from conftest import drop_baseline_schema
+
+            await drop_baseline_schema(conn)
         await engine.dispose()
 
 

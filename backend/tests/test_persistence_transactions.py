@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
 from app.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
-from app.db.session import Base
 from app.models.command import CommandRecord
 from app.models.event import GameEventRecord
 from app.models.event_branch import EventBranchRecord
@@ -56,18 +55,24 @@ async def factory():
         pytest.skip("PostgreSQL 未可用，跳过 DB 集成测试")
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
+        from conftest import reset_baseline_schema
+
+        await reset_baseline_schema(conn)
     f = async_sessionmaker(engine, expire_on_commit=False)
+    # FK 安全顺序播种：分开提交，避免 ORM 无 relationship 时按类名字典序 flush
     async with f() as s:
         s.add(Session(id=_SID))
+        await s.commit()
+    async with f() as s:
         s.add(EventBranchRecord(id=main_branch_id(str(_SID)), session_id=_SID))
         await s.commit()
     try:
         yield f
     finally:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.drop_all)
+            from conftest import drop_baseline_schema
+
+            await drop_baseline_schema(conn)
         await engine.dispose()
 
 
@@ -80,7 +85,7 @@ async def _accept_command(session, *, fail_before_commit: bool = False) -> None:
         .order_by(GameEventRecord.sequence.desc())
         .limit(1)
     )
-    next_seq = int(seq_q.scalar_one() or -1) + 1
+    next_seq = int(seq_q.scalar_one_or_none() or -1) + 1
     event_row = GameEventRecord(
         session_id=_SID,
         branch_id=branch,
@@ -102,6 +107,8 @@ async def _accept_command(session, *, fail_before_commit: bool = False) -> None:
             result_event_id=None,
         )
     )
+    # asyncpg 不允许同一连接并发执行：先 flush 插入行，再执行 UPDATE
+    await session.flush()
     locked = await session.execute(
         update(Session)
         .where(Session.id == _SID, Session.version == 0)

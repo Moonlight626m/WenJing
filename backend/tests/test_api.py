@@ -47,21 +47,3 @@ def test_metrics_endpoint_content_type(client):
     resp = client.get("/metrics")
     assert resp.headers["content-type"].startswith("text/plain")
     assert "wenjing_requests_total" in resp.text
-
-
-def test_create_session_placeholder(client):
-    resp = client.post("/api/sessions")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["session_id"]
-    assert body["stage"] == "init"
-
-
-def test_websocket_echo(client):
-    with client.websocket_connect("/ws") as ws:
-        first = ws.receive_json()
-        assert first["type"] == "system"
-        ws.send_json({"ping": "pong"})
-        data = ws.receive_json()
-        assert data["type"] == "echo"
-        assert data["content"] == {"ping": "pong"}

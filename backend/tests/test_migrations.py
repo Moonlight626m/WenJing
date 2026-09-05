@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -65,10 +66,12 @@ async def migrated():
     if not await _db_available():
         pytest.skip("PostgreSQL 未可用，跳过迁移集成测试")
     cfg = _alembic_config()
-    alembic_command.upgrade(cfg, "head")
+    # alembic env.py 在线迁移内部用 asyncio.run：放到独立线程执行，
+    # 避免在 pytest-asyncio 的持久事件循环里调用 asyncio.run
+    await asyncio.to_thread(alembic_command.upgrade, cfg, "head")
     yield cfg
     # 测试后清场：downgrade base，交还干净库给其他测试文件
-    alembic_command.downgrade(cfg, "base")
+    await asyncio.to_thread(alembic_command.downgrade, cfg, "base")
 
 
 async def test_upgrade_head_creates_baseline_tables(migrated: Config):
