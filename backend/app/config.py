@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
 
     max_concurrent_llm: int = 5
-    llm_timeout_seconds: int = 30
+    # 默认上限需覆盖 Stage1 全剧本生成（实测 DeepSeek 约 100s）；短调用仅受上界约束
+    llm_timeout_seconds: int = 150
     player_timeout_seconds: int = 300
     max_events_in_memory: int = 5000
     checkpoint_interval: int = 20
@@ -39,7 +40,8 @@ class Settings(BaseSettings):
             api_key=self.llm_api_key,
             base_url=self.llm_base_url or None,
             temperature=self.llm_temperature,
-            extra={"max_concurrency": self.max_concurrent_llm},
+            timeout_seconds=self.llm_timeout_seconds,
+            max_concurrency=self.max_concurrent_llm,
         )
 
 

@@ -51,6 +51,8 @@ class ModelConfig:
     base_url: str | None = None
     temperature: float = 0.7
     max_tokens: int | None = None
+    timeout_seconds: int | None = None
+    max_concurrency: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -70,11 +72,21 @@ class ModelServiceFactory:
     def build(config: ModelConfig) -> Any:
         from app.agents.llm_service import ChatLLMService
 
-        return ChatLLMService(
-            model=config.model or "",
-            api_key=config.api_key,
-            base_url=config.base_url,
-            provider=config.provider,
-            temperature=config.temperature,
-            max_tokens=config.max_tokens,
-        )
+        kwargs: dict[str, Any] = {
+            "model": config.model or "",
+            "api_key": config.api_key,
+            "base_url": config.base_url,
+            "provider": config.provider,
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
+        }
+        # 超时/并发：显式字段优先，回落到 extra（Settings.llm_model_config 注入处）
+        if config.timeout_seconds is not None:
+            kwargs["timeout_seconds"] = config.timeout_seconds
+        elif "timeout_seconds" in config.extra:
+            kwargs["timeout_seconds"] = config.extra["timeout_seconds"]
+        if config.max_concurrency is not None:
+            kwargs["max_concurrency"] = config.max_concurrency
+        elif "max_concurrency" in config.extra:
+            kwargs["max_concurrency"] = config.extra["max_concurrency"]
+        return ChatLLMService(**kwargs)

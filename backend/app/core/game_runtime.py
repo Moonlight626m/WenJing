@@ -106,7 +106,11 @@ class GameRuntime:
         self.session_id = session_id
         self.script = script
         self.config = config or EngineConfig()
-        self.event_store: EventStore = event_store or EventStore()
+        # 注意：EventStore 定义了 __len__（空存储为 falsy），必须显式判 None，
+        # 否则 `event_store or EventStore()` 会静默丢弃空 PersistentEventStore
+        self.event_store: EventStore = (
+            event_store if event_store is not None else EventStore()
+        )
         self._on_flush = on_flush
         self._log = get_logger("core.runtime", session_id=session_id)
 
@@ -119,6 +123,8 @@ class GameRuntime:
         self.state = _RState()
         self.active_interaction: InteractionPoint | None = None
         self._processed_commands: dict[str, StepResult] = {}
+        # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
+        self._command_events: list[dict] = []
         # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标)
         self._memory_marks: list[tuple[int, dict[str, Any], int]] = []
         self._valid_proposals: list[Proposal] = []
@@ -137,6 +143,7 @@ class GameRuntime:
             "ended": s.ended,
             "character_memories": self.characters.snapshot_memories(),
             "latest_event_id": self.event_store.latest_event_id,
+            "active_branch_id": self.event_store.active_branch_id,
             "active_interaction": _interaction_payload(self.active_interaction),
         }
 
@@ -173,13 +180,71 @@ class GameRuntime:
     def replay_from(
         self, snapshot_state: dict | None, events: list[dict]
     ) -> None:
-        """快照 + 事件重放重建相同状态（#8 验收的机制入口；MVP 线性流实现）。"""
-        raise NotImplementedError("full replay lands with branch semantics (#8)")
+        """快照 + 事件重放重建运行时（issue #8 验收标准 1）。
+
+        快照提供记忆基线（character_memories/beat_cursor/plot_log/stage），
+        随后按事件顺序重放确定性的状态迁移：
+        - stage_transition → stage / ended
+        - plot_advancement → beat_cursor+1、plot_log 追加、剧情上下文广播
+        - direction → 角色处境上下文广播
+        - system(selected_role) → player_role
+        - player_action（Stage3）→ stage3_round_taken+1
+
+        事件形如 `GameEvent.to_dict()`（含 event_type + payload）。纯 LLM 文本
+        （角色发言/提议原文）不入状态，由快照记忆承担。
+        """
+        if snapshot_state is not None:
+            self.restore(snapshot_state)
+        else:
+            self.state = _RState()
+            self.screenwriter.beat_index = 0
+            self.characters.restore_memories({})
+
+        for ev in events:
+            self._replay_event(ev)
+
+        # 使 state_machine / screenwriter 与重放结果一致
+        self.state_machine.restore({"stage": self.state.stage, "phase": self.state.phase})
+        self.screenwriter.beat_index = self.state.beat_cursor
+        if self.state.player_role:
+            self.characters.player_role = self.state.player_role
+
+    def _replay_event(self, ev: dict) -> None:
+        etype = ev.get("event_type") or ev.get("type")
+        payload = ev.get("payload") or {}
+        if etype == evt.EVENT_STAGE_TRANSITION:
+            stage = payload.get("stage")
+            if stage:
+                self.state.stage = stage
+                if stage == GameStage.ENDED.value:
+                    self.state.ended = True
+        elif etype == evt.EVENT_PLOT_ADVANCEMENT:
+            summary = payload.get("summary", "")
+            self.state.beat_cursor += 1
+            if summary:
+                self.state.plot_log.append(summary)
+                self.characters.broadcast_plot_context(summary)
+        elif etype == evt.EVENT_DIRECTION:
+            self.characters.broadcast_direction(
+                {
+                    "conflict": payload.get("conflict", ""),
+                    "context": payload.get("context", ""),
+                }
+            )
+        elif etype == evt.EVENT_SYSTEM:
+            role = payload.get("selected_role")
+            if role:
+                self.state.player_role = role
+                self.characters.player_role = role
+        elif etype == evt.EVENT_PLAYER_ACTION:
+            if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+                self.state.stage3_round_taken += 1
 
     # ===== 生命周期 =====
 
     async def start(self) -> StepResult:
         """初始化到 STAGE1_COMPLETE 停靠点：等待 select_role。"""
+        self._command_events = []
         self.state.stage = StageValue.STAGE1_CREATING.value
         self._transition_to(StageValue.STAGE1_COMPLETE.value)
         return await self._result_at_point(new_events=[])
@@ -218,6 +283,7 @@ class GameRuntime:
     async def _dispatch(
         self, cid: str, kind: str, payload: dict[str, Any]
     ) -> StepResult:
+        self._command_events = []
         stage = self.state.stage
         if kind not in _ALLOWED_BY_STAGE.get(stage, frozenset()):
             raise new(
@@ -490,6 +556,12 @@ class GameRuntime:
                 codes.ENG_ROLLBACK_TARGET_MISSING,
                 extra={"event_id": target_event_id},
             )
+        active_ids = {e.event_id for e in self.event_store.active_events()}
+        if target_event_id not in active_ids:
+            raise new(
+                codes.ENG_ROLLBACK_TARGET_MISSING,
+                extra={"event_id": target_event_id},
+            )
 
         _, snap, mark_beat = 0, {}, 0
         for mark_event_id, m_snap, m_beat in reversed(self._memory_marks):
@@ -501,20 +573,30 @@ class GameRuntime:
             self.state.beat_cursor = min(mark_beat, self.state.beat_cursor)
         self.screenwriter.beat_index = self.state.beat_cursor
 
-        truncated = self.event_store.rollback_to(
-            target_event_id, session_id=self.session_id
+        # 回溯：旧事件保留，创建新活动分支并从目标节点继承历史
+        superseded = self.event_store.rollback_to(
+            target_event_id, session_id=self.session_id, command_id=command_id
         )
         roll_ev = self._append(
             evt.EVENT_ROLLBACK,
-            {"steps": steps, "target": target_event_id, "truncated": len(truncated)},
+            {
+                "steps": steps,
+                "target": target_event_id,
+                "superseded": len(superseded),
+                "branch_id": self.event_store.active_branch_id,
+            },
         )
         self.active_interaction = None
-        # 回溯后从恢复点重新推进到下一个稳定交互点（旧引擎 continue 语义的等价物）
+        # 回溯后从恢复点重新推进到下一个稳定交互点（新分支继续追加）
         driven = await self._drive_until_interaction(new_events=[roll_ev])
         self._processed_commands[key] = driven
         self._log.info(
             "rollback_done",
-            extra={"steps": steps, "target": target_event_id},
+            extra={
+                "steps": steps,
+                "target": target_event_id,
+                "new_branch_id": self.event_store.active_branch_id,
+            },
         )
         return driven
 
@@ -527,6 +609,7 @@ class GameRuntime:
             event_type, payload, session_id=self.session_id
         )
         entry = {"event_id": ev.event_id, "event_type": event_type}
+        self._command_events.append(entry)
         if sink is not None:
             sink.append(entry)
         return entry
@@ -553,7 +636,7 @@ class GameRuntime:
         await self._flush_events()
         return StepResult(
             state=self.export_state(),
-            new_events=list(new_events),
+            new_events=list(self._command_events),
             active_interaction=_interaction_payload(self.active_interaction),
             allowed_commands=sorted(
                 _ALLOWED_BY_STAGE[self.state.stage]

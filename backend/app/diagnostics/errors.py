@@ -20,6 +20,7 @@ logger = logging.getLogger("wenjing.diagnostics.errors")
 _CODE_MAP: dict[int, str] = {
     codes.SESS_NOT_FOUND: "SESSION_NOT_FOUND",
     codes.SESS_ENDED: "SESSION_ENDED",
+    codes.SESS_CONFLICT: "SESSION_CONFLICT",
     codes.ENG_INVALID_TRANSITION: "GAME_INVALID_TRANSITION",
     codes.ENG_ROLLBACK_TARGET_MISSING: "GAME_ROLLBACK_TARGET_MISSING",
     codes.ENG_ROLLBACK_OVERFLOW: "GAME_ROLLBACK_OVERFLOW",
@@ -30,6 +31,18 @@ _CODE_MAP: dict[int, str] = {
     codes.LLM_CALL_FAILED: "LLM_CALL_FAILED",
     codes.LLM_OUTPUT_PARSE_FAILED: "LLM_INVALID_OUTPUT",
     codes.LLM_UNKNOWN_MODEL: "LLM_CALL_FAILED",
+    codes.CNT_UNSUPPORTED_GENRE: "CONTENT_UNSUPPORTED_GENRE",
+    codes.CNT_INSUFFICIENT_SOURCE: "CONTENT_INSUFFICIENT_SOURCE",
+    codes.CNT_GENERATION_FAILED: "CONTENT_GENERATION_FAILED",
+    codes.INP_EMPTY_MATERIAL: "INPUT_EMPTY_MATERIAL",
+    codes.INP_UNSUPPORTED_EXTENSION: "INPUT_UNSUPPORTED_EXTENSION",
+    codes.INP_INVALID_ENCODING: "INPUT_INVALID_ENCODING",
+    codes.INP_TOO_LARGE: "INPUT_TOO_LARGE",
+    codes.SEARCH_UNAVAILABLE: "SEARCH_UNAVAILABLE",
+    codes.SEARCH_BLOCKED_TARGET: "SEARCH_BLOCKED_TARGET",
+    codes.SEARCH_TIMEOUT: "SEARCH_TIMEOUT",
+    codes.PRT_MALFORMED_MESSAGE: "PROTOCOL_MALFORMED_MESSAGE",
+    codes.PRT_UNKNOWN_COMMAND: "PROTOCOL_UNKNOWN_COMMAND",
 }
 
 _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
@@ -37,6 +50,10 @@ _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
     "2": ErrorDomain.GAME,      # ENG
     "3": ErrorDomain.GAME,      # AGENT 归入 game 域
     "4": ErrorDomain.LLM,       # LLM
+    "6": ErrorDomain.CONTENT,   # CNT
+    "7": ErrorDomain.INPUT,     # INP
+    "8": ErrorDomain.SEARCH,    # SEARCH
+    "9": ErrorDomain.PROTOCOL,  # PRT
 }
 
 
@@ -51,6 +68,7 @@ def safe_message(err: Any) -> str:
     base = {
         codes.SESS_NOT_FOUND: "会话不存在或已失效。",
         codes.SESS_ENDED: "会话已结束。",
+        codes.SESS_CONFLICT: "操作冲突，请刷新后重试。",
         codes.ENG_INVALID_TRANSITION: "当前阶段不允许该操作。",
         codes.ENG_ROLLBACK_TARGET_MISSING: "回溯目标不存在。",
         codes.ENG_ROLLBACK_OVERFLOW: "回溯步数超出限制。",
@@ -59,6 +77,18 @@ def safe_message(err: Any) -> str:
         codes.LLM_CALL_FAILED: "模型服务暂时不可用，请稍后重试。",
         codes.LLM_OUTPUT_PARSE_FAILED: "模型输出异常，正在重试。",
         codes.LLM_UNKNOWN_MODEL: "模型服务暂时不可用，请稍后重试。",
+        codes.CNT_UNSUPPORTED_GENRE: "该课文体裁暂不支持，请导入小说、叙事文、戏剧或人物故事。",
+        codes.CNT_INSUFFICIENT_SOURCE: "原文内容不足以生成剧本，请补充更完整的叙事文本。",
+        codes.CNT_GENERATION_FAILED: "剧本生成失败，请稍后重试。",
+        codes.INP_EMPTY_MATERIAL: "课文内容为空，请粘贴或上传有效文本。",
+        codes.INP_UNSUPPORTED_EXTENSION: "仅支持 .txt 或 .md 文件。",
+        codes.INP_INVALID_ENCODING: "文件编码无法识别，请使用 UTF-8 或 GBK 编码。",
+        codes.INP_TOO_LARGE: "课文内容过长，请缩短后重试。",
+        codes.SEARCH_UNAVAILABLE: "网络资料检索暂不可用，将仅基于原文生成。",
+        codes.SEARCH_BLOCKED_TARGET: "目标网址不可访问。",
+        codes.SEARCH_TIMEOUT: "网络资料获取超时，将仅基于原文生成。",
+        codes.PRT_MALFORMED_MESSAGE: "请求格式无法处理。",
+        codes.PRT_UNKNOWN_COMMAND: "不支持的命令类型。",
     }.get(mapped)
     if base:
         return base
