@@ -2,7 +2,7 @@ PY := uv run
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install db-up db-down dev-backend dev-frontend test lint build migrate
+.PHONY: help install db-up db-down dev-backend dev-frontend test lint build migrate demo
 
 help:
 	@echo "文境 (Wenjing) 常用命令："
@@ -15,6 +15,7 @@ help:
 	@echo "  make test           运行 backend 测试"
 	@echo "  make lint           backend ruff + frontend eslint"
 	@echo "  make build          frontend 生产构建"
+	@echo "  make demo           端到端流程演示（需 backend 运行在 :8000）"
 
 install:
 	cd $(BACKEND) && uv sync
@@ -44,3 +45,6 @@ lint:
 
 build:
 	cd $(FRONTEND) && npm run build
+
+demo:
+	cd $(BACKEND) && $(PY) python scripts/demo_flow.py

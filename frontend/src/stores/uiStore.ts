@@ -1,18 +1,30 @@
+"use client";
+
 import { create } from "zustand";
 
-interface UiState {
-  sidebarOpen: boolean;
-  rollbackActive: boolean;
-  rollbackTarget: number | null;
-  toggleSidebar: () => void;
-  setRollback: (active: boolean, target?: number | null) => void;
+export type ToastKind = "info" | "error" | "success";
+
+export interface ToastItem {
+  id: number;
+  kind: ToastKind;
+  title: string;
+  description?: string;
 }
 
-export const useUiStore = create<UiState>((set) => ({
-  sidebarOpen: true,
-  rollbackActive: false,
-  rollbackTarget: null,
-  toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-  setRollback: (active, target = null) =>
-    set({ rollbackActive: active, rollbackTarget: target }),
+interface UiStore {
+  toasts: ToastItem[];
+  push: (toast: { kind: ToastKind; title: string; description?: string }) => void;
+  dismiss: (id: number) => void;
+}
+
+let nextId = 1;
+
+export const useUiStore = create<UiStore>((set) => ({
+  toasts: [],
+  push: (toast) =>
+    set((state) => ({
+      toasts: [...state.toasts, { id: nextId++, ...toast }].slice(-5),
+    })),
+  dismiss: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));

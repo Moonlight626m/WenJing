@@ -51,16 +51,35 @@
       零基础设施依赖导入断言/payload 判别/mapper 往返）；前端 TS 镜像经 tsc --noEmit 验证
 - [x] 契约变更流程记录：`docs/contract-change-process.md`（breaking change ≥2 模块 owner review）
 
-### [#6] 前端 mock 全流程
+### [#6] 前端 mock 全流程 ✅ 已完成（2026-09-05，浏览器 E2E 除外）
 
-- [ ] 导入页：粘贴 + .txt/.md 上传、校验错误展示
-- [ ] 生成进度页：体裁判断/网络研究/生成/验证阶段状态与失败定位
-- [ ] 选角页：角色列表与简介、可扮演标记、开始游戏
-- [ ] 游戏页：叙事/角色发言/系统消息/交互点渲染；options/free_input/options_with_fallback 三输入
-- [ ] command 提交 pending 态：幂等 + 按 command_id 对账
-- [ ] 刷新恢复 + WS 指数退避重连；回溯确认与活动时间线
-- [ ] 错误按产品阶段呈现（input/content/search/llm/session/game）
-- [ ] 对 mock server 的浏览器测试覆盖核心流程
+- [x] 导入页（/import）：粘贴 + .txt/.md 上传（扩展名校验、字数显示）、
+      ingestion 校验错误内联展示（INPUT 域）；原文分析结果渲染
+      （体裁标签/人物含性格/场景/按序关键事件）
+- [x] 生成进度：导入页内联四阶段（体裁判断/网络研究/生成/校验）进度提示；
+      GET status 的 GenerationProgress 已接入；真实 LLM 模式下提示长耗时
+      （deepseek Stage1 实测 ~103s，fetch 无超时直接等待）
+- [x] 选角页（/roles）：角色卡（简介/性格标签/可扮演标记）、REST select_role、
+      刷新后回退仅列角色名（ScriptPackage 无 GET 端点，暂从内存 store 取）
+- [x] 游戏页（/game）：消息流（叙事 markdown/角色发言气泡/系统胶囊，auto-scroll）
+      + 三输入模式交互卡（options/free_input/options_with_fallback）
+      + enter_stage3/confirm_ending/exit_game 附加命令按钮
+- [x] 命令 pending 态：单飞行 + 同 command_id 幂等重发（120s 窗口重试一次，
+      超时报错并提示刷新恢复）；服务端 seq 消息按 `seq:type` 去重
+- [x] 刷新恢复：localStorage 最近会话（useSyncExternalStore 订阅）+ 按阶段路由
+      （init→导入、stage1_complete→选角、stage2+→游戏）；
+      WS 指数退避重连（0.5s 起 15s 封顶 ×12），重连后 session_init 权威重建
+      + resync 按本地确认水位补发；confirm_messages 持续修剪服务端 outbox
+- [x] 回溯：时间线 select 目标 + 二次确认 → rollback_to_event
+- [x] 错误按域呈现：input/content/llm 内联 + toast；session/game/protocol toast
+      （ErrorEnvelope 的 code+message，网络不可达转译为友好文案）
+- [x] 协议级验证（真实后端 WS，scripts 临时脚本实测）：session_init→resync 补发、
+      命令→消息批次、幂等重发对账、新连接全量重建 —— 行为全部符合前端假设
+- [ ] 浏览器测试覆盖核心流程：需要 Playwright 基建（依赖安装 + CI），随 infra 批次
+- 注：mock server 决策 —— fake-backed 真后端（`WENJING_LLM_API_KEY= uvicorn`）
+  即确定性 mock，不再单独维护 mock server；
+  已知缺口：ScriptPackage / 角色简介无 REST 查询端点（刷新选角页只剩角色名），
+  随 #12 联调时补 GET /api/sessions/{id}/script
 
 ## 第二波 · 专业向并行
 
@@ -102,10 +121,6 @@
 - [x] 附带修复：session_id 强制 UUID 校验（旧 "s1" 字符串在真实 PG 下必炸的潜在坏路径）、
       flush 先登记确定性主分支再按分支连续 sequence 写入、alembic env.py 从 Settings 解析 URL
 
-### [#3] 建立统一诊断基础设施
-
-- [ ] 结构化日志（部署 JSON / 开发可读）；标准字段 id/duration_ms/error_code/retry_count
-
 ### [#7] GameRuntime command/step 重构 ✅ 已完成（2026-08-27）
 
 - [x] `app/core/game_runtime.py`：start/submit/rollback/restore 接口；每次提交推进到稳定交互点或
@@ -121,56 +136,128 @@
 - [x] 附带修复：errx extra 值非 str 导致的格式化崩溃（统一 str 化）
 - 注：Agent 构造仍注入 llm gateway（LLMService）；分支化回溯旧历史保留在 #8 实现
 
-### [#9] 课文导入 / 体裁判断 / 原文证据模型
+### [#9] 课文导入 / 体裁判断 / 原文证据模型 ✅ 已完成（2026-09-05）
 
-- [ ] 粘贴 + .txt/.md 上传校验（编码/空内容/大小/扩展名）；规范化 + 内容 hash
-- [ ] 叙事体裁判断：小说/叙事文/戏剧/人物故事通过；说明文/议论文/纯写景/诗歌返回 CONTENT_UNSUPPORTED_GENRE
-- [ ] 原文分析：人物/关系/场景/关键事件，关联原文字符区间/段落
-- [ ] EvidenceRef 区分原文证据与网络补充
-- [ ] 同输入下 deterministic 一致
+- [x] 粘贴 + .txt/.md 上传校验（编码/空内容/大小/扩展名）；规范化 + 内容 hash
+      —— `app/content/ingestion.py`：UTF-8→GB18030 解码、扩展名白名单、空/超长拦截、
+      NFC+去 BOM+统一换行+压缩空行、SHA-256 content_hash
+- [x] 叙事体裁判断：小说/叙事文/戏剧/人物故事通过；说明文/议论文/纯写景/诗歌返回 CONTENT_UNSUPPORTED_GENRE
+      —— `app/content/genre.py`：确定性启发式分类（8 体裁全集，`contracts/content.py::SUPPORTED_GENRES` 单源）
+- [x] 原文分析：人物/关系/场景/关键事件，关联原文字符区间/段落
+      —— `app/content/analysis.py`：零 LLM 启发式提取（对白归属/称谓共现/地点时间标记/事件动词），
+      每条结论附 OriginalEvidence（文档级 char 区间 + paragraph_index）
+- [x] EvidenceRef 区分原文证据与网络补充
+      —— `contracts/material.py::EvidenceRef`（original_text | web 判别）；分析侧只产出 OriginalEvidence，
+      WebEvidence 留待 #10 RAG 侧产生
+- [x] 同输入下 deterministic 一致 —— 纯函数启发式，零随机/零 LLM；测试断言两次输出逐字节一致
+- 新增契约：`app/contracts/content.py`（GenreType/GenreClassification/CharacterMention/
+      RelationshipEdge/SceneSetting/KeyEvent/TextAnalysis）+ `contracts/fixtures/text_analysis.json`
+      + jsonschema 导出 + 前端 `types.ts` 镜像
+- 新增错误码：errx CNT_UNSUPPORTED_GENRE(6001) + INP_*(7001–7004)，接入 diagnostics 稳定码映射
+- 测试：`tests/test_content_pipeline.py`（导入校验/体裁 8 分类/分析坐标/证据判别/确定性）；
+      契约测试新增 text_analysis 严格校验（48+ 例全绿）
 
 ## 第三波
 
-### [#8] 运行时回放 / 命令幂等 / 分支回溯
+### [#8] 运行时回放 / 命令幂等 / 分支回溯 ✅ 已完成（2026-09-05）
 
-- [ ] snapshot + active-branch 事件重放后与原 RuntimeState 一致（属性级断言）
-- [ ] 非法 stage/命令返回稳定 GAME_* 错误；allowed_commands 生效
-- [ ] 回溯：旧事件保留、新 active branch 从目标节点创建、head 更新
-- [ ] 回溯后后续命令只追加到新活动分支
-- [ ] 快照与 branch/head 更新原子提交
-- [ ] 端到端：回溯→重新选择→新分支状态一致且历史可审计
+- [x] snapshot + active-branch 事件重放后与原 RuntimeState 一致（属性级断言）
+      —— `game_runtime.replay_from(snapshot, events)`：快照提供记忆基线，按事件
+      确定性重放 stage/beat_cursor/plot_log/player_role/stage3_round/ended
+- [x] 非法 stage/命令返回稳定 GAME_* 错误；allowed_commands 生效（#7 已覆盖，
+      本轮补「回溯目标不在活动路径 → GAME_ROLLBACK_TARGET_MISSING」）
+- [x] 回溯：旧事件保留、新 active branch 从目标节点创建、head 更新
+      —— `core/event.EventStore` 分支语义（`BranchMeta` 血缘链 / `branch_path` /
+      `rollback_to` 建新分支不物理删除）；`game_runtime.rollback` 改用建分支
+- [x] 回溯后后续命令只追加到新活动分支（测试断言新事件 branch_id == 新分支）
+- [x] 快照与 branch/head 更新原子提交
+      —— `db/branch.commit_rollback_branch`：新分支行 + 可选快照行 + sessions
+      active_branch/head/version 同一事务 + 乐观锁；失败整事务回滚
+- [x] 端到端：回溯→重新选择→新分支状态一致且历史可审计（血缘链可重建完整历史）
+- 附带修复：#4 DB 集成测试基建 —— sessions.script_id/material_id 去库级 FK
+      （与 active_branch_id 同原则，消除循环依赖）；pytest-asyncio loop scope 统一
+      session 级（修 asyncpg「another operation in progress」）；alembic 迁移测试
+      在线迁移改独立线程执行（修 asyncio.run 嵌套）；_accept_command 用
+      scalar_one_or_none + 显式 flush（修自动 flush 顺序问题）
+- 测试：`tests/test_branch_replay.py`（7 例）+ `tests/test_branch_persistence.py`（2 例，
+      无 PG 自动 skip）
 
-### [#10] 安全开放网络 RAG
+### [#10] 安全开放网络 RAG ✅ 已完成（2026-09-05）
 
-- [ ] SearchProvider/PageFetcher/DocumentExtractor 契约 + 首个实现
-- [ ] 仅 http/https；DNS 拒绝 loopback/private/link-local/metadata；每次重定向复检
-- [ ] 连接/读取超时、响应大小、并发、content-type 白名单
-- [ ] HTML 清洗；网页文本标记不可信，指令隔离
-- [ ] 来源记录：URL/标题/抓取时间/内容 hash/引用片段
-- [ ] SSRF/重定向/超时/恶意内容测试；失败降级为纯原文
-- [ ] 搜索 provider 选型 + 降级策略 ADR
+- [x] SearchProvider/PageFetcher/DocumentExtractor 契约 + 首个实现
+      —— `app/rag/providers.py`（Protocol + NullSearchProvider）；`SafePageFetcher`；
+      `HtmlDocumentExtractor`
+- [x] 仅 http/https；DNS 解析后拒绝 loopback/private/link-local/metadata；每次重定向复检
+      —— `app/rag/network.py`（封禁网段白名单 + `validate_target`；fetch 每跳前复检）
+- [x] 连接/读取超时、响应体大小、并发、content-type 白名单生效
+      —— SafePageFetcher（timeout/5MB/信号量4/text-html·xhtml·plain）
+- [x] HTML 清洗（去 script/style/注释/隐藏内容）；网页文本标记不可信，指令隔离
+      —— HtmlDocumentExtractor + `mark_untrusted`（显式隔离标签）
+- [x] 来源记录：URL/标题/抓取时间/内容 hash/引用片段 → WebEvidence
+- [x] SSRF/重定向/超时/恶意内容测试；失败降级为纯原文（RagService 空证据集）
+- [x] 搜索 provider 选型与降级策略 ADR：`docs/adr/0001-rag-provider-selection.md`
+- 新增错误码：SEARCH_UNAVAILABLE(8001)/SEARCH_BLOCKED_TARGET(8002)/SEARCH_TIMEOUT(8003)
+      + diagnostics 稳定码映射 + 安全文案；httpx 提升为主依赖
+- 测试：`tests/test_rag.py`（14 例，全程 MockTransport 无真实网络）
 
-### [#11] Schema-first Stage1 生成与验证
+### [#11] Schema-first Stage1 生成与验证 ✅ 已完成（2026-09-05）
 
-- [ ] 严格版本化 schema 生成角色设定/场景/beats/教学重点/可扮演角色
-- [ ] Stage2 关键 beat 均带原文 EvidenceRef；人物/事件顺序符合原文
-- [ ] 结构/证据覆盖/人物一致性/事件顺序/教学适配五类校验，失败重试 ≤2
-- [ ] 纯原文不足时明确报错或降级说明，不产出半合法剧本
-- [ ] 记录 model/prompt version/schema version/latency/token/retry
-- [ ] 多篇叙事课文 fixture 产出合法 ScriptPackage；非叙事文本返回正确错误
+- [x] 严格版本化 schema 生成角色设定/场景/beats/教学重点/可扮演角色
+      —— `app/generation/stage1.py`：JSON → `ScriptPackage.model_validate_json`
+      （contracts.script 冻结 schema，extra=forbid）
+- [x] Stage2 关键 beat 均带原文 EvidenceRef；人物/事件顺序符合原文
+      —— `synthesize_script_package` + validators（characters/event_order 校验）
+- [x] 结构/证据覆盖/人物一致性/事件顺序/教学适配五类校验，失败重试 ≤2
+      —— `app/generation/validators.py`（validate_all）；generate 失败带反馈重试 ≤2
+- [x] 纯原文不足（无人物或无关键事件）明确报 CONTENT_INSUFFICIENT_SOURCE，不产出半合法剧本
+- [x] 记录 model/prompt version/schema version/latency/token/retry → GenerationTelemetry
+- [x] 多篇叙事课文 fixture 产出合法 ScriptPackage；非叙事文本返回正确错误
+- 新增错误码：CNT_INSUFFICIENT_SOURCE(6002)/CNT_GENERATION_FAILED(6003)
+      + diagnostics 映射 + 安全文案
+- 测试：`tests/test_stage1.py`（14 例：多 fixture 合法产出/结构化输出+telemetry/
+      重试≤2/不足报错/五类校验各自拒收/非叙事拒绝）
+- 真实 LLM 冒烟验证（2026-09-05，DeepSeek）：prompt stage1.v1 重设计——严格字段类型
+      契约（scene_id/beat_id 必须整数、evidence_refs 必须对象数组）+ 关键事件证据
+      JSON 可原样复制 + 解析侧剥 markdown 围栏/夹杂文本；首次尝试（retries=0）产出
+      合法 ScriptPackage、五类校验全过。实测延迟 ~103s → llm_timeout_seconds 默认
+      上调 150s，并经 ModelServiceFactory 透传（此前 settings 超时/并发被忽略）
 
 ## 第四波
 
-### [#5] Fake-backed 后端竖切
+### [#5] Fake-backed 后端竖切 ✅ 已完成（2026-09-05）
 
-- [ ] POST 创建会话写入真实 sessions 表；GET 会话状态可查
-- [ ] 导入材料走真实 ingestion 校验（粘贴/TXT/MD），生成用 fake
-- [ ] 生成进度可查询（fake pipeline：运行中/成功/失败）
-- [ ] 选角后 PlayerCommand 经 WS 提交（fake runtime），返回 RuntimeUpdate 投影
-- [ ] 消息仅事务提交后发布；command_id 幂等
-- [ ] 断线重连：session_init 重建阶段/历史/交互点；按 last confirmed 位置补发
-- [ ] 脚本（curl/WS 客户端）完整演示：创建→导入→生成→选角→submit→interaction→刷新恢复
-- [ ] 后端集成测试覆盖上述路径（真实 PG + fake adapters）
+架构接缝三件套：
+- `core/script_adapter.py`（ScriptPackage→引擎 Script）
+- `db/event_store.py`（int↔UUID 分支确定性映射 `branch_uuid`/`event_uuid`、
+      `write_pending` 事务外置、分支感知 `restore_active_branch`）
+- `session/projection.py`（StepResult/export_state→契约 RuntimeUpdate/RuntimeState/WS 消息）
+- `session/application.py` SessionApplication：create/import（真实 ingestion）/
+      generate（fake 确定性合成，可注入 LLM）/submit_command/get_status/session_init/replay_after
+- REST 5 端点（会话/状态/材料/生成/命令）+ WJError→envelope 错误映射；
+      WS `/ws/{session_id}`（session_init + submit_command + confirm/resync）
+
+验收勾选：
+- [x] POST 创建会话写入真实 sessions 表；GET 会话状态可查
+- [x] 导入材料走真实 ingestion 校验，生成用 fake（确定性合成；真实 LLM 可注入，
+      Stage1 真实链路已在 #11 冒烟验证）
+- [x] 生成进度可查询（fake pipeline：运行中/成功/失败）
+- [x] 选角后 PlayerCommand 经 WS 提交，返回 RuntimeUpdate 投影
+- [x] 消息仅事务提交后发布；command_id 幂等（commands 表闸 + runtime 内存闸）
+- [x] 断线重连：session_init 重建阶段/历史/交互点；resync 按 last_confirmed 补发
+      （WS outbox 优先，跨连接走 `replay_after` 从 DB 活动分支重建）
+- [x] 脚本（curl/WS 客户端）完整演示：`scripts/demo_flow.py` + `make demo`
+      （创建→导入→生成→WS 选角→推进→回溯分支→重连恢复，实测通过）
+- [x] 后端集成测试覆盖（真实 PG + fake adapters）：
+      test_session_application 6 例 + test_api_sessions 5 例 + test_projection 4 例
+
+附带修复（本轮）：
+- 两个隐蔽 falsy 陷阱：GameRuntime `event_store or EventStore()` 因空存储 __len__=0
+  为 falsy 而静默丢弃传入的 PersistentEventStore（build_runtime_with_db 落库挂接
+  一直失效）；`_next_sequence` 的 `0 or -1` 在 max(sequence)=0 时重复发号
+- GameRuntime 命令事件缓冲（`_command_events`）：此前 system/stage_transition/
+  player_action 类事件不进 sink，命令结果与 WS 实时消息漏发这两类事件
+- WS seq = 活动分支路径序号（回溯后可见正确回卷，audit 友好）
+- 注：REST 粘贴导入已通；multipart 文件上传（.txt/.md 直传）留待前端 #6 联调时补
 
 ## 第五波
 

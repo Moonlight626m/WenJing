@@ -110,6 +110,74 @@ export interface WebEvidenceRef {
 
 export type EvidenceRef = OriginalEvidenceRef | WebEvidenceRef;
 
+// ===== 内容管线（issue #9）：体裁判断 + 原文分析 =====
+
+export type GenreType =
+  | "novel"
+  | "narrative"
+  | "drama"
+  | "character_story"
+  | "expository"
+  | "argumentative"
+  | "scenery"
+  | "poetry"
+  | "unknown";
+
+export interface GenreClassification {
+  schema_version: string;
+  genre: GenreType;
+  is_supported: boolean;
+  signals: string[];
+}
+
+export interface CharacterMention {
+  schema_version: string;
+  name: string;
+  role: string | null;
+  personality: string | null;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface RelationshipEdge {
+  schema_version: string;
+  source: string;
+  target: string;
+  nature: string;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface SceneSetting {
+  schema_version: string;
+  title: string;
+  location: string | null;
+  participants: string[];
+  core_event: string;
+  significance: string | null;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface KeyEvent {
+  schema_version: string;
+  title: string;
+  description: string;
+  participants: string[];
+  order: number;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface TextAnalysis {
+  schema_version: string;
+  content_hash: string;
+  title: string | null;
+  author: string | null;
+  genre: GenreClassification;
+  characters: CharacterMention[];
+  relationships: RelationshipEdge[];
+  scenes: SceneSetting[];
+  key_events: KeyEvent[];
+}
+
+
 // ===== 剧本包 =====
 
 export interface CharacterProfile {
