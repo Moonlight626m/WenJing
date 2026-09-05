@@ -261,15 +261,33 @@
 
 ## 第五波
 
-### [#12] 真实核心集成（Stage1→2→3 + 恢复 + 回溯端到端）
+### [#12] 真实核心集成（Stage1→2→3 + 恢复 + 回溯端到端）✅ 已完成（2026-09-05）
 
-- [ ] SessionApplication 接入真实 ContentPipeline/GameRuntime/RAG/UnitOfWork
-- [ ] 真实课文端到端：导入→生成→选角→Stage2 至结局确认→Stage3→退出
-- [ ] 三交互模式真实生效；Stage3 目标导向自然收敛
-- [ ] 消息仅事务提交后发布；WS 重连补发；进程重启从 PG 恢复
-- [ ] 回溯在真实链路可用且保留历史
-- [ ] 浏览器 E2E 覆盖完整核心流程
-- [ ] 所有对外错误符合 envelope；错误可经 error_id 定位
+- [x] SessionApplication 接入真实组件：routes 组装真实 script_llm（配置 key 时
+      agent/script 共用 provider）+ RagService（研究阶段接入生成管线，进度如实
+      反映 succeeded/degraded）；UnitOfWork 即既有命令单事务受理
+- [x] 真实课文端到端：`scripts/e2e_real_flow.py`（真实 LLM 实测通过：真实
+      Stage1 产出「买药·离别」→ 选角 → Stage2 推进至结局确认 → Stage3
+      自由输入/选项 → 回溯 → 退出 → 终局后 SESSION_ENDED envelope）
+- [x] 三交互模式真实生效：Stage2=options(A)、Stage3=options_with_fallback(C)、
+      free_input(B)，test_full_flow + e2e 双断言
+- [x] Stage3 目标导向自然收敛：rounds-limit 自然终止 + confirm_ending/exit_game
+      显式终局（stage3_goals 契约字段保留，目标推荐随后续内容质量迭代）
+- [x] 消息仅事务提交后发布；WS 重连补发；进程重启从 PG 恢复（#5 集成测试覆盖，
+      e2e 重连重建复验）
+- [x] 回溯真实链路可用且保留历史（新分支断言 + 旧分支事件仍在库）
+- [x] 浏览器 E2E（Playwright/chromium，`npm run test:e2e`）：创建→导入→生成→
+      选角→选项推进→回溯→刷新恢复 1.7s 全过；真实 LLM 模式亦实测通过
+- [x] 所有对外错误符合 envelope；error_id 可对账（SESSION_ENDED /
+      CONTENT_UNSUPPORTED_GENRE / 幂等重发对账测试断言）
+- 附带修复（E2E 暴露）：
+  - **CORS 中间件缺失**：浏览器跨域调用全部失败（此前无浏览器级验证）
+  - 终局路径残留 active_interaction → 投影出过期交互点而非「已结束」
+  - 终局双消息同 seq（进入阶段：ended + 已结束）被前端 seq:type 去重丢弃
+    → 去重键加文本
+  - SESS_ENDED(1002) 已定义从未抛出 → SessionApplication 增终局闸
+- 注：analyzer 把「路上小心。」误识为人物「住我的手」（引号归属 bug，
+  #14 Gold Set 评分时一并处理）
 
 ### [#13] 生产化加固（故障注入与可恢复性）
 
