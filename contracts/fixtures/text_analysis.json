@@ -1,0 +1,246 @@
+{
+  "schema_version": "1.0.0",
+  "content_hash": "0fb04d2be2e374daf529e8eb286092a3dda33464ca7dc24af1129e39b44ef219",
+  "title": "背影",
+  "author": null,
+  "genre": {
+    "schema_version": "1.0.0",
+    "genre": "narrative",
+    "is_supported": true,
+    "signals": [
+      "narrative dialogue=0 speech=1 verbs=3"
+    ]
+  },
+  "characters": [
+    {
+      "schema_version": "1.0.0",
+      "name": "我",
+      "role": null,
+      "personality": null,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "我",
+          "paragraph_index": 1,
+          "char_start": 4,
+          "char_end": 5
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "我",
+          "paragraph_index": 1,
+          "char_start": 17,
+          "char_end": 18
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "name": "父亲",
+      "role": null,
+      "personality": null,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "父亲",
+          "paragraph_index": 1,
+          "char_start": 6,
+          "char_end": 8
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "父亲",
+          "paragraph_index": 1,
+          "char_start": 40,
+          "char_end": 42
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "父亲",
+          "paragraph_index": 2,
+          "char_start": 66,
+          "char_end": 68
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "父亲",
+          "paragraph_index": 2,
+          "char_start": 95,
+          "char_end": 97
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "name": "祖母",
+      "role": null,
+      "personality": null,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "祖母",
+          "paragraph_index": 1,
+          "char_start": 35,
+          "char_end": 37
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "祖母",
+          "paragraph_index": 2,
+          "char_start": 82,
+          "char_end": 84
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "schema_version": "1.0.0",
+      "source": "我",
+      "target": "父亲",
+      "nature": "共同出场",
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "我与父亲不相见已二年余了，我最不能忘记的是他的背影。那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+          "paragraph_index": 1,
+          "char_start": 4,
+          "char_end": 60
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "source": "我",
+      "target": "祖母",
+      "nature": "共同出场",
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "我与父亲不相见已二年余了，我最不能忘记的是他的背影。那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+          "paragraph_index": 1,
+          "char_start": 4,
+          "char_end": 60
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "source": "父亲",
+      "target": "祖母",
+      "nature": "共同出场",
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "我与父亲不相见已二年余了，我最不能忘记的是他的背影。那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+          "paragraph_index": 1,
+          "char_start": 4,
+          "char_end": 60
+        },
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。父亲说：事已如此，不必难过，好在天无绝人之路！",
+          "paragraph_index": 2,
+          "char_start": 61,
+          "char_end": 118
+        }
+      ]
+    }
+  ],
+  "scenes": [
+    {
+      "schema_version": "1.0.0",
+      "title": "徐州",
+      "location": "徐州",
+      "participants": [
+        "父亲",
+        "祖母"
+      ],
+      "core_event": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。父亲说：事已",
+      "significance": null,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。父亲说：事已如此，不必难过，好在天无绝人之路！",
+          "paragraph_index": 2,
+          "char_start": 61,
+          "char_end": 118
+        }
+      ]
+    }
+  ],
+  "key_events": [
+    {
+      "schema_version": "1.0.0",
+      "title": "那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+      "description": "那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+      "participants": [
+        "父亲",
+        "祖母"
+      ],
+      "order": 1,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "那年冬天，祖母死了，父亲的差使也交卸了，正是祸不单行的日子。",
+          "paragraph_index": 1,
+          "char_start": 30,
+          "char_end": 60
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "title": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。",
+      "description": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。",
+      "participants": [
+        "父亲",
+        "祖母"
+      ],
+      "order": 2,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "到徐州见着父亲，看见满院狼藉的东西，又想起祖母，不禁簌簌地流下眼泪。",
+          "paragraph_index": 2,
+          "char_start": 61,
+          "char_end": 95
+        }
+      ]
+    },
+    {
+      "schema_version": "1.0.0",
+      "title": "父亲说：事已如此，不必难过，好在天无绝人之路！",
+      "description": "父亲说：事已如此，不必难过，好在天无绝人之路！",
+      "participants": [
+        "父亲"
+      ],
+      "order": 3,
+      "evidence_refs": [
+        {
+          "schema_version": "1.0.0",
+          "source_type": "original_text",
+          "excerpt": "父亲说：事已如此，不必难过，好在天无绝人之路！",
+          "paragraph_index": 2,
+          "char_start": 95,
+          "char_end": 118
+        }
+      ]
+    }
+  ]
+}

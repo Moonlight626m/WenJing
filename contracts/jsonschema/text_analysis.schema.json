@@ -1,0 +1,396 @@
+{
+  "$defs": {
+    "CharacterMention": {
+      "additionalProperties": false,
+      "description": "人物：姓名 + 角色/性格分析，附原文证据。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "personality": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Personality"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/OriginalEvidence"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "CharacterMention",
+      "type": "object"
+    },
+    "GenreClassification": {
+      "additionalProperties": false,
+      "description": "体裁判定结果：signals 记录判定依据，便于解释与回归。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "genre": {
+          "$ref": "#/$defs/GenreType"
+        },
+        "is_supported": {
+          "title": "Is Supported",
+          "type": "boolean"
+        },
+        "signals": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Signals",
+          "type": "array"
+        }
+      },
+      "required": [
+        "genre",
+        "is_supported"
+      ],
+      "title": "GenreClassification",
+      "type": "object"
+    },
+    "GenreType": {
+      "description": "体裁全集：前四类为支持的叙事体裁，后四类按 spec 返回 CONTENT_UNSUPPORTED_GENRE。",
+      "enum": [
+        "novel",
+        "narrative",
+        "drama",
+        "character_story",
+        "expository",
+        "argumentative",
+        "scenery",
+        "poetry",
+        "unknown"
+      ],
+      "title": "GenreType",
+      "type": "string"
+    },
+    "KeyEvent": {
+      "additionalProperties": false,
+      "description": "关键事件：按原文出现顺序编号（order 1 起）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "order": {
+          "minimum": 1,
+          "title": "Order",
+          "type": "integer"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/OriginalEvidence"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "order"
+      ],
+      "title": "KeyEvent",
+      "type": "object"
+    },
+    "OriginalEvidence": {
+      "additionalProperties": false,
+      "description": "原文证据：以原文字符区间或段落标识定位。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "const": "original_text",
+          "default": "original_text",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "excerpt": {
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "paragraph_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paragraph Index"
+        },
+        "char_start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char Start"
+        },
+        "char_end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char End"
+        }
+      },
+      "required": [
+        "excerpt"
+      ],
+      "title": "OriginalEvidence",
+      "type": "object"
+    },
+    "RelationshipEdge": {
+      "additionalProperties": false,
+      "description": "人物关系边：两端为人物名（source/target 无向，去重按字典序）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "target": {
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "nature": {
+          "minLength": 1,
+          "title": "Nature",
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/OriginalEvidence"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "nature"
+      ],
+      "title": "RelationshipEdge",
+      "type": "object"
+    },
+    "SceneSetting": {
+      "additionalProperties": false,
+      "description": "场景：地点/参与者/核心事件/在全文中的作用。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "core_event": {
+          "minLength": 1,
+          "title": "Core Event",
+          "type": "string"
+        },
+        "significance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Significance"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/OriginalEvidence"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "core_event"
+      ],
+      "title": "SceneSetting",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "原文分析结果（issue #9 验收标准 3）。\n\ncontent_hash 锚定规范化后的原文（与 Material.content_hash 一致）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "content_hash": {
+      "minLength": 1,
+      "title": "Content Hash",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Title"
+    },
+    "author": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Author"
+    },
+    "genre": {
+      "$ref": "#/$defs/GenreClassification"
+    },
+    "characters": {
+      "items": {
+        "$ref": "#/$defs/CharacterMention"
+      },
+      "title": "Characters",
+      "type": "array"
+    },
+    "relationships": {
+      "items": {
+        "$ref": "#/$defs/RelationshipEdge"
+      },
+      "title": "Relationships",
+      "type": "array"
+    },
+    "scenes": {
+      "items": {
+        "$ref": "#/$defs/SceneSetting"
+      },
+      "title": "Scenes",
+      "type": "array"
+    },
+    "key_events": {
+      "items": {
+        "$ref": "#/$defs/KeyEvent"
+      },
+      "title": "Key Events",
+      "type": "array"
+    }
+  },
+  "required": [
+    "content_hash",
+    "genre"
+  ],
+  "title": "TextAnalysis",
+  "type": "object"
+}

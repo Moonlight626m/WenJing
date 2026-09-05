@@ -17,6 +17,7 @@ import pytest
 
 from app.contracts import CONTRACTS_SCHEMA_VERSION
 from app.contracts.commands import PlayerCommand
+from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
     ResyncRequestMessage,
     ServerMessage,
@@ -46,6 +47,7 @@ def _load(name: str) -> dict:
     [
         ("material_input", MaterialInput),
         ("material", Material),
+        ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),
         ("runtime_state", RuntimeState),

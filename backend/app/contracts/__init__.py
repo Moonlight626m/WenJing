@@ -4,6 +4,7 @@
 - base：ContractModel / VersionedContract / CONTRACTS_SCHEMA_VERSION
 - enums：StageValue / InteractionMode / CommandKind / ALLOWED_COMMANDS / EventType / ErrorDomain
 - material：MaterialInput / Material / EvidenceRef（Original | Web）
+- content：GenreType / GenreClassification / TextAnalysis（人物/关系/场景/关键事件）
 - script：ScriptPackage
 - commands：PlayerCommand（kind + payload 判别）
 - events：DomainEvent / BranchInfo

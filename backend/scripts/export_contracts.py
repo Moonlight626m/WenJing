@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from app.contracts.commands import PlayerCommand
+from app.contracts.content import TextAnalysis
 from app.contracts.dto import ServerMessage
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
@@ -22,6 +23,7 @@ OUT_DIR = REPO_ROOT / "contracts" / "jsonschema"
 EXPORTS: dict[str, type] = {
     "material_input": MaterialInput,
     "material": Material,
+    "text_analysis": TextAnalysis,
     "player_command": PlayerCommand,
     "domain_event": DomainEvent,
     "runtime_state": RuntimeState,
