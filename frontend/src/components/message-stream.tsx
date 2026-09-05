@@ -48,9 +48,9 @@ export function MessageStream({
   }, [messages.length]);
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1" data-testid="message-stream">
       {messages.map((m) => (
-        <div key={m.key} className="relative">
+        <div key={m.key} className="relative" data-testid="message-row">
           {showSeq && (
             <span className="absolute top-1 -left-8 text-[10px] text-zinc-300 dark:text-zinc-600">
               {m.seq}

@@ -261,7 +261,13 @@ export const useGameStore = create<GameStore>((set, get) => {
       let allowedCommands = state.allowedCommands;
       let stage = state.stage;
 
-      const key = `${seq}:${msg.type}`;
+      // 终局批次可能多条消息共享同一 seq（如"进入阶段：ended"+"已结束"），
+      // 去重键需包含文本，否则第二条会被误判重复
+      const text0 = typeof payload.text === "string" ? payload.text : "";
+      const key =
+        msg.type === "interaction"
+          ? `${seq}:interaction`
+          : `${seq}:${msg.type}:${text0}`;
       if (msg.type === "interaction") {
         // 交互点不进消息流（交互卡单独渲染），但会刷新当前交互与允许命令
         const ix = (payload.interaction as ActiveInteraction | null) ?? null;
