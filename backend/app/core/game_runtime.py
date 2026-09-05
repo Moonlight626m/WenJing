@@ -634,6 +634,9 @@ class GameRuntime:
         self, *, new_events: list[dict], terminal: bool = False
     ) -> StepResult:
         await self._flush_events()
+        if terminal:
+            # 终局后不得残留交互点（否则投影会把过期交互发给前端）
+            self.active_interaction = None
         return StepResult(
             state=self.export_state(),
             new_events=list(self._command_events),

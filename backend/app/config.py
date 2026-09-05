@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     app_name: str = "文境 (Wenjing)"
     debug: bool = False
 
+    # CORS 允许来源（逗号分隔）；默认本地前端 dev server
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
     llm_provider: str = "openai"
     llm_model: str = ""

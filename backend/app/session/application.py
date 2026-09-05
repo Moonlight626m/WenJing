@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -25,7 +26,7 @@ from app.content.pipeline import ContentPipeline
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import CreateSessionResponse, SessionStatusResponse
-from app.contracts.material import MaterialInput
+from app.contracts.material import MaterialInput, WebEvidence
 from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.core.engine_config import EngineConfig
@@ -46,7 +47,13 @@ from app.models.material import Material as MaterialRecord
 from app.models.script import Script as ScriptRecord
 from app.models.session import Session as SessionRecord
 from app.models.snapshot import Snapshot as SnapshotRecord
-from app.session.projection import project_messages, project_state, project_status, project_update
+from app.rag.service import RagService
+from app.session.projection import (
+    project_messages,
+    project_state,
+    project_status,
+    project_update,
+)
 
 _GENERATION_PHASES = ("genre", "research", "generate", "verify")
 
@@ -61,6 +68,7 @@ class SessionApplication:
         agent_llm: LLMService,
         script_llm: LLMService | None = None,
         content_pipeline: ContentPipeline | None = None,
+        rag: RagService | None = None,
         config: EngineConfig | None = None,
         model_name: str = "",
     ) -> None:
@@ -68,6 +76,7 @@ class SessionApplication:
         self._agent_llm = agent_llm
         self._script_llm = script_llm
         self._pipeline = content_pipeline or ContentPipeline()
+        self._rag = rag
         self._config = config or EngineConfig()
         self._model_name = model_name
         self._runtimes: dict[uuid.UUID, GameRuntime] = {}
@@ -114,12 +123,21 @@ class SessionApplication:
         self._analyses[session_id] = analysis
         return analysis
 
-    # ===== Stage1 生成（fake-backed 默认 / 可注入 LLM）=====
+    # ===== Stage1 生成（真实 LLM 默认 / 无 key 确定性合成）=====
+
+    async def _research(self, analysis: TextAnalysis) -> tuple[list[WebEvidence], str]:
+        """开放网络资料补充（#12 真实 RAG 集成）：失败/无来源降级为空证据。"""
+        if self._rag is None:
+            return [], "degraded"
+        query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
+        web = await self._rag.research(query or analysis.genre.genre.value)
+        return web, ("succeeded" if web else "degraded")
 
     async def generate_script(self, session_id: uuid.UUID) -> ScriptPackage:
         analysis = await self._load_analysis(session_id)
+        web, research_state = await self._research(analysis)
         self._generation[session_id] = self._progress(
-            "running", {"genre": "succeeded", "research": "degraded"}
+            "running", {"genre": "succeeded", "research": research_state}
         )
 
         started = datetime.now(UTC)
@@ -137,7 +155,11 @@ class SessionApplication:
             else:
                 outcome = await Stage1Generator(
                     self._script_llm, model=self._model_name
-                ).generate(analysis, session_id=str(session_id))
+                ).generate(
+                    analysis,
+                    web_evidence=web,
+                    session_id=str(session_id),
+                )
                 package, telemetry = outcome.script_package, outcome.telemetry
         except Exception as exc:
             self._generation[session_id] = self._progress(
@@ -173,7 +195,9 @@ class SessionApplication:
             await s.commit()
 
         self._packages[session_id] = package
-        self._generation[session_id] = self._progress("succeeded")
+        self._generation[session_id] = self._progress(
+            "succeeded", {"research": research_state}
+        )
         runtime, store = self._build_runtime(session_id, package)
         await runtime.start()
         await self._commit_system_events(session_id, store)
@@ -196,13 +220,17 @@ class SessionApplication:
                 session_id, store, self._idle_result(runtime, duplicate=True)
             )
 
+        # 终局闸：已结束的会话不再受理玩家命令（SESSION_ENDED 语义域）
+        if runtime.state.ended:
+            raise new(codes.SESS_ENDED, extra={"id": str(session_id)})
+
         payload = self._engine_payload(command, store)
         result = await runtime.submit(
             command_id=str(command.command_id),
             kind=command.kind.value,
             payload=payload,
         )
-        await self._persist_command(session_id, command, store, runtime)
+        await self._persist_command(session_id, command, store, runtime, result)
         return project_update(session_id, store, result)
 
     async def _persist_command(
@@ -211,6 +239,7 @@ class SessionApplication:
         command: PlayerCommand,
         store: PersistentEventStore,
         runtime: GameRuntime,
+        result: Any = None,
     ) -> None:
         """命令 + 事件 + head/version/active_branch + 快照，同一事务。"""
         async with self._factory() as s:
@@ -242,6 +271,7 @@ class SessionApplication:
                     active_branch_id=branch_uuid(session_id, store.active_branch_id),
                     player_role=runtime.state.player_role,
                     current_stage=runtime.state.stage,
+                    status="ended" if result.terminal else sess.status,
                     version=expected + 1,
                 )
             )

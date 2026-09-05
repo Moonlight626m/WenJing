@@ -24,26 +24,35 @@ _application = None
 
 
 def get_application():
-    """进程级 SessionApplication 单例（fake-backed：无 API key 时用确定性 LLM）。"""
+    """进程级 SessionApplication 单例。
+
+    #12 真实集成组装：配置 LLM key 时 agent/script 共用同一 provider
+    （DeepSeek/OpenAI…），RAG 走安全抓取（无搜索 provider 时降级为纯原文）；
+    无 key 回落 DeterministicAgentLLM + 确定性合成（快速演示模式）。
+    """
     global _application
     if _application is None:
         from app.agents.fake_llm import DeterministicAgentLLM
         from app.db.session import SessionLocal
+        from app.rag.service import RagService
         from app.session.application import SessionApplication
 
         settings = get_settings()
-        agent_llm = DeterministicAgentLLM()
+        agent_llm: object = DeterministicAgentLLM()
+        script_llm = None
         if settings.llm_api_key:
             try:
                 from app.agents.model_config import ModelServiceFactory
 
                 agent_llm = ModelServiceFactory.build(settings.llm_model_config())
+                script_llm = agent_llm
             except Exception:
                 agent_llm = DeterministicAgentLLM()
-        # script_llm 保持 None：竖切默认确定性合成；真实 Stage1 LLM 随 #12 接入
         _application = SessionApplication(
             session_factory=SessionLocal,
             agent_llm=agent_llm,
+            script_llm=script_llm,
+            rag=RagService(),
             model_name=settings.llm_model,
         )
     return _application
