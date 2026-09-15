@@ -76,12 +76,14 @@ class ScriptLibrary:
         content_pipeline: ContentPipeline | None = None,
         rag: RagService | None = None,
         model_name: str = "",
+        usage_recorder=None,
     ) -> None:
         self._factory = session_factory
         self._script_llm = script_llm
         self._pipeline = content_pipeline or ContentPipeline()
         self._rag = rag
         self._model_name = model_name
+        self._usage_recorder = usage_recorder
         self._progress: dict[int, dict] = {}
         self._tasks: dict[int, asyncio.Task] = {}
 
@@ -205,7 +207,7 @@ class ScriptLibrary:
                 )
             else:
                 outcome = await Stage1Generator(
-                    self._script_llm, model=self._model_name
+                    self._stage1_llm(script), model=self._model_name
                 ).generate(
                     analysis,
                     web_evidence=web,
@@ -243,6 +245,21 @@ class ScriptLibrary:
             self._progress[script_id] = generation_progress(
                 "failed", detail=str(getattr(exc, "code", exc))
             )
+
+    def _stage1_llm(self, script: ScriptRecord) -> object:
+        """按剧本归属上下文包装 Stage1 LLM，使逐次调用写入 llm_usage（#22）。"""
+        if self._usage_recorder is None:
+            return self._script_llm
+        from app.usage import UsageContext
+
+        return self._usage_recorder.wrap(
+            self._script_llm,
+            UsageContext(
+                org_id=script.org_id,
+                user_id=script.owner_user_id,
+                script_id=script.id,
+            ),
+        )
 
     async def _research(self, analysis: TextAnalysis):
         if self._rag is None:

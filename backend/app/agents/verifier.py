@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from app.agents.llm_service import LLMService
+from app.contracts.enums import UsagePurpose
 from app.core.types import Proposal, Rejection, VerificationResult
 
 logger = logging.getLogger("wenjing.agents.verifier")
@@ -27,6 +28,7 @@ class VerifierAgent:
                     {"role": "system", "content": "你是验证 Agent，评估剧情提议是否合规。"},
                     {"role": "user", "content": f"stage={stage}\nproposal={proposal.description}"},
                 ],
+                purpose=UsagePurpose.VERIFY,
             )
         except Exception:
             # LLM 失败降级（design_00 D4）：按条件通过，不阻塞主流程

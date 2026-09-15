@@ -124,6 +124,14 @@ class ScriptVisibility(StrEnum):
     PUBLIC = "public"
 
 
+class UsagePurpose(StrEnum):
+    """LLM 调用用途（ADR-0002 §5）：Stage1 生成 / 角色 Agent / 验证 Agent。"""
+
+    STAGE1 = "stage1"
+    AGENT = "agent"
+    VERIFY = "verify"
+
+
 class MessageCategory(StrEnum):
     """前端渲染类别：叙事消息 / 角色发言 / 系统提示 / 当前交互。"""
 

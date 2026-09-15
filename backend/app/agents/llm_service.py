@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
+from app.contracts.enums import UsagePurpose
 from app.errx import codes, wrap
 
 logger = logging.getLogger("wenjing.agents.llm")
@@ -21,15 +23,30 @@ logger = logging.getLogger("wenjing.agents.llm")
 Message: TypeAlias = dict[str, str]  # {"role": ..., "content": ...}
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """provider 回报的真实 token 用量（#22）；不可得时为 None。"""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 @runtime_checkable
 class LLMService(Protocol):
-    """可注入的 LLM 服务接口。"""
+    """可注入的 LLM 服务接口。
+
+    `purpose` 标识调用来源（stage1/agent/verify），供用量计量（#22）分类；
+    纯传输实现可忽略该参数。实现若提供 `chat_with_usage`（返回真实 token 用量），
+    计量装饰器会优先采信，否则回落到估算。
+    """
 
     async def chat(
         self,
         messages: list[Message],
         *,
         session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
     ) -> str: ...
 
 
@@ -62,7 +79,26 @@ class ChatLLMService:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._timeout = timeout_seconds
 
-    async def chat(self, messages: list[Message], *, session_id: str = "") -> str:
+    async def chat(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> str:
+        content, _usage = await self.chat_with_usage(
+            messages, session_id=session_id, purpose=purpose
+        )
+        return content
+
+    async def chat_with_usage(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> tuple[str, TokenUsage | None]:
+        """同 `chat`，额外返回 provider 回报的真实 token 用量（#22 计量采信）。"""
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -74,6 +110,7 @@ class ChatLLMService:
                     "model": self.model,
                     "messages": len(messages),
                     "session_id": session_id or None,
+                    "purpose": purpose.value,
                 },
             )
             try:
@@ -89,6 +126,7 @@ class ChatLLMService:
                     timeout=self._timeout,
                 )
                 content = resp.choices[0].message.content or ""
+                usage = _token_usage(resp)
             except Exception as exc:
                 logger.error(
                     "llm_call_failed",
@@ -97,4 +135,21 @@ class ChatLLMService:
                 raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
             finally:
                 await client.close()
-            return content
+            return content, usage
+
+
+def _token_usage(resp: Any) -> TokenUsage | None:
+    """从 provider 响应中读取真实 token 用量；字段缺失时为 None（回落估算）。"""
+    raw = getattr(resp, "usage", None)
+    if raw is None:
+        return None
+    prompt = getattr(raw, "prompt_tokens", None)
+    completion = getattr(raw, "completion_tokens", None)
+    if prompt is None or completion is None:
+        return None
+    total = getattr(raw, "total_tokens", None)
+    return TokenUsage(
+        prompt_tokens=int(prompt),
+        completion_tokens=int(completion),
+        total_tokens=int(total) if total is not None else int(prompt) + int(completion),
+    )

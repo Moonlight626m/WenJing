@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "UsagePurpose": {
+      "description": "LLM 调用用途（ADR-0002 §5）：Stage1 生成 / 角色 Agent / 验证 Agent。",
+      "enum": [
+        "stage1",
+        "agent",
+        "verify"
+      ],
+      "title": "UsagePurpose",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "单个 (org, purpose) 分组的 token 聚合行。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "org_id": {
+      "format": "uuid",
+      "title": "Org Id",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/UsagePurpose"
+    },
+    "prompt_tokens": {
+      "minimum": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "minimum": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "minimum": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    },
+    "call_count": {
+      "minimum": 0,
+      "title": "Call Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "org_id",
+    "purpose",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "call_count"
+  ],
+  "title": "UsageAggregateRow",
+  "type": "object"
+}

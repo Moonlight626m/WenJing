@@ -30,7 +30,7 @@ class ScriptLLM:
         self._responses = list(responses)
         self.calls: list[list[dict]] = []
 
-    async def chat(self, messages, *, session_id: str = ""):
+    async def chat(self, messages, *, session_id: str = "", purpose=None):
         self.calls.append(messages)
         if not self._responses:
             return self._last

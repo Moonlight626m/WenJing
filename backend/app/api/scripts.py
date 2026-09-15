@@ -25,6 +25,7 @@ from app.contracts.script_library import (
     ScriptSummary,
 )
 from app.models.script import Script as ScriptRecord
+from app.scripts.projection import script_summary
 from app.scripts.service import ScriptLibrary
 
 router = APIRouter(prefix="/api", tags=["scripts"])
@@ -39,6 +40,7 @@ def get_script_library() -> ScriptLibrary:
         from app.agents.model_config import ModelServiceFactory
         from app.db.session import SessionLocal
         from app.rag.service import RagService
+        from app.usage import UsageRecorder
 
         settings = get_settings()
         script_llm = None
@@ -52,6 +54,7 @@ def get_script_library() -> ScriptLibrary:
             script_llm=script_llm,
             rag=RagService(),
             model_name=settings.llm_model,
+            usage_recorder=UsageRecorder(session_factory=SessionLocal),
         )
     return _library
 
@@ -63,27 +66,12 @@ _Viewer = Annotated[
 ]
 
 
-def _summary(row: ScriptRecord) -> ScriptSummary:
-    return ScriptSummary(
-        id=row.id,
-        name=row.name,
-        description=row.description,
-        status=row.status,
-        visibility=row.visibility,
-        material_id=row.material_id,
-        owner_user_id=row.owner_user_id,
-        org_id=row.org_id,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-    )
-
-
 def _detail(library: ScriptLibrary, row: ScriptRecord, actor) -> ScriptDetail:
     package = ScriptPackage.model_validate(row.script_data) if row.script_data else None
     # 生成进度仅对 owner 可见（含失败详情）；他人读取已发布剧本时不暴露
     generation = library.progress(row.id) if row.owner_user_id == actor.user_id else None
     return ScriptDetail(
-        script=_summary(row),
+        script=script_summary(row),
         package=package,
         generation=generation,
     )
@@ -126,7 +114,7 @@ async def create_script(
         name=body.name,
         description=body.description,
     )
-    return _summary(row)
+    return script_summary(row)
 
 
 @router.get("/scripts", response_model=ScriptListResponse)
@@ -136,7 +124,7 @@ async def list_scripts(
 ) -> ScriptListResponse:
     """教师剧本库：当前教师自有的全部剧本（含草稿）。"""
     rows = await library.list_scripts(principal.actor)
-    return ScriptListResponse(items=[_summary(r) for r in rows])
+    return ScriptListResponse(items=[script_summary(r) for r in rows])
 
 
 # 注意：必须定义在 `/scripts/{script_id}` 之前，避免 "square" 被当作 script_id 匹配。
@@ -147,7 +135,7 @@ async def square_scripts(
 ) -> ScriptListResponse:
     """剧本广场（#21）：已发布且对当前用户可见（同 org 或 public）的剧本。"""
     rows = await library.list_visible(principal.actor)
-    return ScriptListResponse(items=[_summary(r) for r in rows])
+    return ScriptListResponse(items=[script_summary(r) for r in rows])
 
 
 @router.get("/scripts/{script_id}", response_model=ScriptDetail)
@@ -194,7 +182,7 @@ async def publish_script(
 ) -> ScriptSummary:
     """发布（org/public）；发布后核心内容不可编辑，仅可改可见性/下架。"""
     row = await library.publish(script_id, principal.actor, body.visibility)
-    return _summary(row)
+    return script_summary(row)
 
 
 @router.post("/scripts/{script_id}/unpublish", response_model=ScriptSummary)
@@ -205,7 +193,7 @@ async def unpublish_script(
 ) -> ScriptSummary:
     """下架：不再进库，存量世界可继续。"""
     row = await library.unpublish(script_id, principal.actor)
-    return _summary(row)
+    return script_summary(row)
 
 
 @router.delete("/scripts/{script_id}", status_code=204)

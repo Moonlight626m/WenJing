@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.contracts import CONTRACTS_SCHEMA_VERSION
+from app.contracts.admin import UsageAggregateResponse, UsageAggregateRow
 from app.contracts.auth import (
     AuthSessionInfo,
     LoginRequest,
@@ -77,6 +78,8 @@ def _load(name: str) -> dict:
         ("create_session_request", CreateSessionRequest),
         ("session_summary", SessionSummary),
         ("session_list_response", SessionListResponse),
+        ("usage_aggregate_row", UsageAggregateRow),
+        ("usage_aggregate_response", UsageAggregateResponse),
         ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),

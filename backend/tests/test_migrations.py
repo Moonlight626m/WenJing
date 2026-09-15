@@ -37,6 +37,7 @@ _BASELINE_TABLES = {
     "events",
     "snapshots",
     "commands",
+    "llm_usage",
 }
 
 
@@ -235,6 +236,38 @@ async def test_script_library_columns(migrated: Config):
         assert required <= script_cols, f"scripts 缺列: {required - script_cols}"
         assert "session_id" not in script_cols
         assert "session_id" not in material_cols
+    finally:
+        await engine.dispose()
+
+
+async def test_llm_usage_columns(migrated: Config):
+    """用量计量表（ADR-0002 / #22）：逐次调用所需的 provider/token/归属列齐备。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'llm_usage' and table_schema = 'public'"
+                    )
+                )
+            }
+        required = {
+            "provider",
+            "model",
+            "purpose",
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "org_id",
+            "user_id",
+            "script_id",
+            "session_id",
+            "created_at",
+        }
+        assert required <= cols, f"llm_usage 缺列: {required - cols}"
     finally:
         await engine.dispose()
 

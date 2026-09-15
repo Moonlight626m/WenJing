@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TypeAlias
 
+from app.contracts.enums import UsagePurpose
+
 Message: TypeAlias = dict[str, str]
 
 DEFAULT_PROPOSAL = "我提议按照课文情节继续推进"
@@ -16,6 +18,9 @@ DEFAULT_REACTION = "我平静地回应你的选择。"
 
 class DeterministicAgentLLM:
     """零网络依赖的确定性 LLM：验证 pass、提议/反应返回固定文案。"""
+
+    provider = "deterministic"
+    model = "deterministic"
 
     def __init__(
         self,
@@ -27,7 +32,13 @@ class DeterministicAgentLLM:
         self._react_text = react_text
         self.call_count = 0
 
-    async def chat(self, messages: list[Message], *, session_id: str = "") -> str:
+    async def chat(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> str:
         self.call_count += 1
         user = messages[-1]["content"] if messages else ""
         if "验证 Agent" in user or "你是验证" in user:

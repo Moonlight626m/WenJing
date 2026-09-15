@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agents.llm_service import LLMService
+from app.contracts.enums import UsagePurpose
 from app.core.types import CharacterSetting, PlayerAction, Proposal
 from app.errx import codes, new, wrap
 
@@ -78,6 +79,7 @@ class CharacterAgent:
         try:
             raw = await self.llm.chat(
                 [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                purpose=UsagePurpose.AGENT,
             )
         except Exception as exc:
             raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
@@ -98,6 +100,7 @@ class CharacterAgent:
         user = self._build_user_message(stage, instruction="react")
         raw = await self.llm.chat(
             [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            purpose=UsagePurpose.AGENT,
         )
         text = raw.strip()
         self.memory.working_memory.append({"role": self.identity.name, "content": text})

@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "items": [
+    {
+      "schema_version": "1.0.0",
+      "org_id": "2f9c1a44-6b7d-4e21-9a03-1c5d8e2f4b60",
+      "purpose": "stage1",
+      "prompt_tokens": 4210,
+      "completion_tokens": 1890,
+      "total_tokens": 6100,
+      "call_count": 12
+    },
+    {
+      "schema_version": "1.0.0",
+      "org_id": "2f9c1a44-6b7d-4e21-9a03-1c5d8e2f4b60",
+      "purpose": "agent",
+      "prompt_tokens": 980,
+      "completion_tokens": 320,
+      "total_tokens": 1300,
+      "call_count": 24
+    }
+  ],
+  "since": "2026-09-01T00:00:00Z",
+  "until": "2026-09-15T23:59:59Z"
+}

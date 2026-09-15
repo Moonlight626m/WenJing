@@ -10,6 +10,7 @@ from app.models.auth_session import AuthSession
 from app.models.command import CommandRecord, CommandStatus
 from app.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
 from app.models.event_branch import EventBranchRecord
+from app.models.llm_usage import LlmUsage
 from app.models.material import Material
 from app.models.org import Org
 from app.models.script import Script
@@ -30,6 +31,7 @@ __all__ = [
     "Org",
     "User",
     "AuthSession",
+    "LlmUsage",
 ]
 
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
@@ -44,4 +46,5 @@ _ = (
     Org,
     User,
     AuthSession,
+    LlmUsage,
 )

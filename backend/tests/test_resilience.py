@@ -87,12 +87,12 @@ class _RaisingLLM:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    async def chat(self, messages, *, session_id: str = ""):  # noqa: ANN001
+    async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
         raise self._exc
 
 
 class _GarbageLLM:
-    async def chat(self, messages, *, session_id: str = ""):  # noqa: ANN001
+    async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
         return "这不是 JSON，也不是任何合法剧本结构。"
 
 

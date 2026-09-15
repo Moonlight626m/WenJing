@@ -68,10 +68,12 @@ class SessionApplication:
         session_factory: async_sessionmaker[AsyncSession],
         agent_llm: LLMService,
         config: EngineConfig | None = None,
+        usage_recorder=None,
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
         self._config = config or EngineConfig()
+        self._usage_recorder = usage_recorder
 
     # ===== 创建 =====
 
@@ -179,14 +181,18 @@ class SessionApplication:
 
         无状态：运行时构建后即丢弃（#21），后续命令一律从 DB 重建。
         """
-        await self._access_session(session_id, actor)
+        sess = await self._access_session(session_id, actor)
         package = await self._load_package(session_id)
         if package is None:
             raise new(
                 codes.SESS_NOT_FOUND,
                 extra={"id": str(session_id), "reason": "script not generated"},
             )
-        runtime, store = self._build_runtime(session_id, package)
+        runtime, store = self._build_runtime(
+            session_id,
+            package,
+            usage_context=self._usage_context(session_id, sess),
+        )
         await runtime.start()
         await self._commit_system_events(
             session_id, store, stage=runtime.state.stage
@@ -458,11 +464,12 @@ class SessionApplication:
             script_row = (
                 await s.get(ScriptRecord, script_id) if script_id is not None else None
             )
-            if script_row is None or script_row.script_data is None:
+            if sess is None or script_row is None or script_row.script_data is None:
                 raise new(
                     codes.SESS_NOT_FOUND,
                     extra={"id": str(session_id), "reason": "script not available"},
                 )
+            usage_context = self._usage_context(session_id, sess)
             try:
                 package = ScriptPackage.model_validate(script_row.script_data)
             except Exception as exc:
@@ -491,7 +498,9 @@ class SessionApplication:
                     exc, codes.PER_CORRUPT_SNAPSHOT, extra={"reason": "events corrupt"}
                 ) from exc
 
-        runtime, store = self._build_runtime(session_id, package, store=store)
+        runtime, store = self._build_runtime(
+            session_id, package, store=store, usage_context=usage_context
+        )
         base: dict | None = None
         if snap is not None:
             if snap.schema_version != EVENTS_SCHEMA_VERSION:
@@ -531,17 +540,34 @@ class SessionApplication:
         package: ScriptPackage,
         *,
         store: PersistentEventStore | None = None,
+        usage_context=None,
     ) -> tuple[GameRuntime, PersistentEventStore]:
         store = store or PersistentEventStore()
+        llm = self._agent_llm
+        if self._usage_recorder is not None and usage_context is not None:
+            llm = self._usage_recorder.wrap(self._agent_llm, usage_context)
         runtime = GameRuntime(
             session_id=str(session_id),
             script=script_package_to_script(package),
-            llm=self._agent_llm,
+            llm=llm,
             config=self._config,
             enable_logging=False,
             event_store=store,
         )
         return runtime, store
+
+    def _usage_context(self, session_id: uuid.UUID, sess: SessionRecord):
+        """构造该会话的 LLM 用量归属上下文（无 recorder 时返回 None）。"""
+        if self._usage_recorder is None:
+            return None
+        from app.usage import UsageContext
+
+        return UsageContext(
+            org_id=sess.org_id,
+            user_id=sess.owner_user_id,
+            script_id=sess.script_id,
+            session_id=session_id,
+        )
 
     async def _load_package(self, session_id: uuid.UUID) -> ScriptPackage | None:
         async with self._factory() as s:

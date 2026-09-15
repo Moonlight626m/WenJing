@@ -127,7 +127,7 @@ class FakeLLMService:
         self.call_count = 0
         self.calls: list[list[dict]] = []
 
-    async def chat(self, messages, *, session_id: str = ""):
+    async def chat(self, messages, *, session_id: str = "", purpose=None):
         self.call_count += 1
         self.calls.append(messages)
         user = messages[-1]["content"] if messages else ""

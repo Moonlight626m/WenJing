@@ -42,6 +42,7 @@ def get_application():
         from app.agents.fake_llm import DeterministicAgentLLM
         from app.db.session import SessionLocal
         from app.session.application import SessionApplication
+        from app.usage import UsageRecorder
 
         settings = get_settings()
         agent_llm: object = DeterministicAgentLLM()
@@ -55,6 +56,7 @@ def get_application():
         _application = SessionApplication(
             session_factory=SessionLocal,
             agent_llm=agent_llm,
+            usage_recorder=UsageRecorder(session_factory=SessionLocal),
         )
     return _application
 

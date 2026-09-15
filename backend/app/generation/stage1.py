@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from app.agents.llm_service import LLMService
 from app.contracts.base import CONTRACTS_SCHEMA_VERSION
 from app.contracts.content import TextAnalysis
+from app.contracts.enums import UsagePurpose
 from app.contracts.material import WebEvidence
 from app.contracts.script import Beat, CharacterProfile, Scene, ScriptPackage
 from app.errx import codes, new
@@ -152,7 +153,9 @@ class Stage1Generator:
         while True:
             prompt = self._build_prompt(analysis, web, feedback)
             raw = await self.llm.chat(
-                [{"role": "user", "content": prompt}], session_id=session_id
+                [{"role": "user", "content": prompt}],
+                session_id=session_id,
+                purpose=UsagePurpose.STAGE1,
             )
 
             package: ScriptPackage | None = None

@@ -203,6 +203,27 @@ export interface SessionListResponse {
   items: SessionSummary[];
 }
 
+// ===== 运营后台（issue #22 / ADR-0002 §5）=====
+
+export type UsagePurpose = "stage1" | "agent" | "verify";
+
+export interface UsageAggregateRow {
+  schema_version: string;
+  org_id: string;
+  purpose: UsagePurpose;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  call_count: number;
+}
+
+export interface UsageAggregateResponse {
+  schema_version: string;
+  items: UsageAggregateRow[];
+  since: string | null;
+  until: string | null;
+}
+
 // ===== 材料与证据 =====
 
 export interface MaterialInput {
