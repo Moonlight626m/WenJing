@@ -4,8 +4,14 @@ import type {
   ErrorEnvelope,
   LoginRequest,
   MaterialInput,
+  MaterialPublic,
   RegisterRequest,
+  ScriptCreateRequest,
+  ScriptDetail,
+  ScriptListResponse,
   ScriptPackage,
+  ScriptPublishRequest,
+  ScriptSummary,
   TextAnalysis,
 } from "@/lib/contracts/types";
 
@@ -161,6 +167,62 @@ export function submitCommandRest(
     method: "POST",
     body: JSON.stringify(command),
   });
+}
+
+// ===== 剧本库（教师创作，backend/app/api/scripts.py 镜像）=====
+
+export function listMyScripts(): Promise<ScriptListResponse> {
+  return request("/api/scripts");
+}
+
+export function importSourceMaterial(
+  input: MaterialInput
+): Promise<MaterialPublic> {
+  return request("/api/materials", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function createScriptDraft(
+  input: Omit<ScriptCreateRequest, "schema_version">
+): Promise<ScriptSummary> {
+  return request("/api/scripts", {
+    method: "POST",
+    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+  });
+}
+
+export function getScriptDetail(scriptId: number): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}`);
+}
+
+export function startScriptGeneration(
+  scriptId: number
+): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}/generate`, { method: "POST" });
+}
+
+export function regenerateScript(scriptId: number): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}/regenerate`, { method: "POST" });
+}
+
+export function publishScript(
+  scriptId: number,
+  visibility: ScriptPublishRequest["visibility"]
+): Promise<ScriptSummary> {
+  return request(`/api/scripts/${scriptId}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ schema_version: "1.0.0", visibility }),
+  });
+}
+
+export function unpublishScript(scriptId: number): Promise<ScriptSummary> {
+  return request(`/api/scripts/${scriptId}/unpublish`, { method: "POST" });
+}
+
+export function deleteScript(scriptId: number): Promise<void> {
+  return request(`/api/scripts/${scriptId}`, { method: "DELETE" });
 }
 
 // ===== 账号（backend/app/api/auth.py 镜像）=====

@@ -1,3 +1,5 @@
+import type { ScriptStatus, ScriptVisibility } from "@/lib/contracts/types";
+
 export const STAGE_LABELS: Record<string, string> = {
   init: "待导入",
   stage1_creating: "生成中",
@@ -37,3 +39,24 @@ export const PHASE_LABELS: Record<string, string> = {
   generate: "剧本生成",
   verify: "校验",
 };
+
+/** 剧本生命周期状态（backend/app/contracts/enums.py ScriptStatus）。 */
+export const SCRIPT_STATUS_LABELS: Record<ScriptStatus, string> = {
+  draft: "草稿",
+  published: "已发布",
+  unpublished: "已下架",
+};
+
+export function scriptStatusLabel(status: ScriptStatus): string {
+  return SCRIPT_STATUS_LABELS[status] ?? status;
+}
+
+/** 剧本可见性（backend/app/contracts/enums.py ScriptVisibility）。 */
+export const SCRIPT_VISIBILITY_LABELS: Record<ScriptVisibility, string> = {
+  org: "本校可见",
+  public: "公开",
+};
+
+export function scriptVisibilityLabel(visibility: ScriptVisibility): string {
+  return SCRIPT_VISIBILITY_LABELS[visibility] ?? visibility;
+}
