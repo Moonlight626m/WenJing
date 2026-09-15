@@ -6,13 +6,9 @@ First, run the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
+
+> 本项目统一使用 **npm**（以 `package-lock.json` 为准）；请勿提交 yarn/pnpm/bun 的 lockfile。类型检查用 `npm run typecheck`。
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
