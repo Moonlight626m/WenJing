@@ -55,6 +55,9 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
+    environment:
+      # 服务端路由守卫经内网直连后端（浏览器仍走同源 /api 由 nginx 转发）
+      WENJING_SERVER_API_BASE: http://backend:8000
     expose:
       - "3000"
 

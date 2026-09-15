@@ -1,10 +1,21 @@
 import { apiBaseUrl } from "@/lib/config";
 import type {
+  AuthSessionInfo,
   ErrorEnvelope,
+  LoginRequest,
   MaterialInput,
+  RegisterRequest,
   ScriptPackage,
   TextAnalysis,
 } from "@/lib/contracts/types";
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function readCsrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const match = document.cookie.match(/(?:^|;\s*)wenjing_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
 
 export class ApiError extends Error {
   readonly envelope: ErrorEnvelope;
@@ -24,12 +35,31 @@ function isEnvelope(value: unknown): value is ErrorEnvelope {
   return typeof v.code === "string" && typeof v.message === "string";
 }
 
+/** 统一把错误渲染为 `code：message`（envelope）或原始字符串。 */
+export function formatApiError(err: unknown): string {
+  if (err instanceof ApiError) {
+    return `${err.envelope.code}：${err.envelope.message}`;
+  }
+  return String(err);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (MUTATING_METHODS.has(method)) {
+    const csrf = readCsrfToken();
+    if (csrf) headers["X-CSRF-Token"] = csrf;
+  }
+
   let resp: Response;
   try {
     resp = await fetch(`${apiBaseUrl()}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      credentials: "include",
+      headers,
     });
   } catch {
     throw new ApiError(
@@ -66,6 +96,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
       resp.status
     );
+  }
+  if (resp.status === 204) {
+    return undefined as T;
   }
   return resp.json() as Promise<T>;
 }
@@ -128,4 +161,24 @@ export function submitCommandRest(
     method: "POST",
     body: JSON.stringify(command),
   });
+}
+
+// ===== 账号（backend/app/api/auth.py 镜像）=====
+
+export function register(input: Omit<RegisterRequest, "schema_version">): Promise<AuthSessionInfo> {
+  return request("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+  });
+}
+
+export function login(input: Omit<LoginRequest, "schema_version">): Promise<AuthSessionInfo> {
+  return request("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+  });
+}
+
+export function logout(): Promise<void> {
+  return request("/api/auth/logout", { method: "POST" });
 }

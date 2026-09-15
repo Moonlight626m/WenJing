@@ -103,6 +103,7 @@ jobs:
           uv python install 3.11
           uv sync --frozen
           uv run alembic upgrade head
+          uv run python -m app.auth.seed
           nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 \
             > /tmp/backend.log 2>&1 &
           for i in $(seq 1 30); do
