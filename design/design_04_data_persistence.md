@@ -3,6 +3,11 @@
 > 聚焦游戏数据存储、事件溯源落库、快照、会话存档/恢复。
 >
 > 技术决议：数据库 **PostgreSQL**（D10）；状态持久化 **事件溯源 + checkpoint 快照**（D11）；MVP 提供回溯与会话存档/恢复（D15）。
+>
+> ⚠️ **2026-09-15 修订（ADR-0002）**：新增多用户与 `org` 维度；`scripts` 升级为
+> 可复用实体（不再绑定 session），`sessions` 改为引用 `script_id` 的「剧情世界」
+> 实例；素材独立归属。第一、四节归属与建表语句已按新模型更新；如与 ADR-0002
+> 冲突，以 ADR-0002 为准。
 
 ---
 
@@ -10,11 +15,14 @@
 
 | 对象 | 说明 | 存储方式 |
 |------|------|----------|
-| **事件流 (Event Store)** | 游戏全过程事件（剧情推进/方向/提议/验证/玩家操作/角色发言） | PostgreSQL 表 `events`，payload 用 JSONB |
+| **事件流 (Event Store)** | 游戏全过程事件（剧情推进/方向/提议/验证/玩家操作/角色发言） | PostgreSQL 表 `events`，payload 用 JSONB；预留 `actor_user_id` |
 | **快照 (Snapshot)** | 每 20 事件的状态快照，加速回溯 | PostgreSQL 表 `snapshots` |
-| **剧本 (Script)** | Stage1 生成的完整剧本（场景序列/角色设定表） | PostgreSQL 表 `scripts`，JSONB |
-| **会话 (Session)** | 游戏会话元数据与状态机当前状态 | PostgreSQL 表 `sessions` |
-| **课文素材 (Material)** | 导入的课文 + 素材收集输出 | PostgreSQL 表 `materials`，JSONB |
+| **剧本 (Script)** | 可复用剧本实体（名称/描述/场景序列/角色设定表） | PostgreSQL 表 `scripts`（`owner_user_id`/`org_id`/`material_id`/`status`/`visibility`），JSONB |
+| **剧情世界 (Session)** | 某剧本的一局游玩实例（状态机/玩家/分支/head） | PostgreSQL 表 `sessions`（`owner_user_id`/`org_id`/`script_id`） |
+| **课文素材 (Material)** | 导入的课文 + 分析输出，独立归属 | PostgreSQL 表 `materials`（`owner_user_id`/`org_id`），JSONB |
+| **组织 / 用户 (Org/User)** | 多租户组织与账号（角色） | PostgreSQL 表 `orgs` / `users(org_id, role)` |
+| **登录会话 (AuthSession)** | 服务端可撤销登录会话 | PostgreSQL 表 `auth_sessions` |
+| **LLM 用量 (Usage)** | 逐次 LLM 调用 token 计量 | PostgreSQL 表 `llm_usage` |
 | **角色记忆 (Memory)** | 各角色 Agent 的 working_memory/personal_log/relationship_map | 随快照保存；可选单独表 `character_memories` |
 
 ---
@@ -86,28 +94,40 @@ CREATE INDEX idx_snapshots_session ON snapshots(session_id, event_id);
 ### 4.1 会话表
 
 ```sql
+-- 「剧情世界」：某剧本的一局游玩实例（ADR-0002）
 CREATE TABLE sessions (
-    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    current_stage TEXT NOT NULL DEFAULT 'init',   -- init/stage1_creating/stage1_complete/stage2_reenacting/stage2_complete/stage3_extending/ended
-    script_id     BIGINT REFERENCES scripts(id),
-    material_id   BIGINT REFERENCES materials(id),
-    player_role   TEXT,                           -- 玩家扮演的角色名（Stage2 前确定）
-    status        TEXT NOT NULL DEFAULT 'active', -- active/paused/ended
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id           UUID NOT NULL REFERENCES orgs(id),
+    owner_user_id    UUID NOT NULL REFERENCES users(id),
+    script_id        BIGINT NOT NULL REFERENCES scripts(id),
+    current_stage    TEXT NOT NULL DEFAULT 'stage1_complete',
+    player_role      TEXT,                           -- 玩家扮演的角色名
+    status           TEXT NOT NULL DEFAULT 'active', -- active/paused/ended
+    active_branch_id UUID,                           -- 活动分支（逻辑引用）
+    head_event_id    BIGINT,                         -- 活动分支 head（逻辑引用）
+    version          INTEGER NOT NULL DEFAULT 0,     -- 乐观锁并发保护
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
 ### 4.2 剧本表
 
 ```sql
+-- 可复用剧本实体（ADR-0002）：不再绑定 session，可被多局「剧情世界」引用
 CREATE TABLE scripts (
     id            BIGSERIAL PRIMARY KEY,
-    session_id    UUID NOT NULL REFERENCES sessions(id),
-    title         TEXT NOT NULL,
-    script_data   JSONB NOT NULL,   -- ScriptOutput（场景序列/角色设定表）
-    verification  JSONB,            -- 验证 Agent 审核结果
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    org_id        UUID NOT NULL REFERENCES orgs(id),
+    owner_user_id UUID NOT NULL REFERENCES users(id),
+    material_id   BIGINT REFERENCES materials(id),
+    name          TEXT NOT NULL,
+    description   TEXT,
+    status        TEXT NOT NULL DEFAULT 'draft',   -- draft/published/unpublished
+    visibility    TEXT NOT NULL DEFAULT 'org',     -- org/public（published 时生效）
+    script_data   JSONB NOT NULL,   -- ScriptPackage（场景序列/角色设定表）
+    verification  JSONB,            -- 生成/校验遥测
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
@@ -182,6 +202,7 @@ CREATE TABLE scripts (
 - 回溯 ≤100 步（共享快照机制）
 
 ### 不包含（后续迭代）
-- 剧本分享/复现（仅存剧本数据，不做导出/社区）
+- 公开作品社区/导出（2026-09-15 ADR-0002 修订：教师剧本库 + 显式发布 +
+  公网可见已纳入范围，仅「社区化运营」仍不做）
 - 长会话事件冷存储/归档
-- 多玩家会话并发控制
+- 多玩家会话并发控制（模型已预留 `actor_user_id`/参与者，实现后置）

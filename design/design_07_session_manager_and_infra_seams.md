@@ -106,6 +106,11 @@
 **只抽象有真实需求的 DB；其余 Infra（Redis / COS / email–SMS / 用户体系）等第一个真实需求出现时，
 在组合根 seam 上补 adapter。**
 
+> ⚠️ **2026-09-15（ADR-0002）**：用户体系的「第一个真实需求」已出现——多用户账号与
+> 教师/学生 RBAC 已纳入范围。AuthPort 按本文预期在组合根 seam 上**落地为具体实现**
+> （`orgs`/`users` + `auth_sessions` Cookie 会话），不再是「将来」。Redis/COS/email–SMS
+> 的结论不变。
+
 不做的理由（遵循"two adapters = real seam"）：
 
 - **DB 已经是真实 adapter**：`app/db/session.py`（async engine/session）+ `models/`（ORM 五表）
@@ -125,7 +130,7 @@
  ├─ cache:   将来 CachePort      ← seam 已定，adapter 后补
  ├─ storage: 将来 StoragePort    ← seam 已定，adapter 后补
  ├─ notify:  将来 NotifierPort   ← seam 已定，adapter 后补
- └─ auth:    将来 AuthPort       ← seam 已定，adapter 后补
+ └─ auth:    AuthPort            ← ADR-0002 已落地（账号/RBAC/会话）
 ```
 
 - 将来任一出现真实需求 → 在同一 seam 上换 adapter = **只改一个调用点**。
@@ -143,7 +148,8 @@
 3. **`api/routes.py` 接真**：`POST /api/sessions` 真建会话；`WS /ws` 真跑 `run` + 事件流推送；
    补 errx → WS/REST 错误映射中间件。
 4. **断点续跑（真·step 语义）**：仅当需求要求"精确暂停/恢复"时，再把 `run()` 拆成 step。
-5. **Infra**：Redis/COS/email/用户 —— 各带第一个真实需求时在同一组合根 seam 上补。
+5. **Infra**：Redis/COS/email —— 各带第一个真实需求时在同一组合根 seam 上补。
+   （用户体系/AuthPort 已由 ADR-0002 落地。）
 
 ---
 
