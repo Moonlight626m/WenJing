@@ -289,15 +289,22 @@
 - 注：analyzer 把「路上小心。」误识为人物「住我的手」（引号归属 bug，
   #14 Gold Set 评分时一并处理）
 
-### [#13] 生产化加固（故障注入与可恢复性）
+### [#13] 生产化加固（故障注入与可恢复性）✅ 已完成（2026-09-14）
 
-- [ ] LLM 超时/非法结构化输出 → 明确 retryable/terminal，无部分状态
-- [ ] 搜索失败/恶意网页/抓取超时 → 降级或明确错误
-- [ ] DB 事务失败 → 无部分状态、无成功消息发布
-- [ ] WS 中断与命令重发 → 幂等、补发、无重复事件
-- [ ] 进程重启 → 会话恢复一致
-- [ ] snapshot 损坏 / schema 版本不兼容 → 明确错误或可重建，不崩溃
-- [ ] 上述场景均有自动化测试
+- [x] LLM 超时/非法结构化输出 → 明确 retryable/terminal，无部分状态
+      —— `llm_service` 统一 wrap LLM_CALL_FAILED；Stage1 非法输出重试 ≤2 后
+      CNT_GENERATION_FAILED；失败不落 script 行（`test_resilience` 断言）
+- [x] 搜索失败/恶意网页/抓取超时 → 降级或明确错误
+      —— `RagService.research` 任意失败降级为空证据（纯原文）；新增测试
+- [x] DB 事务失败 → 无部分状态、无成功消息发布
+      —— `_persist_command`/`_commit_system_events` 单事务 + DB 错误 wrap 为
+      PER_WRITE_FAILED；受理失败丢弃内存运行时，下次从 DB 权威重建
+- [x] WS 中断与命令重发 → 幂等、补发、无重复事件（commands 表 + 运行时双闸）
+- [x] 进程重启 → 会话恢复一致（restore_active_branch + 快照重放）
+- [x] snapshot 损坏 / schema 版本不兼容 → 可重建，不崩溃
+      —— `_restore_runtime` 校验 snapshot schema_version/payload，异常时忽略
+      快照从完整事件流重建；剧本数据不兼容返回 PERSISTENCE_INCOMPATIBLE_SCHEMA
+- [x] 上述场景均有自动化测试 —— `tests/test_resilience.py`（8 例，真实 PG）
 
 ### [#14] 课文内容质量 Gold Set 与人工评分门禁
 
@@ -308,18 +315,19 @@
 
 ## 基础设施层（横切，配合对应 issue 落地）
 
-### Infra (docker-compose / 部署)
-- [ ] backend Dockerfile（uv 依赖锁 + uvicorn）
-- [ ] frontend Dockerfile（Next.js 多阶段构建）
-- [ ] docker-compose：db + backend + frontend 三服务 + 共享网络 + 卷（#3 提供 healthcheck 端点支撑）
-- [ ] backend healthcheck（/health/live + /health/ready）
-- [ ] Makefile 补 build-backend/build-frontend/up/E2E
+### Infra (docker-compose / 部署) ✅ 已完成（2026-09-14）
+- [x] backend Dockerfile（uv 依赖锁 + 非 root + `/health/live` HEALTHCHECK + 入口迁移脚本）
+- [x] frontend Dockerfile（Next.js standalone 多阶段构建）
+- [x] docker-compose：db + backend + frontend + nginx（同源入口）四服务 + 卷
+      （nginx 反代 `/api`、`/ws`，浏览器同源，避免跨域与硬编码端口）
+- [x] backend healthcheck（`/health/live` 容器级 + `/health/ready` 依赖级）
+- [x] Makefile 补 build-backend/build-frontend/up/down/logs/e2e
 
-### CI（当前完全缺失）
-- [ ] `.github/workflows/ci.yml`：backend lint+pytest（含 PG，不 skip）+ 契约一致性测试
-- [ ] frontend lint + tsc + next build
-- [ ] 浏览器 E2E（Playwright）对真实 REST/WS + PG 跑核心流程
-- [ ] 故障注入门禁；契约变更需 reviewer
+### CI ✅ 已完成（2026-09-14）
+- [x] `.github/workflows/ci.yml`：backend lint+pytest（含 PG，不 skip）+ 迁移 + 契约一致性测试
+- [x] frontend lint + tsc + next build
+- [x] 浏览器 E2E（Playwright）对真实 REST/WS + PG 跑核心流程
+- [x] 故障注入测试纳入 pytest 门禁（test_resilience.py）；契约变更 reviewer 由流程文档约束
 
 ## 关键风险与取舍
 

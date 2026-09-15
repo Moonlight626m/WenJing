@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint + tests + PG)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wenjing
+          POSTGRES_PASSWORD: wenjing
+          POSTGRES_DB: wenjing
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wenjing"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WENJING_DATABASE_URL: postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing
+      WENJING_LLM_API_KEY: ""
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.11
+      - run: uv sync --frozen
+      - run: uv run ruff check app tests
+      - run: uv run alembic upgrade head
+      - run: uv run pytest -q
+
+  frontend:
+    name: Frontend (lint + tsc + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_BASE: ""
+          NEXT_PUBLIC_WS_BASE: ""
+
+  e2e:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wenjing
+          POSTGRES_PASSWORD: wenjing
+          POSTGRES_DB: wenjing
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wenjing"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WENJING_DATABASE_URL: postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing
+      WENJING_LLM_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Start backend
+        working-directory: backend
+        run: |
+          uv python install 3.11
+          uv sync --frozen
+          uv run alembic upgrade head
+          nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+            > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8000/health/ready && break || sleep 2
+          done
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Start frontend
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_BASE: http://127.0.0.1:8000
+        run: |
+          nohup npm run dev -- --hostname 127.0.0.1 --port 3000 \
+            > /tmp/frontend.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000 && break || sleep 2
+          done
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E
+        working-directory: frontend
+        run: npm run test:e2e
+        env:
+          E2E_FRONTEND_BASE: http://127.0.0.1:3000
+
+      - name: Backend logs on failure
+        if: failure()
+        run: cat /tmp/backend.log || true

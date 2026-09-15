@@ -1,11 +1,10 @@
+import { apiBaseUrl } from "@/lib/config";
 import type {
   ErrorEnvelope,
   MaterialInput,
   ScriptPackage,
   TextAnalysis,
 } from "@/lib/contracts/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export class ApiError extends Error {
   readonly envelope: ErrorEnvelope;
@@ -28,7 +27,7 @@ function isEnvelope(value: unknown): value is ErrorEnvelope {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
-    resp = await fetch(`${API_BASE}${path}`, {
+    resp = await fetch(`${apiBaseUrl()}${path}`, {
       ...init,
       headers: { "Content-Type": "application/json", ...init?.headers },
     });

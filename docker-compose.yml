@@ -1,20 +1,72 @@
+# 文境单机部署：db + backend + frontend + nginx（同源入口）。
+# 生产：复制 .env.example 为 .env，至少修改 POSTGRES_PASSWORD 与 LLM 配置，
+#      然后 `docker compose up -d --build`，访问 http://<server>/ 。
+# 开发：`make db-up` 仅启动 db（backend/frontend 在宿主机跑热更）。
 services:
   db:
     image: postgres:16-alpine
     container_name: wenjing-db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: wenjing
-      POSTGRES_PASSWORD: wenjing
-      POSTGRES_DB: wenjing
+      POSTGRES_USER: ${POSTGRES_USER:-wenjing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wenjing}
+      POSTGRES_DB: ${POSTGRES_DB:-wenjing}
+    # 仅绑定回环，避免数据库直接暴露公网
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U wenjing"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wenjing}"]
       interval: 5s
       timeout: 5s
       retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    container_name: wenjing-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WENJING_DEBUG: "false"
+      WENJING_RUN_MIGRATIONS: "1"
+      WENJING_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wenjing}:${POSTGRES_PASSWORD:-wenjing}@db:5432/${POSTGRES_DB:-wenjing}
+      WENJING_CORS_ORIGINS: ${WENJING_CORS_ORIGINS:-http://localhost}
+      WENJING_LLM_PROVIDER: ${WENJING_LLM_PROVIDER:-openai}
+      WENJING_LLM_MODEL: ${WENJING_LLM_MODEL:-gpt-4o-mini}
+      WENJING_LLM_API_KEY: ${WENJING_LLM_API_KEY:-}
+      WENJING_LLM_BASE_URL: ${WENJING_LLM_BASE_URL:-}
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # 同源部署：空串 → 浏览器以相对 /api、/ws 访问（由 nginx 转发）
+        NEXT_PUBLIC_API_BASE: ""
+        NEXT_PUBLIC_WS_BASE: ""
+    container_name: wenjing-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: wenjing-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "${WENJING_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
 
 volumes:
   pgdata:

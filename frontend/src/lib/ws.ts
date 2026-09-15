@@ -3,14 +3,10 @@
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import { useEffect } from "react";
 
+import { wsBaseUrl } from "@/lib/config";
 import { useGameStore } from "@/stores/gameStore";
 
-export function wsBaseUrl(): string {
-  if (typeof window === "undefined") return "";
-  const proto = window.location.protocol === "https:" ? "wss" : "ws";
-  const host = window.location.hostname || "localhost";
-  return `${proto}://${host}:8000`;
-}
+export { wsBaseUrl };
 
 /**
  * 游戏会话 WS 通道：

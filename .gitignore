@@ -32,3 +32,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local dev runtime (pid/log)
+.run/
+
+# Local compose overrides (machine-specific)
+docker-compose.override.yml
+docker-compose.local.yml

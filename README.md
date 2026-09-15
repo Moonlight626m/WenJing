@@ -60,6 +60,12 @@ cp backend/.env.example backend/.env
 ## 快速启动
 
 ```bash
+make dev         # 一键：起 PostgreSQL + 跑迁移 + 起后端(:8000) + 起前端(:3000)
+```
+
+首次使用也可分步执行：
+
+```bash
 make install     # 安装 backend (uv sync) 与 frontend (npm install) 依赖
 make db-up       # 启动本地 PostgreSQL (docker compose)
 cp backend/.env.example backend/.env   # 配置环境变量，按需修改
@@ -68,7 +74,15 @@ make migrate     # 运行 Alembic 迁移，初始化数据库表
 
 ## 运行
 
-两个终端分别启动：
+一键后台启动（自动起 db、跑迁移、起后端与前端，日志在 `.run/logs/`）：
+
+```bash
+make dev            # 等价于 ./scripts/dev.sh start
+make dev-status     # 查看状态
+make dev-stop       # 停止
+```
+
+或两个终端分别启动（前台热更）：
 
 ```bash
 make dev-backend    # backend: http://localhost:8000 (uvicorn --reload)
@@ -83,11 +97,37 @@ make dev-frontend   # frontend: http://localhost:3000 (next dev)
 
 | 命令 | 作用 |
 |------|------|
-| `make test` | backend pytest |
+| `make test` | backend pytest（PG 可用时含集成测试） |
 | `make lint` | backend ruff + frontend eslint |
 | `make build` | frontend 生产构建 |
+| `make build-backend` / `make build-frontend` | 构建生产镜像 |
+| `make up` / `make down` / `make logs` | 启动/停止/查看完整生产栈 |
+| `make e2e` | 浏览器端到端测试（Playwright） |
 | `make db-down` | 停止本地 PG |
+
+## 生产部署（Docker Compose）
+
+单机生产栈：`db` + `backend` + `frontend` + `nginx`（同源入口，REST `/api`、WS `/ws` 反代到 backend）。
+
+```bash
+cp .env.example .env          # 至少修改 POSTGRES_PASSWORD 与 LLM 配置
+docker compose up -d --build  # 构建并启动，backend 入口自动执行 Alembic 迁移
+# 访问 http://<server>/ ，健康检查：http://<server>/health/ready
+```
+
+要点：
+
+- **同源部署**：浏览器经 nginx 以相对路径 `/api`、`/ws` 访问，前端在构建期注入
+  `NEXT_PUBLIC_API_BASE=""`；若前后端不同源，使用 `frontend/.env.example` 中的变量。
+- **单进程约束**：会话运行时与 WS outbox 保存在进程内存中，`backend` 必须以单 worker
+  运行（默认 CMD 即单 worker）。多副本/多 worker 需引入共享运行时与粘性会话。
+- **迁移**：入口脚本默认执行 `alembic upgrade head`（`WENJING_RUN_MIGRATIONS=0` 可关闭）。
+- **数据库**：仅绑定 `127.0.0.1:5432`，不直接暴露公网；生产请设置强密码。
+- **CI**：`.github/workflows/ci.yml` 覆盖后端 lint + PG 集成测试 + 契约测试、前端
+  lint/tsc/build，以及对真实 REST/WS 的浏览器 E2E。
 
 ## 当前状态
 
-骨架搭建阶段（scaffold）：仅基础框架与占位端点，业务逻辑（游戏引擎 / Agent 编排 / 消息协议实现）按 `design/` 逐步填充。
+核心 MVP 已完成（issue #2–#12）：契约、诊断基建、持久化、GameRuntime command/step、
+导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成与前端全流程。
+剩余：#13 生产化加固（已补故障注入与可恢复性）、#14 Gold Set 内容质量门禁。
