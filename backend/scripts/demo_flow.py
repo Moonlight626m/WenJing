@@ -1,5 +1,8 @@
 """文境核心流程演示脚本（issue #5 验收）。
 
+⚠️ 已暂停（issue #17 / ADR-0002）：匿名 `POST /api/sessions` 入口已移除，
+本脚本依赖的建会话步骤不存在，待 #21 学生游玩 API 落地后重写。
+
 对运行中的后端完整演示：创建会话 → 导入课文 → 生成剧本 → WS 选角 →
 命令推进 → 回溯 → 重连恢复（session_init 重建 + resync 补发）。
 
@@ -62,7 +65,15 @@ async def main() -> int:
 
     async with httpx.AsyncClient(base_url=base, timeout=60) as http:
         _step("1. 创建会话")
-        sid = (await http.post("/api/sessions")).json()["session_id"]
+        created = await http.post("/api/sessions")
+        if created.status_code == 404:
+            print(
+                "匿名 POST /api/sessions 已随 ADR-0002/#17 移除；"
+                "演示脚本待 #21 学生游玩 API 落地后重写。",
+                file=sys.stderr,
+            )
+            return 1
+        sid = created.json()["session_id"]
         print(f"session_id = {sid}")
 
         _step("2. 导入课文（真实 ingestion + 原文分析）")

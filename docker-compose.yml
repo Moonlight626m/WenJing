@@ -35,6 +35,8 @@ services:
       WENJING_RUN_MIGRATIONS: "1"
       WENJING_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wenjing}:${POSTGRES_PASSWORD:-wenjing}@db:5432/${POSTGRES_DB:-wenjing}
       WENJING_CORS_ORIGINS: ${WENJING_CORS_ORIGINS:-http://localhost}
+      # 走 HTTPS 时置 1，Cookie 加 Secure；纯 HTTP 部署保持 0
+      WENJING_AUTH_COOKIE_SECURE: ${WENJING_AUTH_COOKIE_SECURE:-0}
       WENJING_LLM_PROVIDER: ${WENJING_LLM_PROVIDER:-openai}
       WENJING_LLM_MODEL: ${WENJING_LLM_MODEL:-gpt-4o-mini}
       WENJING_LLM_API_KEY: ${WENJING_LLM_API_KEY:-}

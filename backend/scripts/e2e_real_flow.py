@@ -81,7 +81,15 @@ async def main() -> int:
     sid = ""
     async with httpx.AsyncClient(base_url=base, timeout=CMD_TIMEOUT) as http:
         _step("1. 创建会话 + 导入课文（真实 ingestion + 原文分析）")
-        sid = (await http.post("/api/sessions")).json()["session_id"]
+        created = await http.post("/api/sessions")
+        if created.status_code == 404:
+            print(
+                "匿名 POST /api/sessions 已随 ADR-0002/#17 移除；"
+                "本脚本待 #21 学生游玩 API 落地后重写。",
+                file=sys.stderr,
+            )
+            return 1
+        sid = created.json()["session_id"]
         resp = await http.post(
             f"/api/sessions/{sid}/material", json={"source": "paste", "raw_text": text}
         )

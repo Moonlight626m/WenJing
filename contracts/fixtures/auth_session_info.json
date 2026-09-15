@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "user": {
+    "schema_version": "1.0.0",
+    "id": "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+    "org_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
+    "role": "teacher",
+    "email": "teacher@wenjing.local",
+    "phone": null,
+    "nickname": "演示教师",
+    "created_at": "2026-09-15T08:00:00Z"
+  },
+  "csrf_token": "csrf-demo-token"
+}

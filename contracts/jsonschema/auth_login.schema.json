@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "登录：identifier 为注册时的邮箱或手机号。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "identifier": {
+      "maxLength": 254,
+      "minLength": 1,
+      "title": "Identifier",
+      "type": "string"
+    },
+    "password": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Password",
+      "type": "string"
+    }
+  },
+  "required": [
+    "identifier",
+    "password"
+  ],
+  "title": "LoginRequest",
+  "type": "object"
+}

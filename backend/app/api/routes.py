@@ -9,9 +9,9 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 
 import app.models  # noqa: F401  # 确保 ORM 元数据注册
+from app.api.errors import error_response as _error_response
 from app.config import get_settings
 from app.db.session import create_engine as create_db_engine
 from app.diagnostics.metrics import metrics
@@ -56,31 +56,6 @@ def get_application():
             model_name=settings.llm_model,
         )
     return _application
-
-
-def _error_response(exc: WJError) -> JSONResponse:
-    from app.diagnostics.errors import envelope_for
-
-    env = envelope_for(exc)
-    status_by_code = {
-        "SESSION_NOT_FOUND": 404,
-        "SESSION_CONFLICT": 409,
-        "SESSION_ENDED": 409,
-        "PROTOCOL_DUPLICATE_COMMAND": 409,
-        "INTERNAL_ERROR": 500,
-    }
-    status = status_by_code.get(env.code, 400 if not env.retryable else 503)
-    return JSONResponse(
-        status_code=status,
-        content={
-            "error_id": str(env.error_id),
-            "code": env.code,
-            "domain": env.domain.value,
-            "message": env.message,
-            "retryable": env.retryable,
-            "details": env.details,
-        },
-    )
 
 
 def _ensure_uuid(raw: str) -> uuid.UUID:
@@ -140,16 +115,6 @@ async def health_ready() -> Response:
 @router.get("/metrics")
 async def prometheus_metrics() -> Response:
     return Response(content=metrics.render(), media_type="text/plain")
-
-
-@router.post("/api/sessions")
-async def create_session() -> dict[str, Any]:
-    """创建游戏会话（#5）：写入真实 sessions 表。"""
-    try:
-        resp = await get_application().create_session()
-    except WJError as exc:
-        return _error_response(exc)
-    return resp.model_dump(mode="json")
 
 
 @router.get("/api/sessions/{session_id}")

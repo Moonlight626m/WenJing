@@ -1,0 +1,81 @@
+{
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "email": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "email"
+          ]
+        },
+        {
+          "properties": {
+            "phone": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "phone"
+          ]
+        }
+      ]
+    }
+  ],
+  "description": "注册：邮箱或手机号（至少其一）+ 密码 + 昵称。\n\n角色不在请求内决定：公开注册一律为 `student`，教师账号由 seed / 运营分配。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "email": {
+      "anyOf": [
+        {
+          "maxLength": 254,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Email"
+    },
+    "phone": {
+      "anyOf": [
+        {
+          "maxLength": 32,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Phone"
+    },
+    "password": {
+      "maxLength": 128,
+      "minLength": 8,
+      "title": "Password",
+      "type": "string"
+    },
+    "nickname": {
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Nickname",
+      "type": "string"
+    }
+  },
+  "required": [
+    "password",
+    "nickname"
+  ],
+  "title": "RegisterRequest",
+  "type": "object"
+}

@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+
+    # 账号会话（issue #17 / ADR-0002）。生产走 HTTPS 时应置 WENJING_AUTH_COOKIE_SECURE=1。
+    auth_cookie_secure: bool = False
+    auth_session_ttl_days: int = 14
+    auth_csrf_header: str = "X-CSRF-Token"
+
     llm_provider: str = "openai"
     llm_model: str = ""
     llm_api_key: str = ""

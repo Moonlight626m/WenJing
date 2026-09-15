@@ -9,6 +9,7 @@
         "llm",
         "game",
         "session",
+        "auth",
         "persistence",
         "protocol",
         "internal"

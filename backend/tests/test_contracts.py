@@ -16,6 +16,12 @@ from pathlib import Path
 import pytest
 
 from app.contracts import CONTRACTS_SCHEMA_VERSION
+from app.contracts.auth import (
+    AuthSessionInfo,
+    LoginRequest,
+    RegisterRequest,
+    UserPublic,
+)
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
@@ -45,6 +51,10 @@ def _load(name: str) -> dict:
 @pytest.mark.parametrize(
     ("fixture", "model"),
     [
+        ("auth_register", RegisterRequest),
+        ("auth_login", LoginRequest),
+        ("user_public", UserPublic),
+        ("auth_session_info", AuthSessionInfo),
         ("material_input", MaterialInput),
         ("material", Material),
         ("text_analysis", TextAnalysis),
@@ -136,6 +146,13 @@ def test_player_command_payload_model_resolution() -> None:
 def test_error_code_prefix_must_match_domain() -> None:
     with pytest.raises(Exception):
         ErrorEnvelope(code="GAME_NOT_ALLOWED", domain="session", message="x")
+
+
+def test_register_contract_requires_email_or_phone() -> None:
+    """#17 契约：RegisterRequest 的「email 或 phone 二选一」必须进入导出 schema。"""
+    schema = RegisterRequest.model_json_schema()
+    branches = schema["allOf"][0]["anyOf"]
+    assert {tuple(b["required"]) for b in branches} == {("email",), ("phone",)}
 
 
 def test_unknown_stable_code_falls_back_internal() -> None:

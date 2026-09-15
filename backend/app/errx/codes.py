@@ -57,6 +57,13 @@ PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分
 PER_INCOMPATIBLE_SCHEMA = 10002     # 持久化数据 schema 不兼容
 PER_CORRUPT_SNAPSHOT = 10003        # 快照损坏，无法作为重放基线
 
+# ===== 鉴权（AUTH，issue #17 / ADR-0002）=====
+AUTH_UNAUTHENTICATED = 11001        # 未登录 / 会话无效或过期
+AUTH_INVALID_CREDENTIALS = 11002    # 登录标识或密码错误
+AUTH_FORBIDDEN = 11003              # 已登录但无权限访问该资源
+AUTH_CSRF_FAILED = 11004            # 状态变更请求缺少/错误的 CSRF token
+AUTH_IDENTIFIER_TAKEN = 11005       # 邮箱或手机号已被注册
+
 
 def register_all() -> None:
     """注册全部错误码（应用启动时调用一次，幂等）。"""
@@ -139,3 +146,21 @@ def register_all() -> None:
     register(PER_WRITE_FAILED, "persistence write failed: {op}")
     register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")
     register(PER_CORRUPT_SNAPSHOT, "corrupt snapshot: {reason}")
+
+    register(AUTH_UNAUTHENTICATED, "authentication required", is_affect_stability=False)
+    register(
+        AUTH_INVALID_CREDENTIALS,
+        "invalid credentials for {identifier}",
+        is_affect_stability=False,
+    )
+    register(AUTH_FORBIDDEN, "forbidden: {reason}", is_affect_stability=False)
+    register(
+        AUTH_CSRF_FAILED,
+        "csrf token missing or invalid",
+        is_affect_stability=False,
+    )
+    register(
+        AUTH_IDENTIFIER_TAKEN,
+        "identifier already registered: {identifier}",
+        is_affect_stability=False,
+    )

@@ -1,8 +1,13 @@
-"""core mvp persistence baseline
+"""new baseline: core persistence + multi-user accounts
+
+破坏式重建基线（issue #17 / ADR-0002）：旧匿名数据无保留价值，基线重设为
+账号体系（orgs/users/auth_sessions）+ 既有游戏持久化表。
 
 Sessions / Materials / Scripts / EventBranches / Events / Snapshots / Commands.
 events: (branch_id, sequence) unique; causation/correlation/schema_version.
 sessions: active_branch_id + head_event_id + version (optimistic lock).
+accounts: orgs; users(org_id, role, email/phone unique, password_hash);
+          auth_sessions(user_id, token_hash unique, csrf_token, sliding expiry).
 
 Revision ID: 0001_initial
 Revises:
@@ -22,6 +27,54 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # ===== 账号体系（issue #17 / ADR-0002）=====
+    op.create_table(
+        "orgs",
+        sa.Column("id", pg.UUID(as_uuid=True), primary_key=True),
+        sa.Column("name", sa.Text(), nullable=False, unique=True),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
+    )
+
+    op.create_table(
+        "users",
+        sa.Column("id", pg.UUID(as_uuid=True), primary_key=True),
+        sa.Column("org_id", pg.UUID(as_uuid=True), sa.ForeignKey("orgs.id"), nullable=False),
+        sa.Column("role", sa.String(16), nullable=False, server_default="student"),
+        sa.Column("email", sa.String(254), nullable=True, unique=True),
+        sa.Column("phone", sa.String(32), nullable=True, unique=True),
+        sa.Column("nickname", sa.Text(), nullable=False),
+        sa.Column("password_hash", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
+    )
+    op.create_index("idx_users_org", "users", ["org_id"])
+
+    op.create_table(
+        "auth_sessions",
+        sa.Column("id", pg.UUID(as_uuid=True), primary_key=True),
+        sa.Column(
+            "user_id", pg.UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False
+        ),
+        sa.Column("token_hash", sa.String(64), nullable=False, unique=True),
+        sa.Column("csrf_token", sa.Text(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
+        sa.Column(
+            "last_seen_at", sa.DateTime(timezone=True), server_default=sa.func.now()
+        ),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_index("idx_auth_sessions_user", "auth_sessions", ["user_id"])
+
+    # ===== 游戏持久化 =====
     op.create_table(
         "sessions",
         sa.Column("id", pg.UUID(as_uuid=True), primary_key=True),
@@ -170,3 +223,8 @@ def downgrade() -> None:
     op.drop_table("materials")
     op.drop_index("idx_sessions_active_branch", table_name="sessions")
     op.drop_table("sessions")
+    op.drop_index("idx_auth_sessions_user", table_name="auth_sessions")
+    op.drop_table("auth_sessions")
+    op.drop_index("idx_users_org", table_name="users")
+    op.drop_table("users")
+    op.drop_table("orgs")

@@ -68,6 +68,12 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "SESSION_NOT_FOUND": (ErrorDomain.SESSION, False),
     "SESSION_ENDED": (ErrorDomain.SESSION, False),
     "SESSION_CONFLICT": (ErrorDomain.SESSION, True),
+    # auth
+    "AUTH_UNAUTHENTICATED": (ErrorDomain.AUTH, False),
+    "AUTH_INVALID_CREDENTIALS": (ErrorDomain.AUTH, False),
+    "AUTH_FORBIDDEN": (ErrorDomain.AUTH, False),
+    "AUTH_CSRF_FAILED": (ErrorDomain.AUTH, False),
+    "AUTH_IDENTIFIER_TAKEN": (ErrorDomain.AUTH, False),
     # persistence
     "PERSISTENCE_WRITE_FAILED": (ErrorDomain.PERSISTENCE, True),
     "PERSISTENCE_INCOMPATIBLE_SCHEMA": (ErrorDomain.PERSISTENCE, False),

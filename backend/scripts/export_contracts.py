@@ -9,6 +9,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.contracts.auth import (
+    AuthSessionInfo,
+    LoginRequest,
+    RegisterRequest,
+    UserPublic,
+)
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import ServerMessage
@@ -21,6 +27,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "contracts" / "jsonschema"
 
 EXPORTS: dict[str, type] = {
+    "auth_register": RegisterRequest,
+    "auth_login": LoginRequest,
+    "user_public": UserPublic,
+    "auth_session_info": AuthSessionInfo,
     "material_input": MaterialInput,
     "material": Material,
     "text_analysis": TextAnalysis,

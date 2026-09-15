@@ -5,17 +5,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
+from app.models._time import utcnow
 
 
 class Material(Base):
@@ -31,5 +28,5 @@ class Material(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     collection_output: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+        DateTime(timezone=True), default=utcnow
     )

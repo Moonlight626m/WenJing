@@ -5,18 +5,15 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.session import Base
+from app.models._time import utcnow
 from app.models.event import EVENTS_SCHEMA_VERSION
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 class Snapshot(Base):
@@ -43,5 +40,5 @@ class Snapshot(Base):
         Text, default=EVENTS_SCHEMA_VERSION
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+        DateTime(timezone=True), default=utcnow
     )

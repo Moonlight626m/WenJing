@@ -46,6 +46,11 @@ _CODE_MAP: dict[int, str] = {
     codes.PER_WRITE_FAILED: "PERSISTENCE_WRITE_FAILED",
     codes.PER_INCOMPATIBLE_SCHEMA: "PERSISTENCE_INCOMPATIBLE_SCHEMA",
     codes.PER_CORRUPT_SNAPSHOT: "PERSISTENCE_CORRUPT_SNAPSHOT",
+    codes.AUTH_UNAUTHENTICATED: "AUTH_UNAUTHENTICATED",
+    codes.AUTH_INVALID_CREDENTIALS: "AUTH_INVALID_CREDENTIALS",
+    codes.AUTH_FORBIDDEN: "AUTH_FORBIDDEN",
+    codes.AUTH_CSRF_FAILED: "AUTH_CSRF_FAILED",
+    codes.AUTH_IDENTIFIER_TAKEN: "AUTH_IDENTIFIER_TAKEN",
 }
 
 _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
@@ -55,8 +60,9 @@ _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
     "4": ErrorDomain.LLM,       # LLM
     "6": ErrorDomain.CONTENT,   # CNT
     "7": ErrorDomain.INPUT,     # INP
-    "8": ErrorDomain.SEARCH,    # SEARCH
+    "8": ErrorDomain.SEARCH,     # SEARCH
     "9": ErrorDomain.PROTOCOL,  # PRT
+    "11": ErrorDomain.AUTH,     # AUTH
 }
 
 
@@ -95,6 +101,11 @@ def safe_message(err: Any) -> str:
         codes.PER_WRITE_FAILED: "数据保存失败，请稍后重试。",
         codes.PER_INCOMPATIBLE_SCHEMA: "会话数据版本不兼容，无法恢复。",
         codes.PER_CORRUPT_SNAPSHOT: "存档数据损坏，正在尝试重建。",
+        codes.AUTH_UNAUTHENTICATED: "请先登录。",
+        codes.AUTH_INVALID_CREDENTIALS: "账号或密码错误。",
+        codes.AUTH_FORBIDDEN: "没有权限执行该操作。",
+        codes.AUTH_CSRF_FAILED: "请求校验失败，请刷新页面后重试。",
+        codes.AUTH_IDENTIFIER_TAKEN: "该邮箱或手机号已被注册。",
     }.get(mapped)
     if base:
         return base

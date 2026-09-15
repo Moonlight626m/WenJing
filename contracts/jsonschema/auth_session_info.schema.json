@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "UserPublic": {
+      "additionalProperties": false,
+      "description": "当前用户对外投影（绝不包含 password_hash）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Email"
+        },
+        "phone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phone"
+        },
+        "nickname": {
+          "title": "Nickname",
+          "type": "string"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        }
+      },
+      "required": [
+        "id",
+        "org_id",
+        "role",
+        "nickname"
+      ],
+      "title": "UserPublic",
+      "type": "object"
+    },
+    "UserRole": {
+      "description": "账号角色（ADR-0002）：平台超管 / 教师 / 学生。",
+      "enum": [
+        "super_admin",
+        "teacher",
+        "student"
+      ],
+      "title": "UserRole",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "登录/注册响应：用户 + CSRF token（会话 token 只走 HttpOnly Cookie）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "user": {
+      "$ref": "#/$defs/UserPublic"
+    },
+    "csrf_token": {
+      "title": "Csrf Token",
+      "type": "string"
+    }
+  },
+  "required": [
+    "user",
+    "csrf_token"
+  ],
+  "title": "AuthSessionInfo",
+  "type": "object"
+}

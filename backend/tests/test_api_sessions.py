@@ -1,20 +1,27 @@
 """会话 REST + WS 端到端集成测试（issue #5，真实 PG + fake adapters）。
 
-覆盖验收：创建/状态/导入/生成 REST 流程；WS session_init 重建、命令提交、
+覆盖验收：状态/导入/生成 REST 流程；WS session_init 重建、命令提交、
 confirm/resync 补发；错误 envelope（不存在会话 404）。
 依赖真实 PostgreSQL；不可用时 skip。
+
+注（issue #17）：匿名 `POST /api/sessions` 入口已随 ADR-0002 移除，本测试改为
+在应用层/DB 直接建 session（新入口由 #21 的学生游玩 API 提供）。
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import app.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.main import create_app
+from app.models.session import Session as SessionRecord
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -51,7 +58,6 @@ def client():
         pytest.skip("PostgreSQL 未可用，跳过会话 API 集成测试")
     # PG 可用：清场（迁移测试可能残留），再建表
 
-    import app.models  # noqa: F401
 
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
 
@@ -80,13 +86,29 @@ def _material_body() -> dict:
     return {"source": "paste", "raw_text": _MATERIAL_TEXT}
 
 
+async def _insert_session() -> str:
+    """应用层建 session：匿名入口移除后，测试直接写 sessions 表。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    sid = uuid.uuid4()
+    try:
+        async with factory() as s:
+            s.add(SessionRecord(id=sid))
+            await s.commit()
+    finally:
+        await engine.dispose()
+    return str(sid)
+
+
+def _create_session() -> str:
+    return asyncio.run(_insert_session())
+
+
 # ===== REST =====
 
 
 def test_rest_full_flow(client):
-    created = client.post("/api/sessions")
-    assert created.status_code == 200
-    sid = created.json()["session_id"]
+    sid = _create_session()
     assert sid
 
     status = client.get(f"/api/sessions/{sid}")
@@ -126,7 +148,7 @@ def test_rest_error_envelopes(client):
 
 
 def _full_setup(client) -> tuple[str, str]:
-    sid = client.post("/api/sessions").json()["session_id"]
+    sid = _create_session()
     client.post(f"/api/sessions/{sid}/material", json=_material_body())
     pkg = client.post(f"/api/sessions/{sid}/generate").json()
     role = pkg["playable_roles"][0]

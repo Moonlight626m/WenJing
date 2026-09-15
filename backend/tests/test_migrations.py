@@ -27,6 +27,9 @@ _DB_URL = os.environ.get(
 )
 
 _BASELINE_TABLES = {
+    "orgs",
+    "users",
+    "auth_sessions",
     "sessions",
     "materials",
     "scripts",
@@ -141,6 +144,37 @@ async def test_commands_table_columns(migrated: Config):
             )
             cols = {r[0] for r in rows}
         assert {"command_id", "payload", "status", "result_event_id"} <= cols
+    finally:
+        await engine.dispose()
+
+
+async def test_accounts_schema_columns(migrated: Config):
+    """账号表（ADR-0002）纳入基线：users 唯一标识、auth_sessions 可撤销/过期字段。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            user_cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'users'"
+                    )
+                )
+            }
+            session_cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'auth_sessions'"
+                    )
+                )
+            }
+        assert {"org_id", "role", "email", "phone", "password_hash"} <= user_cols
+        assert {"user_id", "token_hash", "csrf_token", "expires_at", "revoked_at"} <= (
+            session_cols
+        )
     finally:
         await engine.dispose()
 

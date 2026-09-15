@@ -1,11 +1,12 @@
 /**
  * 核心流程浏览器端到端（issue #12）。
  *
- * 前置：后端运行在 :8000（快速模式 `WENJING_LLM_API_KEY= uv run uvicorn ...`），
- * 前端 dev server 运行在 :3000（`npm run dev`）。
+ * ⚠️ 已 skip（issue #17）：匿名 `POST /api/sessions` 入口随 ADR-0002 移除，
+ * 本用例依赖的「首页开始新游戏」路径尚不存在。教师/学生端新流程落地后
+ * 由 #24 重写本用例并取消 skip。
  *
- * 覆盖：创建会话 → 导入课文（粘贴）→ 生成剧本 → 选角 → 游戏页消息流 +
- * 选项推进 → 回溯 → 刷新恢复（session_init 重建 + resync 补发）。
+ * 前置（重写后）：后端 :8000（`WENJING_LLM_API_KEY= uv run uvicorn ...`），
+ * 前端 dev server :3000（`npm run dev`）。
  */
 import { expect, test } from "@playwright/test";
 
@@ -14,7 +15,7 @@ const SAMPLE_TEXT =
   "我回头看见她站在门口，眼泪流了下来。我守在母亲的床边，一夜没合眼。" +
   "天亮时，她握住我的手说：去吧。路上雪很大，我走得很慢。";
 
-test("核心流程：创建 → 导入 → 生成 → 选角 → 游戏 → 回溯 → 刷新恢复", async ({
+test.skip("核心流程：创建 → 导入 → 生成 → 选角 → 游戏 → 回溯 → 刷新恢复", async ({
   page,
 }) => {
   // 1. 首页创建会话

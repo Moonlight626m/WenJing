@@ -69,9 +69,45 @@ export type ErrorDomain =
   | "llm"
   | "game"
   | "session"
+  | "auth"
   | "persistence"
   | "protocol"
   | "internal";
+
+// ===== 账号（issue #17 / ADR-0002）=====
+
+export type UserRole = "super_admin" | "teacher" | "student";
+
+export interface RegisterRequest {
+  schema_version: string;
+  email: string | null;
+  phone: string | null;
+  password: string;
+  nickname: string;
+}
+
+export interface LoginRequest {
+  schema_version: string;
+  identifier: string;
+  password: string;
+}
+
+export interface UserPublic {
+  schema_version: string;
+  id: string;
+  org_id: string;
+  role: UserRole;
+  email: string | null;
+  phone: string | null;
+  nickname: string;
+  created_at: string | null;
+}
+
+export interface AuthSessionInfo {
+  schema_version: string;
+  user: UserPublic;
+  csrf_token: string;
+}
 
 // ===== 材料与证据 =====
 

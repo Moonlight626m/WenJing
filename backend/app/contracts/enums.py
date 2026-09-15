@@ -95,9 +95,18 @@ class ErrorDomain(StrEnum):
     LLM = "llm"
     GAME = "game"
     SESSION = "session"
+    AUTH = "auth"
     PERSISTENCE = "persistence"
     PROTOCOL = "protocol"
     INTERNAL = "internal"
+
+
+class UserRole(StrEnum):
+    """账号角色（ADR-0002）：平台超管 / 教师 / 学生。"""
+
+    SUPER_ADMIN = "super_admin"
+    TEACHER = "teacher"
+    STUDENT = "student"
 
 
 class MessageCategory(StrEnum):

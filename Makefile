@@ -2,15 +2,17 @@ PY := uv run
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install db-up db-down dev dev-stop dev-status dev-backend dev-frontend test lint build \
-	build-backend build-frontend up down logs migrate demo e2e
+.PHONY: help install db-up db-down db-reset dev dev-stop dev-status dev-backend dev-frontend test lint build \
+	build-backend build-frontend up down logs migrate seed demo e2e
 
 help:
 	@echo "文境 (Wenjing) 常用命令："
 	@echo "  make install        安装 backend (uv) 与 frontend (npm) 依赖"
 	@echo "  make db-up          启动本地 PostgreSQL (docker compose)"
 	@echo "  make db-down        停止本地 PostgreSQL"
+	@echo "  make db-reset       破坏式重建：删库卷 → 起库 → 迁移 → seed（旧数据不可恢复）"
 	@echo "  make migrate        运行 Alembic 迁移 (backend)"
+	@echo "  make seed           写入默认 org 与测试账号（幂等）"
 	@echo "  make dev            一键启动 db+backend+frontend（后台，日志 .run/logs）"
 	@echo "  make dev-stop       停止 make dev 启动的服务"
 	@echo "  make dev-status     查看本地服务状态"
@@ -37,8 +39,18 @@ db-up:
 db-down:
 	docker compose down
 
+# 破坏式重建（ADR-0002）：旧匿名数据无保留价值。会删除 pgdata 卷。
+db-reset:
+	docker compose down -v
+	docker compose up -d --wait db
+	cd $(BACKEND) && $(PY) alembic upgrade head
+	cd $(BACKEND) && $(PY) python -m app.auth.seed
+
 migrate:
 	cd $(BACKEND) && $(PY) alembic upgrade head
+
+seed:
+	cd $(BACKEND) && $(PY) python -m app.auth.seed
 
 dev:
 	./scripts/dev.sh start

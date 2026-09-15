@@ -70,7 +70,13 @@ make install     # 安装 backend (uv sync) 与 frontend (npm install) 依赖
 make db-up       # 启动本地 PostgreSQL (docker compose)
 cp backend/.env.example backend/.env   # 配置环境变量，按需修改
 make migrate     # 运行 Alembic 迁移，初始化数据库表
+make seed        # 写入默认 org「文境演示学校」与 super_admin/教师/学生测试账号
 ```
+
+> 账号基线为破坏式重建（ADR-0002）：旧匿名数据不再兼容。若本地库是旧 schema，
+> 用 `make db-reset`（删卷 → 起库 → 迁移 → seed，**数据不可恢复**）。
+> seed 账号：`admin@wenjing.local` / `teacher@wenjing.local` / `student@wenjing.local`，
+> 密码默认 `wenjing123`（可用 `WENJING_SEED_PASSWORD` 覆盖）。
 
 ## 运行
 
@@ -102,6 +108,8 @@ make dev-frontend   # frontend: http://localhost:3000 (next dev)
 | `make build` | frontend 生产构建 |
 | `make build-backend` / `make build-frontend` | 构建生产镜像 |
 | `make up` / `make down` / `make logs` | 启动/停止/查看完整生产栈 |
+| `make seed` | 写入默认 org 与测试账号（幂等） |
+| `make db-reset` | 破坏式重建本地库（删卷 → 迁移 → seed） |
 | `make e2e` | 浏览器端到端测试（Playwright） |
 | `make db-down` | 停止本地 PG |
 
@@ -128,6 +136,8 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 
 ## 当前状态
 
-核心 MVP 已完成（issue #2–#12）：契约、诊断基建、持久化、GameRuntime command/step、
-导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成与前端全流程。
-剩余：#13 生产化加固（已补故障注入与可恢复性）、#14 Gold Set 内容质量门禁。
+核心 MVP 已完成（issue #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
+导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
+前端全流程与生产化加固。多用户化（ADR-0002 / #16）进行中：账号后端 #17 已落地
+（`orgs`/`users`/`auth_sessions`、注册/登录/登出/CSRF/Cookie 会话、seed），
+后续见 #18–#26。剩余内容质量门禁 #14。

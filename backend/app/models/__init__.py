@@ -6,13 +6,16 @@
 
 from __future__ import annotations
 
+from app.models.auth_session import AuthSession
 from app.models.command import CommandRecord, CommandStatus
 from app.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
 from app.models.event_branch import EventBranchRecord
 from app.models.material import Material
+from app.models.org import Org
 from app.models.script import Script
 from app.models.session import Session
 from app.models.snapshot import Snapshot
+from app.models.user import User
 
 __all__ = [
     "Session",
@@ -24,6 +27,9 @@ __all__ = [
     "CommandRecord",
     "CommandStatus",
     "Snapshot",
+    "Org",
+    "User",
+    "AuthSession",
 ]
 
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
@@ -35,4 +41,7 @@ _ = (
     GameEventRecord,
     CommandRecord,
     Snapshot,
+    Org,
+    User,
+    AuthSession,
 )

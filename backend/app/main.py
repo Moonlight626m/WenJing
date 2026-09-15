@@ -2,11 +2,15 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+from app.api.auth import router as auth_router
+from app.api.errors import error_response
 from app.api.routes import router
 from app.config import get_settings
+from app.errx import Error as WJError
 
 
 @asynccontextmanager
@@ -28,6 +32,11 @@ def create_app() -> FastAPI:
         expose_headers=["X-Request-ID"],
     )
     app.include_router(router)
+    app.include_router(auth_router)
+
+    @app.exception_handler(WJError)
+    async def _wj_error_handler(request: Request, exc: WJError) -> JSONResponse:
+        return error_response(exc)
 
     @app.middleware("http")
     async def correlation_and_metrics(request, call_next):  # type: ignore[no-untyped-def]
