@@ -6,6 +6,7 @@ confirm/resync 补发；错误 envelope（不存在会话 404）。
 
 注（issue #17）：匿名 `POST /api/sessions` 入口已随 ADR-0002 移除，本测试改为
 在应用层/DB 直接建 session（新入口由 #21 的学生游玩 API 提供）。
+注（issue #18）：业务端点要求登录 + 状态变更 CSRF；WS 握手校验会话 Cookie。
 """
 
 from __future__ import annotations
@@ -32,6 +33,14 @@ _MATERIAL_TEXT = (
     "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
 )
 
+_REGISTER = {
+    "schema_version": "1.0.0",
+    "email": "sessions@wenjing.local",
+    "phone": None,
+    "password": "supersecret1",
+    "nickname": "会话测试",
+}
+
 
 @pytest.fixture(scope="module")
 def anyio_backend():
@@ -52,13 +61,9 @@ async def _db_available() -> bool:
 
 @pytest.fixture(scope="module")
 def client():
-    import asyncio
-
     if not asyncio.run(_db_available()):
         pytest.skip("PostgreSQL 未可用，跳过会话 API 集成测试")
     # PG 可用：清场（迁移测试可能残留），再建表
-
-
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
 
     from conftest import drop_baseline_schema, reset_baseline_schema
@@ -76,50 +81,79 @@ def client():
     app = create_app()
     try:
         with TestClient(app) as c:
+            # 业务端点要求登录（#18）：注册拥有者并保持 Cookie。
+            resp = c.post("/api/auth/register", json=_REGISTER)
+            assert resp.status_code == 201, resp.text
             yield c
     finally:
         asyncio.run(_teardown())
         asyncio.run(engine.dispose())
 
 
+def _csrf(client: TestClient) -> dict[str, str]:
+    return {"X-CSRF-Token": client.cookies.get("wenjing_csrf")}
+
+
 def _material_body() -> dict:
     return {"source": "paste", "raw_text": _MATERIAL_TEXT}
 
 
-async def _insert_session() -> str:
-    """应用层建 session：匿名入口移除后，测试直接写 sessions 表。"""
+def _scalar(sql: str, **params):
+    async def _run():
+        engine = create_async_engine(
+            _DB_URL, pool_timeout=5, connect_args={"timeout": 5}
+        )
+        try:
+            async with engine.connect() as conn:
+                return (await conn.execute(text(sql), params)).scalar()
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_run())
+
+
+async def _insert_session(owner_user_id: str, org_id: str) -> str:
+    """应用层建 session：匿名入口移除后，测试直接写 sessions 表（带归属）。"""
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     sid = uuid.uuid4()
     try:
         async with factory() as s:
-            s.add(SessionRecord(id=sid))
+            s.add(
+                SessionRecord(
+                    id=sid,
+                    org_id=uuid.UUID(org_id),
+                    owner_user_id=uuid.UUID(owner_user_id),
+                )
+            )
             await s.commit()
     finally:
         await engine.dispose()
     return str(sid)
 
 
-def _create_session() -> str:
-    return asyncio.run(_insert_session())
+def _create_session(client: TestClient) -> str:
+    me = client.get("/api/auth/me").json()
+    return asyncio.run(_insert_session(me["id"], me["org_id"]))
 
 
 # ===== REST =====
 
 
 def test_rest_full_flow(client):
-    sid = _create_session()
-    assert sid
+    sid = _create_session(client)
 
     status = client.get(f"/api/sessions/{sid}")
     assert status.status_code == 200
     assert status.json()["stage"] == "init"
 
-    analysis = client.post(f"/api/sessions/{sid}/material", json=_material_body())
+    analysis = client.post(
+        f"/api/sessions/{sid}/material", json=_material_body(), headers=_csrf(client)
+    )
     assert analysis.status_code == 200
     assert analysis.json()["characters"], "叙事样例应提取出人物"
 
-    pkg = client.post(f"/api/sessions/{sid}/generate")
+    pkg = client.post(f"/api/sessions/{sid}/generate", headers=_csrf(client))
     assert pkg.status_code == 200, pkg.text
     body = pkg.json()
     assert body["characters"] and body["scenes"]
@@ -128,6 +162,23 @@ def test_rest_full_flow(client):
     status = client.get(f"/api/sessions/{sid}")
     assert status.json()["stage"] == "stage1_complete"
     assert status.json()["generation"]["status"] == "succeeded"
+
+    # 归属写入（#18）：materials/scripts/sessions 均带上创建者的 owner/org。
+    me = client.get("/api/auth/me").json()
+    assert (
+        _scalar("select owner_user_id::text from materials order by id desc limit 1")
+        == me["id"]
+    )
+    assert (
+        _scalar("select owner_user_id::text from scripts order by id desc limit 1")
+        == me["id"]
+    )
+    assert (
+        _scalar(
+            "select org_id::text from sessions where id = :sid", sid=uuid.UUID(sid)
+        )
+        == me["org_id"]
+    )
 
 
 def test_rest_error_envelopes(client):
@@ -148,9 +199,11 @@ def test_rest_error_envelopes(client):
 
 
 def _full_setup(client) -> tuple[str, str]:
-    sid = _create_session()
-    client.post(f"/api/sessions/{sid}/material", json=_material_body())
-    pkg = client.post(f"/api/sessions/{sid}/generate").json()
+    sid = _create_session(client)
+    client.post(
+        f"/api/sessions/{sid}/material", json=_material_body(), headers=_csrf(client)
+    )
+    pkg = client.post(f"/api/sessions/{sid}/generate", headers=_csrf(client)).json()
     role = pkg["playable_roles"][0]
     return sid, role
 

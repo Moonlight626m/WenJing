@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Text
@@ -24,6 +25,13 @@ class Material(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False
+    )
+    # 归属（ADR-0002）：素材独立归属 owner/org（同一素材可生成多个剧本）
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id"), nullable=False, index=True
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
     raw_text: Mapped[str] = mapped_column(Text)
     collection_output: Mapped[dict] = mapped_column(JSONB, default=dict)

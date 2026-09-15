@@ -23,6 +23,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.access import Actor, require_session_access
 from app.agents.llm_service import LLMService
 from app.content.pipeline import ContentPipeline
 from app.contracts.commands import CommandKind, PlayerCommand
@@ -90,12 +91,26 @@ class SessionApplication:
 
     # ===== 创建 =====
 
-    async def create_session(self) -> CreateSessionResponse:
+    async def create_session(
+        self, *, org_id: uuid.UUID, owner_user_id: uuid.UUID
+    ) -> CreateSessionResponse:
+        """新建「剧情世界」，归属创建者（owner/org 由调用方从 Principal 带来）。"""
         sid = uuid.uuid4()
         async with self._factory() as s:
-            s.add(SessionRecord(id=sid))
+            s.add(SessionRecord(id=sid, org_id=org_id, owner_user_id=owner_user_id))
             await s.commit()
         return CreateSessionResponse(session_id=sid, created_at=datetime.now(UTC))
+
+    async def _access_session(
+        self, session_id: uuid.UUID, actor: Actor
+    ) -> SessionRecord:
+        """加载会话并校验访问权：不存在 404，非 owner 403。"""
+        async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+        if sess is None:
+            raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
+        require_session_access(actor, sess)
+        return sess
 
     # ===== 材料导入（真实 ingestion）=====
 
@@ -104,14 +119,18 @@ class SessionApplication:
         session_id: uuid.UUID,
         inp: MaterialInput,
         *,
+        actor: Actor,
         raw_bytes: bytes | None = None,
     ) -> TextAnalysis:
+        # 先鉴权再处理：非 owner 不应触发 ingestion/RAG 等任何处理。
+        sess = await self._access_session(session_id, actor)
+        org_id, owner_user_id = sess.org_id, sess.owner_user_id
         analysis = self._pipeline.analyze(inp, raw_bytes=raw_bytes)
         async with self._factory() as s:
-            if await s.get(SessionRecord, session_id) is None:
-                raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
             row = MaterialRecord(
                 session_id=session_id,
+                org_id=org_id,
+                owner_user_id=owner_user_id,
                 raw_text=inp.raw_text,
                 collection_output=analysis.model_dump(mode="json"),
             )
@@ -137,7 +156,11 @@ class SessionApplication:
         web = await self._rag.research(query or analysis.genre.genre.value)
         return web, ("succeeded" if web else "degraded")
 
-    async def generate_script(self, session_id: uuid.UUID) -> ScriptPackage:
+    async def generate_script(
+        self, session_id: uuid.UUID, *, actor: Actor
+    ) -> ScriptPackage:
+        sess = await self._access_session(session_id, actor)
+        org_id, owner_user_id = sess.org_id, sess.owner_user_id
         analysis = await self._load_analysis(session_id)
         web, research_state = await self._research(analysis)
         self._generation[session_id] = self._progress(
@@ -174,6 +197,8 @@ class SessionApplication:
         async with self._factory() as s:
             row = ScriptRecord(
                 session_id=session_id,
+                org_id=org_id,
+                owner_user_id=owner_user_id,
                 title=package.title,
                 script_data=package.model_dump(mode="json"),
                 verification={
@@ -212,8 +237,9 @@ class SessionApplication:
     # ===== 命令受理（幂等 + 单事务持久化）=====
 
     async def submit_command(
-        self, session_id: uuid.UUID, command: PlayerCommand
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
     ) -> RuntimeUpdate:
+        await self._access_session(session_id, actor)
         runtime, store = await self._ensure_runtime(session_id)
 
         async with self._factory() as s:
@@ -356,11 +382,10 @@ class SessionApplication:
 
     # ===== 状态查询 =====
 
-    async def get_status(self, session_id: uuid.UUID) -> SessionStatusResponse:
-        async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id)
-            if sess is None:
-                raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
+    async def get_status(
+        self, session_id: uuid.UUID, *, actor: Actor
+    ) -> SessionStatusResponse:
+        sess = await self._access_session(session_id, actor)
         pkg = self._packages.get(session_id)
         if pkg is None:
             pkg = await self._load_package(session_id)
@@ -380,8 +405,9 @@ class SessionApplication:
 
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====
 
-    async def session_init(self, session_id: uuid.UUID) -> dict:
+    async def session_init(self, session_id: uuid.UUID, *, actor: Actor) -> dict:
         """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。"""
+        await self._access_session(session_id, actor)
         runtime, store = await self._ensure_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return {
@@ -399,8 +425,11 @@ class SessionApplication:
             "allowed_commands": [k.value for k in state.allowed_commands()],
         }
 
-    async def replay_after(self, session_id: uuid.UUID, after_seq: int) -> list[dict]:
+    async def replay_after(
+        self, session_id: uuid.UUID, after_seq: int, *, actor: Actor
+    ) -> list[dict]:
         """按 last_confirmed_seq 补发：从 DB 活动分支重建消息序列。"""
+        await self._access_session(session_id, actor)
         runtime, store = await self._ensure_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return project_messages(

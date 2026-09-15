@@ -59,9 +59,12 @@ async def factory():
 
         await reset_baseline_schema(conn)
     f = async_sessionmaker(engine, expire_on_commit=False)
+    from conftest import create_actor
+
+    actor = await create_actor(f, name="事务测试学校")
     # FK 安全顺序播种：分开提交，避免 ORM 无 relationship 时按类名字典序 flush
     async with f() as s:
-        s.add(Session(id=_SID))
+        s.add(Session(id=_SID, org_id=actor.org_id, owner_user_id=actor.user_id))
         await s.commit()
     async with f() as s:
         s.add(EventBranchRecord(id=main_branch_id(str(_SID)), session_id=_SID))

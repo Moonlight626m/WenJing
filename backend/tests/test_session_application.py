@@ -3,6 +3,8 @@
 覆盖：创建会话入库 → 真实 ingestion 导入 → fake 生成 → 命令受理（单事务持久化
 + 幂等）→ 回溯分支 → 进程重启恢复（restore_active_branch + 快照重放）。
 依赖真实 PostgreSQL；不可用时 skip。
+
+注（issue #18）：会话需归属，所有应用层调用显式携带 `actor`。
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
+from app.access import Actor
 from app.agents.fake_llm import DeterministicAgentLLM
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.material import MaterialInput, MaterialSource
@@ -67,6 +70,13 @@ async def factory():
         await engine.dispose()
 
 
+@pytest.fixture(scope="module")
+async def actor(factory) -> Actor:
+    from conftest import create_actor
+
+    return await create_actor(factory, name="应用测试学校")
+
+
 @pytest.fixture
 def app_svc(factory) -> SessionApplication:
     return SessionApplication(
@@ -78,30 +88,39 @@ def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> Play
     return PlayerCommand(session_id=sid, kind=kind, payload=payload or {})
 
 
-async def test_full_vertical_flow(app_svc: SessionApplication):
-    # 1. 创建会话（真实 sessions 表）
-    created = await app_svc.create_session()
-    sid = created.session_id
-    status = await app_svc.get_status(sid)
+async def _new_session(app_svc: SessionApplication, actor: Actor) -> uuid.UUID:
+    created = await app_svc.create_session(
+        org_id=actor.org_id, owner_user_id=actor.user_id
+    )
+    return created.session_id
+
+
+async def test_full_vertical_flow(app_svc: SessionApplication, actor: Actor):
+    # 1. 创建会话（真实 sessions 表，带归属）
+    sid = await _new_session(app_svc, actor)
+    status = await app_svc.get_status(sid, actor=actor)
     assert status.stage == "init"
 
     # 2. 导入材料（真实 ingestion + 原文分析）
     analysis = await app_svc.import_material(
         sid,
         MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
     assert analysis.characters, "叙事样例应提取出人物"
 
     # 3. 生成（fake-backed：确定性合成）
-    pkg = await app_svc.generate_script(sid)
+    pkg = await app_svc.generate_script(sid, actor=actor)
     assert pkg.characters and pkg.scenes
-    status = await app_svc.get_status(sid)
+    status = await app_svc.get_status(sid, actor=actor)
     assert status.stage == "stage1_complete"
     assert "我" in status.playable_roles or status.playable_roles
 
     # 4. 选角 → RuntimeUpdate 投影
     upd = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+        sid,
+        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
+        actor=actor,
     )
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.new_events
@@ -109,82 +128,101 @@ async def test_full_vertical_flow(app_svc: SessionApplication):
 
     # 5. 输入命令推进
     upd2 = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"})
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd2.new_events
 
     # 6. 会话行 head/version/active_branch 已推进
-    status = await app_svc.get_status(sid)
+    status = await app_svc.get_status(sid, actor=actor)
     assert status.head_sequence > 0
     assert status.selected_role == pkg.playable_roles[0]
 
 
-async def test_command_idempotent_via_commands_table(app_svc: SessionApplication):
-    created = await app_svc.create_session()
-    sid = created.session_id
+async def test_command_idempotent_via_commands_table(
+    app_svc: SessionApplication, actor: Actor
+):
+    sid = await _new_session(app_svc, actor)
     await app_svc.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
-    await app_svc.generate_script(sid)
+    await app_svc.generate_script(sid, actor=actor)
 
     cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"})
-    first = await app_svc.submit_command(sid, cmd)
+    first = await app_svc.submit_command(sid, cmd, actor=actor)
     events_after_first = len(first.new_events)
 
     # 同 command_id 重发：不重复执行、不产生新事件
-    second = await app_svc.submit_command(sid, cmd)
+    second = await app_svc.submit_command(sid, cmd, actor=actor)
     assert second.new_events == []
     assert second.state.stage == first.state.stage
     _ = events_after_first
 
 
-async def test_rollback_switches_branch_atomically(app_svc: SessionApplication):
-    created = await app_svc.create_session()
-    sid = created.session_id
+async def test_rollback_switches_branch_atomically(
+    app_svc: SessionApplication, actor: Actor
+):
+    sid = await _new_session(app_svc, actor)
     await app_svc.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
-    await app_svc.generate_script(sid)
-    await app_svc.submit_command(sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"}))
-    await app_svc.submit_command(sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}))
+    await app_svc.generate_script(sid, actor=actor)
+    await app_svc.submit_command(
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"}), actor=actor
+    )
+    await app_svc.submit_command(
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
+    )
 
     upd = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3})
+        sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3}), actor=actor
     )
     assert upd.new_events  # rollback 事件 + 重新推进
-    status = await app_svc.get_status(sid)
+    status = await app_svc.get_status(sid, actor=actor)
     assert status.head_sequence > 0
 
 
-async def test_restore_after_restart_replays_state(app_svc: SessionApplication):
-    created = await app_svc.create_session()
-    sid = created.session_id
+async def test_restore_after_restart_replays_state(
+    app_svc: SessionApplication, actor: Actor
+):
+    sid = await _new_session(app_svc, actor)
     await app_svc.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
-    await app_svc.generate_script(sid)
+    await app_svc.generate_script(sid, actor=actor)
     upd1 = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"})
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"}), actor=actor
     )
     stage_before = upd1.state.stage.value
 
     # 模拟进程重启：清空进程内运行时，命令触发 DB 重建
     app_svc._runtimes.clear()
     upd2 = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"})
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd2.state.stage.value == stage_before  # 从恢复点继续推进
     assert upd2.state.active_interaction is not None
     assert upd2.state.plot_context["player_role"] == "我"
 
 
-async def test_generate_without_material_fails_cleanly(app_svc: SessionApplication):
-    created = await app_svc.create_session()
+async def test_generate_without_material_fails_cleanly(
+    app_svc: SessionApplication, actor: Actor
+):
+    sid = await _new_session(app_svc, actor)
     with pytest.raises(WJError):
-        await app_svc.generate_script(created.session_id)
+        await app_svc.generate_script(sid, actor=actor)
 
 
-async def test_commands_on_unknown_session_rejected(app_svc: SessionApplication):
+async def test_commands_on_unknown_session_rejected(
+    app_svc: SessionApplication, actor: Actor
+):
     ghost = uuid.uuid4()
     with pytest.raises(WJError):
-        await app_svc.submit_command(ghost, _cmd(ghost, CommandKind.EXIT_GAME))
+        await app_svc.submit_command(
+            ghost, _cmd(ghost, CommandKind.EXIT_GAME), actor=actor
+        )

@@ -30,6 +30,36 @@ async def reset_baseline_schema(conn) -> None:
     await conn.run_sync(Base.metadata.create_all)
 
 
+async def create_actor(
+    factory, *, name: str = "测试学校", role: str = "teacher"
+):
+    """建一个 org + user 并返回其领域身份（#18 会话归属用）。"""
+    import uuid as _uuid
+
+    from app.access import Actor
+    from app.contracts.enums import UserRole
+    from app.models.org import Org
+    from app.models.user import User
+
+    async with factory() as s:
+        org = Org(name=f"{name}-{_uuid.uuid4().hex[:8]}")
+        s.add(org)
+        await s.flush()
+        uid = _uuid.uuid4()
+        user = User(
+            id=uid,
+            org_id=org.id,
+            role=role,
+            email=f"{uid}@test.local",
+            nickname="测试用户",
+            password_hash="unused",
+        )
+        s.add(user)
+        await s.flush()
+        await s.commit()
+        return Actor(user_id=user.id, org_id=org.id, role=UserRole(role))
+
+
 async def drop_baseline_schema(conn) -> None:
     """测试后清场：连同 alembic_version 一起移除，交还干净库。"""
     from sqlalchemy import text

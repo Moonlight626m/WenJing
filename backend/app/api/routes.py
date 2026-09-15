@@ -6,13 +6,15 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Response, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 
 import app.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.api.errors import error_response as _error_response
+from app.auth.deps import Principal, get_principal, require_csrf, resolve_principal
 from app.config import get_settings
+from app.db.session import SessionLocal
 from app.db.session import create_engine as create_db_engine
 from app.diagnostics.metrics import metrics
 from app.errx import Error as WJError
@@ -118,24 +120,33 @@ async def prometheus_metrics() -> Response:
 
 
 @router.get("/api/sessions/{session_id}")
-async def session_status(session_id: str) -> dict[str, Any]:
+async def session_status(
+    session_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> dict[str, Any]:
     """会话状态查询（#5）：stage/分支/head/可扮演角色/生成进度。"""
     try:
-        resp = await get_application().get_status(_ensure_uuid(session_id))
+        resp = await get_application().get_status(
+            _ensure_uuid(session_id), actor=principal.actor
+        )
     except WJError as exc:
         return _error_response(exc)
     return resp.model_dump(mode="json")
 
 
 @router.post("/api/sessions/{session_id}/material")
-async def import_material(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+async def import_material(
+    session_id: str,
+    body: dict[str, Any],
+    principal: Annotated[Principal, Depends(require_csrf)],
+) -> dict[str, Any]:
     """导入课文材料（#5）：走真实 ingestion 校验 + 原文分析。"""
     from app.contracts.material import MaterialInput
 
     try:
         inp = MaterialInput.model_validate(body)
         analysis = await get_application().import_material(
-            _ensure_uuid(session_id), inp
+            _ensure_uuid(session_id), inp, actor=principal.actor
         )
     except WJError as exc:
         return _error_response(exc)
@@ -143,28 +154,57 @@ async def import_material(session_id: str, body: dict[str, Any]) -> dict[str, An
 
 
 @router.post("/api/sessions/{session_id}/generate")
-async def generate_script(session_id: str) -> dict[str, Any]:
+async def generate_script(
+    session_id: str,
+    principal: Annotated[Principal, Depends(require_csrf)],
+) -> dict[str, Any]:
     """Stage1 生成（#5 fake-backed）：产出合法 ScriptPackage。"""
     try:
-        pkg = await get_application().generate_script(_ensure_uuid(session_id))
+        pkg = await get_application().generate_script(
+            _ensure_uuid(session_id), actor=principal.actor
+        )
     except WJError as exc:
         return _error_response(exc)
     return pkg.model_dump(mode="json")
 
 
 @router.post("/api/sessions/{session_id}/commands")
-async def submit_command(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+async def submit_command(
+    session_id: str,
+    body: dict[str, Any],
+    principal: Annotated[Principal, Depends(require_csrf)],
+) -> dict[str, Any]:
     """提交 PlayerCommand（#5）：幂等 + 单事务持久化 → RuntimeUpdate 投影。"""
     from app.contracts.commands import PlayerCommand
 
     try:
         command = PlayerCommand.model_validate(body)
+        if str(command.session_id) != session_id:
+            raise new(
+                codes.PRT_MALFORMED_MESSAGE,
+                extra={"reason": "command.session_id mismatch"},
+            )
         update = await get_application().submit_command(
-            _ensure_uuid(session_id), command
+            _ensure_uuid(session_id), command, actor=principal.actor
         )
     except WJError as exc:
         return _error_response(exc)
     return update.model_dump(mode="json")
+
+
+def _origin_allowed(ws: WebSocket) -> bool:
+    """WS 握手 Origin 白名单校验（跨站 WS 的纵深防御）。
+
+    浏览器跨站发起的 WS 必带 Origin，不在 CORS 白名单即拒；无 Origin 的
+    非浏览器客户端放行（Cookie SameSite=Lax + 归属校验已是基线防护）。
+    """
+    origin = ws.headers.get("origin")
+    if not origin:
+        return True
+    allowed = {
+        o.strip() for o in get_settings().cors_origins.split(",") if o.strip()
+    }
+    return origin in allowed
 
 
 @router.websocket("/ws/{session_id}")
@@ -204,8 +244,15 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
 
     try:
         try:
+            if not _origin_allowed(ws):
+                raise new(
+                    codes.AUTH_FORBIDDEN, extra={"reason": "origin not allowed"}
+                )
+            async with SessionLocal() as db:
+                principal, _ = await resolve_principal(ws.cookies, db)
+            actor = principal.actor
             sid = _ensure_uuid(session_id)
-            init = await application.session_init(sid)
+            init = await application.session_init(sid, actor=actor)
         except WJError as exc:
             await _send_error(exc)
             await ws.close()
@@ -241,7 +288,9 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                     continue
                 try:
-                    update = await application.submit_command(sid, command)
+                    update = await application.submit_command(
+                        sid, command, actor=actor
+                    )
                 except WJError as exc:
                     await _send_error(exc)
                     continue
@@ -261,7 +310,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     m for m in outbox if m["seq"] > last and m["type"] != "session_init"
                 ]
                 if not replay:
-                    replay = await application.replay_after(sid, last)
+                    replay = await application.replay_after(sid, last, actor=actor)
                 for msg in replay:
                     await ws.send_json(msg)
     except (WebSocketDisconnect, RuntimeError):

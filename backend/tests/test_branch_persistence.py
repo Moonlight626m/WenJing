@@ -57,10 +57,13 @@ async def factory():
 
         await reset_baseline_schema(conn)
     f = async_sessionmaker(engine, expire_on_commit=False)
+    from conftest import create_actor
+
+    actor = await create_actor(f, name="分支测试学校")
     # FK 安全顺序播种：先 sessions，再 event_branches，再 events（避免 ORM 无
     # relationship 时按类名字典序 flush 造成父行未落库）
     async with f() as s:
-        s.add(Session(id=_SID))
+        s.add(Session(id=_SID, org_id=actor.org_id, owner_user_id=actor.user_id))
         await s.commit()
     async with f() as s:
         s.add(EventBranchRecord(id=_BRANCH_MAIN, session_id=_SID, root_sequence=0))

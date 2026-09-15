@@ -23,6 +23,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
+from app.access import Actor
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.content import (
     CharacterMention,
@@ -124,21 +125,30 @@ def _rich_analysis() -> TextAnalysis:
     )
 
 
-async def _prepared_app(factory, *, script_llm) -> tuple[SessionApplication, uuid.UUID]:
+async def _prepared_app(
+    factory, *, script_llm
+) -> tuple[SessionApplication, uuid.UUID, Actor]:
+    from conftest import create_actor
+
     from app.agents.fake_llm import DeterministicAgentLLM
 
+    actor = await create_actor(factory, name="韧性测试学校")
     svc = SessionApplication(
         session_factory=factory,
         agent_llm=DeterministicAgentLLM(),
         script_llm=script_llm,
     )
-    created = await svc.create_session()
+    created = await svc.create_session(
+        org_id=actor.org_id, owner_user_id=actor.user_id
+    )
     sid = created.session_id
     await svc.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
     svc._analyses[sid] = _rich_analysis()
-    return svc, sid
+    return svc, sid, actor
 
 
 async def _count(factory, model) -> int:
@@ -151,15 +161,15 @@ async def _count(factory, model) -> int:
 
 async def test_llm_timeout_is_retryable_and_leaves_no_partial_state(factory):
     llm = _RaisingLLM(new(codes.LLM_CALL_FAILED, extra={"reason": "timeout"}))
-    svc, sid = await _prepared_app(factory, script_llm=llm)
+    svc, sid, actor = await _prepared_app(factory, script_llm=llm)
 
     with pytest.raises(WJError) as excinfo:
-        await svc.generate_script(sid)
+        await svc.generate_script(sid, actor=actor)
     assert excinfo.value.code == codes.LLM_CALL_FAILED
 
     # 无部分状态：无剧本落库、阶段未推进、生成进度标记失败
     assert await _count(factory, ScriptRecord) == 0
-    status = await svc.get_status(sid)
+    status = await svc.get_status(sid, actor=actor)
     assert status.stage == "init"
     assert svc._generation[sid]["status"] == "failed"
 
@@ -170,10 +180,10 @@ async def test_llm_timeout_is_retryable_and_leaves_no_partial_state(factory):
 
 
 async def test_llm_invalid_output_retries_then_terminal(factory):
-    svc, sid = await _prepared_app(factory, script_llm=_GarbageLLM())
+    svc, sid, actor = await _prepared_app(factory, script_llm=_GarbageLLM())
 
     with pytest.raises(WJError) as excinfo:
-        await svc.generate_script(sid)
+        await svc.generate_script(sid, actor=actor)
     assert excinfo.value.code == codes.CNT_GENERATION_FAILED
     assert await _count(factory, ScriptRecord) == 0
 
@@ -182,8 +192,8 @@ async def test_llm_invalid_output_retries_then_terminal(factory):
 
 
 async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeypatch):
-    svc, sid = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid)
+    svc, sid, actor = await _prepared_app(factory, script_llm=None)
+    pkg = await svc.generate_script(sid, actor=actor)
     events_before = await _count(factory, GameEventRecord)
 
     original = PersistentEventStore.write_pending
@@ -195,7 +205,7 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeyp
 
     cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
     with pytest.raises(WJError) as excinfo:
-        await svc.submit_command(sid, cmd)
+        await svc.submit_command(sid, cmd, actor=actor)
     assert excinfo.value.code == codes.PER_WRITE_FAILED
     env = envelope_for(excinfo.value)
     assert env.code == "PERSISTENCE_WRITE_FAILED"
@@ -206,12 +216,12 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeyp
     assert sid not in svc._runtimes
     assert await _count(factory, CommandRecord) == 0
     assert await _count(factory, GameEventRecord) == events_before
-    status = await svc.get_status(sid)
+    status = await svc.get_status(sid, actor=actor)
     assert status.selected_role is None
 
     # 恢复 DB 后同 command_id 重试成功（从 DB 权威状态重建）
     monkeypatch.setattr(PersistentEventStore, "write_pending", original)
-    upd = await svc.submit_command(sid, cmd)
+    upd = await svc.submit_command(sid, cmd, actor=actor)
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.new_events
     assert await _count(factory, CommandRecord) == 1
@@ -221,10 +231,12 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeyp
 
 
 async def test_corrupt_snapshot_rebuilds_without_crash(factory):
-    svc, sid = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid)
+    svc, sid, actor = await _prepared_app(factory, script_llm=None)
+    pkg = await svc.generate_script(sid, actor=actor)
     await svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+        sid,
+        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
+        actor=actor,
     )
 
     async with factory() as s:
@@ -236,16 +248,18 @@ async def test_corrupt_snapshot_rebuilds_without_crash(factory):
         await s.commit()
 
     svc._runtimes.clear()
-    init = await svc.session_init(sid)
+    init = await svc.session_init(sid, actor=actor)
     assert init["stage"] == "stage2_reenacting"
     assert init["player_role"] == pkg.playable_roles[0]
 
 
 async def test_corrupt_snapshot_payload_rebuilds(factory):
-    svc, sid = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid)
+    svc, sid, actor = await _prepared_app(factory, script_llm=None)
+    pkg = await svc.generate_script(sid, actor=actor)
     await svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+        sid,
+        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
+        actor=actor,
     )
 
     async with factory() as s:
@@ -257,13 +271,13 @@ async def test_corrupt_snapshot_payload_rebuilds(factory):
         await s.commit()
 
     svc._runtimes.clear()
-    init = await svc.session_init(sid)
+    init = await svc.session_init(sid, actor=actor)
     assert init["stage"] == "stage2_reenacting"
 
 
 async def test_incompatible_script_schema_returns_clear_error(factory):
-    svc, sid = await _prepared_app(factory, script_llm=None)
-    await svc.generate_script(sid)
+    svc, sid, actor = await _prepared_app(factory, script_llm=None)
+    await svc.generate_script(sid, actor=actor)
 
     async with factory() as s:
         await s.execute(
@@ -275,7 +289,7 @@ async def test_incompatible_script_schema_returns_clear_error(factory):
 
     svc._runtimes.clear()
     with pytest.raises(WJError) as excinfo:
-        await svc.session_init(sid)
+        await svc.session_init(sid, actor=actor)
     assert excinfo.value.code == codes.PER_INCOMPATIBLE_SCHEMA
     assert envelope_for(excinfo.value).code == "PERSISTENCE_INCOMPATIBLE_SCHEMA"
 
@@ -284,16 +298,16 @@ async def test_incompatible_script_schema_returns_clear_error(factory):
 
 
 async def test_command_resend_no_duplicate_domain_events(factory):
-    svc, sid = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid)
+    svc, sid, actor = await _prepared_app(factory, script_llm=None)
+    pkg = await svc.generate_script(sid, actor=actor)
 
     before = await _count(factory, GameEventRecord)
     cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
-    first = await svc.submit_command(sid, cmd)
+    first = await svc.submit_command(sid, cmd, actor=actor)
     after_first = await _count(factory, GameEventRecord)
     assert after_first > before
 
-    second = await svc.submit_command(sid, cmd)
+    second = await svc.submit_command(sid, cmd, actor=actor)
     assert second.new_events == []
     assert await _count(factory, GameEventRecord) == after_first
     _ = first

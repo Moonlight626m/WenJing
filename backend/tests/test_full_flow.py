@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
+from app.access import Actor
 from app.agents.fake_llm import DeterministicAgentLLM
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.material import MaterialInput, MaterialSource
@@ -81,6 +82,14 @@ def _make_app(factory) -> SessionApplication:
     )
 
 
+@pytest.fixture(scope="module")
+async def actor(factory) -> Actor:
+    """会话归属所需的领域身份（#18）：一个 org + 一个教师账号。"""
+    from conftest import create_actor
+
+    return await create_actor(factory, name="全流程测试学校")
+
+
 def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> PlayerCommand:
     return PlayerCommand(session_id=sid, kind=kind, payload=payload or {})
 
@@ -95,6 +104,7 @@ async def _advance_until(
     app: SessionApplication,
     sid: uuid.UUID,
     *,
+    actor: Actor,
     kind: CommandKind = CommandKind.CHOOSE_OPTION,
     payload: dict | None = None,
     predicate,
@@ -102,7 +112,9 @@ async def _advance_until(
 ) -> dict:
     """重复提交选项直到交互点满足 predicate；返回满足时的 RuntimeUpdate.state。"""
     for _ in range(max_rounds):
-        upd = await app.submit_command(sid, _cmd(sid, kind, payload or {"option_id": "0"}))
+        upd = await app.submit_command(
+            sid, _cmd(sid, kind, payload or {"option_id": "0"}), actor=actor
+        )
         ix = upd.state.active_interaction
         if ix is not None and predicate(ix):
             return upd
@@ -111,19 +123,23 @@ async def _advance_until(
     raise AssertionError("推进超过上限仍未到达目标交互点")
 
 
-async def test_stage1_to_stage3_full_flow(factory):
+async def test_stage1_to_stage3_full_flow(factory, actor):
     app = _make_app(factory)
-    sid = (await app.create_session()).session_id
+    sid = (
+        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
+    ).session_id
 
     # 导入（真实 ContentPipeline）
     analysis = await app.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
     assert analysis.genre.is_supported and analysis.characters
 
     # 生成（确定性合成）+ 进度记录
-    pkg = await app.generate_script(sid)
-    status = await app.get_status(sid)
+    pkg = await app.generate_script(sid, actor=actor)
+    status = await app.get_status(sid, actor=actor)
     assert status.stage == "stage1_complete"
     assert status.generation is not None and status.generation.status == "succeeded"
     phases = {p.name: p.state for p in status.generation.phases}
@@ -131,7 +147,9 @@ async def test_stage1_to_stage3_full_flow(factory):
 
     # 选角 → Stage2（模式 A：options）
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+        sid,
+        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
+        actor=actor,
     )
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.state.active_interaction is not None
@@ -140,7 +158,7 @@ async def test_stage1_to_stage3_full_flow(factory):
 
     # Stage2 推进到课文结局确认点
     upd = await _advance_until(
-        app, sid, predicate=lambda ix: "结局" in ix.prompt
+        app, sid, actor=actor, predicate=lambda ix: "结局" in ix.prompt
     )
     assert upd.state.stage.value == "stage2_reenacting"
     option_labels = [o.label for o in upd.state.active_interaction.options]
@@ -148,17 +166,21 @@ async def test_stage1_to_stage3_full_flow(factory):
 
     # 选择续写 → stage2_complete → enter_stage3
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"})
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd.state.stage.value == "stage2_complete"
-    upd = await app.submit_command(sid, _cmd(sid, CommandKind.ENTER_STAGE3))
+    upd = await app.submit_command(
+        sid, _cmd(sid, CommandKind.ENTER_STAGE3), actor=actor
+    )
     assert upd.state.stage.value == "stage3_extending"
 
     # Stage3（模式 C：options_with_fallback）+ 自由输入（模式 B）
     assert upd.state.active_interaction is not None
     assert upd.state.active_interaction.mode.value == "options_with_fallback"
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.FREE_INPUT, {"text": "我想先去买药再回家"})
+        sid,
+        _cmd(sid, CommandKind.FREE_INPUT, {"text": "我想先去买药再回家"}),
+        actor=actor,
     )
     assert upd.state.stage.value == "stage3_extending"
 
@@ -167,7 +189,8 @@ async def test_stage1_to_stage3_full_flow(factory):
     before_events = len(store.active_events())
     before_branch = branch_uuid(sid, store.active_branch_id)
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3})
+        sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3}),
+        actor=actor,
     )
     store = await _active_store(app, sid)
     after_branch = branch_uuid(sid, store.active_branch_id)
@@ -182,7 +205,7 @@ async def test_stage1_to_stage3_full_flow(factory):
     # 重启恢复：全新应用实例从 DB 重建，随后命令继续可用
     revived = _make_app(factory)
     upd = await revived.submit_command(
-        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"})
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd.state.active_interaction is not None or upd.terminal
     assert upd.state.stage.value in {
@@ -192,11 +215,15 @@ async def test_stage1_to_stage3_full_flow(factory):
     }
 
     # 退出游戏（terminal）→ 终局后命令报错（envelope + error_id 可对账）
-    upd = await revived.submit_command(sid, _cmd(sid, CommandKind.EXIT_GAME))
+    upd = await revived.submit_command(
+        sid, _cmd(sid, CommandKind.EXIT_GAME), actor=actor
+    )
     assert upd.terminal
     assert upd.state.stage.value == "ended"
     try:
-        await revived.submit_command(sid, _cmd(sid, CommandKind.EXIT_GAME))
+        await revived.submit_command(
+            sid, _cmd(sid, CommandKind.EXIT_GAME), actor=actor
+        )
         raise AssertionError("终局后命令应被拒绝")
     except WJError as exc:
         env = envelope_for(exc)
@@ -205,9 +232,11 @@ async def test_stage1_to_stage3_full_flow(factory):
         assert env.message
 
 
-async def test_import_rejects_garbage_with_envelope(factory):
+async def test_import_rejects_garbage_with_envelope(factory, actor):
     app = _make_app(factory)
-    sid = (await app.create_session()).session_id
+    sid = (
+        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
+    ).session_id
     try:
         # 非叙事体裁（说明文）→ 内容域错误 envelope
         await app.import_material(
@@ -216,6 +245,7 @@ async def test_import_rejects_garbage_with_envelope(factory):
                 source=MaterialSource.PASTE,
                 raw_text="地球绕太阳公转。水由氢和氧组成。光速约为每秒三十万公里。",
             ),
+            actor=actor,
         )
         raise AssertionError("说明文应被拒绝")
     except WJError as exc:
@@ -225,12 +255,14 @@ async def test_import_rejects_garbage_with_envelope(factory):
         assert str(env.error_id)
 
 
-async def test_generation_progress_failed_keeps_session_clean(factory):
+async def test_generation_progress_failed_keeps_session_clean(factory, actor):
     """未导入材料直接生成 → CNT/SESSION 错误；会话仍可继续导入。"""
     app = _make_app(factory)
-    sid = (await app.create_session()).session_id
+    sid = (
+        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
+    ).session_id
     try:
-        await app.generate_script(sid)
+        await app.generate_script(sid, actor=actor)
         raise AssertionError("未导入材料生成应失败")
     except WJError as exc:
         assert envelope_for(exc).code in {
@@ -239,7 +271,9 @@ async def test_generation_progress_failed_keeps_session_clean(factory):
         }
 
     analysis = await app.import_material(
-        sid, MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT)
+        sid,
+        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+        actor=actor,
     )
     assert analysis.characters
 

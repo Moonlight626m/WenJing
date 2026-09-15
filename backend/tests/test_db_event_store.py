@@ -55,10 +55,17 @@ async def session_factory():
 
         await reset_baseline_schema(conn)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    # events/commands.material 等表外键 sessions.id：预置测试会话行
+    from conftest import create_actor
+
+    actor = await create_actor(factory, name="事件存储测试学校")
+    # events/commands.material 等表外键 sessions.id：预置测试会话行（带归属）
     async with factory() as session:
-        session.add(Session(id=uuid.UUID(S1)))
-        session.add(Session(id=uuid.UUID(S2)))
+        session.add(
+            Session(id=uuid.UUID(S1), org_id=actor.org_id, owner_user_id=actor.user_id)
+        )
+        session.add(
+            Session(id=uuid.UUID(S2), org_id=actor.org_id, owner_user_id=actor.user_id)
+        )
         await session.commit()
     try:
         yield factory

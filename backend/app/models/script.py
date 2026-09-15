@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Text
@@ -24,6 +25,13 @@ class Script(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(
         UUID(as_uuid=True), ForeignKey("sessions.id"), nullable=False
+    )
+    # 归属（ADR-0002）：剧本可复用实体，独立归属 owner/org（#19 起与 session 解绑）
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orgs.id"), nullable=False, index=True
+    )
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(Text)
     script_data: Mapped[dict] = mapped_column(JSONB, default=dict)

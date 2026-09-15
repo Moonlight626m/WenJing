@@ -179,6 +179,28 @@ async def test_accounts_schema_columns(migrated: Config):
         await engine.dispose()
 
 
+async def test_resource_ownership_columns(migrated: Config):
+    """归属改造（ADR-0002 / #18）：三张业务资源表均有 owner_user_id + org_id。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    required = {"owner_user_id", "org_id"}
+    try:
+        async with engine.connect() as conn:
+            for table in ("sessions", "materials", "scripts"):
+                cols = {
+                    r[0]
+                    for r in await conn.execute(
+                        text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = :t and table_schema = 'public'"
+                    ),
+                        {"t": table},
+                    )
+                }
+                assert required <= cols, f"{table} 缺列: {required - cols}"
+    finally:
+        await engine.dispose()
+
+
 async def test_events_branch_sequence_unique(migrated: Config):
     """(branch_id, sequence) 唯一约束能阻断重复回放写入。"""
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
