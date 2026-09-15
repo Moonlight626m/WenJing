@@ -55,6 +55,7 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "CONTENT_SCRIPT_NOT_FOUND": (ErrorDomain.CONTENT, False),
     "CONTENT_SCRIPT_NOT_EDITABLE": (ErrorDomain.CONTENT, False),
     "CONTENT_MATERIAL_NOT_FOUND": (ErrorDomain.CONTENT, False),
+    "CONTENT_SCRIPT_NOT_READY": (ErrorDomain.CONTENT, False),
     # search
     "SEARCH_UNAVAILABLE": (ErrorDomain.SEARCH, True),
     "SEARCH_BLOCKED_TARGET": (ErrorDomain.SEARCH, False),

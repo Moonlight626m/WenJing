@@ -139,6 +139,17 @@ async def list_scripts(
     return ScriptListResponse(items=[_summary(r) for r in rows])
 
 
+# 注意：必须定义在 `/scripts/{script_id}` 之前，避免 "square" 被当作 script_id 匹配。
+@router.get("/scripts/square", response_model=ScriptListResponse)
+async def square_scripts(
+    principal: _Viewer,
+    library: Annotated[ScriptLibrary, Depends(get_script_library)],
+) -> ScriptListResponse:
+    """剧本广场（#21）：已发布且对当前用户可见（同 org 或 public）的剧本。"""
+    rows = await library.list_visible(principal.actor)
+    return ScriptListResponse(items=[_summary(r) for r in rows])
+
+
 @router.get("/scripts/{script_id}", response_model=ScriptDetail)
 async def get_script(
     script_id: int,

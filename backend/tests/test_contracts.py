@@ -25,8 +25,11 @@ from app.contracts.auth import (
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
+    CreateSessionRequest,
     ResyncRequestMessage,
     ServerMessage,
+    SessionListResponse,
+    SessionSummary,
     SubmitCommandMessage,
     client_message_adapter,
 )
@@ -71,6 +74,9 @@ def _load(name: str) -> dict:
         ("script_summary", ScriptSummary),
         ("script_detail", ScriptDetail),
         ("script_list_response", ScriptListResponse),
+        ("create_session_request", CreateSessionRequest),
+        ("session_summary", SessionSummary),
+        ("session_list_response", SessionListResponse),
         ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),

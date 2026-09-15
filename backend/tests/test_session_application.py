@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 
@@ -150,14 +151,68 @@ async def test_restore_after_restart_replays_state(factory, actor):
     )
     stage_before = upd1.state.stage.value
 
-    # 模拟进程重启：清空进程内运行时，命令触发 DB 重建
-    app._runtimes.clear()
-    upd2 = await app.submit_command(
+    # 模拟进程重启：全新应用实例无内存运行时，命令触发 DB 重建
+    from app.agents.fake_llm import DeterministicAgentLLM
+
+    revived = SessionApplication(
+        session_factory=factory, agent_llm=DeterministicAgentLLM()
+    )
+    upd2 = await revived.submit_command(
         sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd2.state.stage.value == stage_before  # 从恢复点继续推进
     assert upd2.state.active_interaction is not None
     assert upd2.state.plot_context["player_role"] == role
+
+
+async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, monkeypatch):
+    """#21：命令路径无状态 + 乐观锁。两个命令从同一版本恢复时，只有一个能提交。"""
+    from conftest import make_playable_session
+    from sqlalchemy import text
+
+    from app.errx import codes
+
+    app, sid = await make_playable_session(factory, actor)
+    role = (await app.get_status(sid, actor=actor)).playable_roles[0]
+
+    # 用 barrier 确保两个协程都在同一版本完成恢复（都不持锁）后再各自提交
+    barrier = asyncio.Barrier(2)
+    original = SessionApplication._restore_runtime
+
+    async def _synced(self, session_id):
+        loaded = await original(self, session_id)
+        await barrier.wait()
+        return loaded
+
+    monkeypatch.setattr(SessionApplication, "_restore_runtime", _synced)
+
+    results = await asyncio.gather(
+        app.submit_command(
+            sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
+        ),
+        app.submit_command(
+            sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
+        ),
+        return_exceptions=True,
+    )
+    errors = [r for r in results if isinstance(r, BaseException)]
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    assert len(successes) == 1, results
+    assert len(errors) == 1
+    assert getattr(errors[0], "code", None) == codes.SESS_CONFLICT
+
+    # 只有胜者落库：一条命令、无重复事件（无部分推进）
+    assert len(successes[0].new_events) > 0
+    async with factory() as s:
+        commands = int(
+            (
+                await s.execute(
+                    text("select count(*) from commands where session_id = :sid"),
+                    {"sid": str(sid)},
+                )
+            ).scalar_one()
+        )
+    assert commands == 1
 
 
 async def test_initialize_without_script_fails_cleanly(factory, actor):

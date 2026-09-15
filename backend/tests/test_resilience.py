@@ -194,8 +194,7 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, actor, 
     assert env.domain.value == "persistence"
     assert env.retryable is True
 
-    # 无部分状态：内存运行时被丢弃，失败命令未落库，无事件被追加
-    assert sid not in svc._runtimes
+    # 无部分状态：命令路径无状态（不驻留运行时），失败命令未落库，无事件被追加
     assert await _count(factory, CommandRecord) == 0
     assert await _count(factory, GameEventRecord) == events_before
     status = await svc.get_status(sid, actor=actor)
@@ -227,7 +226,6 @@ async def test_corrupt_snapshot_rebuilds_without_crash(factory, actor):
         )
         await s.commit()
 
-    svc._runtimes.clear()
     init = await svc.session_init(sid, actor=actor)
     assert init["stage"] == "stage2_reenacting"
     assert init["player_role"] == role
@@ -248,7 +246,6 @@ async def test_corrupt_snapshot_payload_rebuilds(factory, actor):
         )
         await s.commit()
 
-    svc._runtimes.clear()
     init = await svc.session_init(sid, actor=actor)
     assert init["stage"] == "stage2_reenacting"
 
@@ -264,7 +261,6 @@ async def test_incompatible_script_schema_returns_clear_error(factory, actor):
         )
         await s.commit()
 
-    svc._runtimes.clear()
     with pytest.raises(WJError) as excinfo:
         await svc.session_init(sid, actor=actor)
     assert excinfo.value.code == codes.PER_INCOMPATIBLE_SCHEMA

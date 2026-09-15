@@ -14,6 +14,11 @@ import app.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.api.errors import error_response as _error_response
 from app.auth.deps import Principal, get_principal, require_csrf, resolve_principal
 from app.config import get_settings
+from app.contracts.dto import (
+    CreateSessionRequest,
+    SessionListResponse,
+    SessionStatusResponse,
+)
 from app.db.session import SessionLocal
 from app.db.session import create_engine as create_db_engine
 from app.diagnostics.metrics import metrics
@@ -111,6 +116,31 @@ async def health_ready() -> Response:
 @router.get("/metrics")
 async def prometheus_metrics() -> Response:
     return Response(content=metrics.render(), media_type="text/plain")
+
+
+@router.post("/api/sessions", status_code=201, response_model=SessionStatusResponse)
+async def create_session(
+    body: CreateSessionRequest,
+    principal: Annotated[Principal, Depends(require_csrf)],
+) -> SessionStatusResponse:
+    """从可见剧本开局（#21）：建会话并初始化运行时，直接返回状态（含可扮演角色）。"""
+    try:
+        return await get_application().open_session(
+            actor=principal.actor, script_id=body.script_id
+        )
+    except WJError as exc:
+        return _error_response(exc)
+
+
+@router.get("/api/sessions", response_model=SessionListResponse)
+async def list_sessions(
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> SessionListResponse:
+    """我的游戏（#21）：当前用户自己的剧情世界列表，按最近更新倒序。"""
+    try:
+        return await get_application().list_my_sessions(principal.actor)
+    except WJError as exc:
+        return _error_response(exc)
 
 
 @router.get("/api/sessions/{session_id}")
@@ -248,16 +278,13 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                     continue
                 try:
-                    update = await application.submit_command(
+                    msgs = await application.submit_command_messages(
                         sid, command, actor=actor
                     )
                 except WJError as exc:
                     await _send_error(exc)
                     continue
-                from app.session.projection import messages_from_update
-
-                runtime, store = await application._ensure_runtime(sid)
-                for msg in messages_from_update(sid, store, update):
+                for msg in msgs:
                     outbox.append(msg)
                     await ws.send_json(msg)
             elif parsed.type == "confirm_messages":

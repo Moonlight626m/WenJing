@@ -21,11 +21,36 @@ from app.contracts.runtime import ActiveInteraction
 # ===== REST DTO =====
 
 
+class CreateSessionRequest(VersionedContract):
+    """POST /api/sessions：从可见剧本开一局「剧情世界」。"""
+
+    script_id: int = Field(ge=1)
+
+
 class CreateSessionResponse(ContractModel):
-    """POST /api/sessions 响应。"""
+    """内部：新建会话行后的响应（对外开局端点返回 SessionStatusResponse）。"""
 
     session_id: uuid.UUID
     created_at: datetime | None = None
+
+
+class SessionSummary(VersionedContract):
+    """「我的游戏」列表项：会话元数据 + 引用剧本名。"""
+
+    session_id: uuid.UUID
+    script_id: int | None = None
+    script_name: str | None = None
+    stage: str
+    status: str
+    player_role: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SessionListResponse(VersionedContract):
+    """「我的游戏」列表（当前用户自己的剧情世界）。"""
+
+    items: list[SessionSummary] = Field(default_factory=list)
 
 
 class SessionStatusResponse(ContractModel):

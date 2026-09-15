@@ -17,7 +17,12 @@ from app.contracts.auth import (
 )
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
-from app.contracts.dto import ServerMessage
+from app.contracts.dto import (
+    CreateSessionRequest,
+    ServerMessage,
+    SessionListResponse,
+    SessionSummary,
+)
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.material import Material, MaterialInput
@@ -45,6 +50,9 @@ EXPORTS: dict[str, type] = {
     "text_analysis": TextAnalysis,
     "player_command": PlayerCommand,
     "domain_event": DomainEvent,
+    "create_session_request": CreateSessionRequest,
+    "session_summary": SessionSummary,
+    "session_list_response": SessionListResponse,
     "runtime_state": RuntimeState,
     "game_snapshot": GameSnapshot,
     "runtime_update": RuntimeUpdate,

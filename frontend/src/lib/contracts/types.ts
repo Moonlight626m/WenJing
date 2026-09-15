@@ -179,6 +179,30 @@ export interface ScriptListResponse {
   items: ScriptSummary[];
 }
 
+// ===== 学生游玩（issue #21 / ADR-0002 §3）=====
+
+export interface CreateSessionRequest {
+  schema_version: string;
+  script_id: number;
+}
+
+export interface SessionSummary {
+  schema_version: string;
+  session_id: string;
+  script_id: number | null;
+  script_name: string | null;
+  stage: StageValue;
+  status: string;
+  player_role: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SessionListResponse {
+  schema_version: string;
+  items: SessionSummary[];
+}
+
 // ===== 材料与证据 =====
 
 export interface MaterialInput {

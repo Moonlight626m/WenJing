@@ -68,6 +68,7 @@ AUTH_IDENTIFIER_TAKEN = 11005       # 邮箱或手机号已被注册
 SCR_NOT_FOUND = 12001               # 剧本不存在
 SCR_NOT_EDITABLE = 12002            # 当前状态不允许该操作（非草稿删除/重生、发布后改内容）
 SCR_MATERIAL_NOT_FOUND = 12003      # 素材不存在或不属于当前用户
+SCR_NOT_READY = 12004               # 剧本尚无生成内容，暂不可游玩（issue #21）
 
 
 def register_all() -> None:
@@ -179,5 +180,10 @@ def register_all() -> None:
     register(
         SCR_MATERIAL_NOT_FOUND,
         "material {id} not found or not owned by actor",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_NOT_READY,
+        "script {id} has no generated content to play",
         is_affect_stability=False,
     )

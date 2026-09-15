@@ -12,9 +12,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
-from app.access import Actor
+from app.access import Actor, script_visible_to
 from app.content.pipeline import ContentPipeline
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import ScriptStatus, ScriptVisibility
@@ -310,18 +310,32 @@ class ScriptLibrary:
             ).scalars().all()
         return list(rows)
 
+    async def list_visible(self, actor: Actor) -> list[ScriptRecord]:
+        """剧本广场（#21）：已发布且可见（同 org 或 public）的剧本，任意登录用户可浏览。
+
+        SQL 与 `app.access.script_visible_to` 的非 owner 分支等价；可见性判定以 access 为准。
+        """
+        async with self._factory() as s:
+            rows = (
+                await s.execute(
+                    select(ScriptRecord)
+                    .where(
+                        ScriptRecord.status == ScriptStatus.PUBLISHED.value,
+                        or_(
+                            ScriptRecord.visibility == ScriptVisibility.PUBLIC.value,
+                            ScriptRecord.org_id == actor.org_id,
+                        ),
+                    )
+                    .order_by(ScriptRecord.updated_at.desc())
+                )
+            ).scalars().all()
+        return list(rows)
+
     async def get_script(self, script_id: int, actor: Actor) -> ScriptRecord:
         """按可见性读取：owner 全量；他人仅已发布（org 同 org / public 跨 org）。"""
         async with self._factory() as s:
             row = await s.get(ScriptRecord, script_id)
-        if row is None:
-            raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
-        if row.owner_user_id == actor.user_id:
-            return row
-        visible = row.status == ScriptStatus.PUBLISHED.value and (
-            row.visibility == ScriptVisibility.PUBLIC.value or row.org_id == actor.org_id
-        )
-        if not visible:
+        if row is None or not script_visible_to(actor, row):
             raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
         return row
 

@@ -91,8 +91,7 @@ def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> Play
 
 
 async def _active_store(app: SessionApplication, sid: uuid.UUID):
-    runtime, store = await app._ensure_runtime(sid)
-    _ = runtime
+    _runtime, store, _version = await app._restore_runtime(sid)
     return store
 
 

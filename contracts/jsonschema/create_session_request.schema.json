@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "POST /api/sessions：从可见剧本开一局「剧情世界」。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "script_id": {
+      "minimum": 1,
+      "title": "Script Id",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "script_id"
+  ],
+  "title": "CreateSessionRequest",
+  "type": "object"
+}

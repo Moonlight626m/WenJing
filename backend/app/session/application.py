@@ -1,14 +1,16 @@
 """SessionApplication：游玩竖切的应用核心（issue #5；#19 起剧本由剧本库提供）。
 
 职责与接缝：
-- 生命周期：create_session(script_id) → submit_command → get_status；剧本由剧本库
+- 生命周期：open_session(script_id) → submit_command → get_status；剧本由剧本库
   生成并发布，会话经 `script_id` 引用（生成/导入素材不在此，见 `app/scripts`）。
 - 事务边界：一次命令受理 = commands 行 + events 行 + sessions head/version/
   active_branch 同一事务提交（`PersistentEventStore.write_pending` 事务外置）。
-- 幂等：commands 表主键为第一道闸；runtime 内存 `_processed_commands` 为第二道。
+- 幂等：commands 表主键为第一道闸（无内存运行时后仍是唯一权威闸）。
 - 投影：StepResult/export_state → 契约 RuntimeUpdate/RuntimeState（projection.py）。
-- 恢复：进程内无运行时时从 DB 重建（restore_active_branch + 最新快照 + #8 replay），
-  支撑断线重连的 session_init 重建阶段/历史/交互点。
+- **无状态命令路径（#21）**：不常驻内存运行时；每次命令从 DB（最新快照 + 事件）
+  重建运行时。并发由乐观锁保护——恢复时以 `SELECT ... FOR UPDATE` 锁定会话行读取
+  (version, events) 一致快照，落库时 `UPDATE ... WHERE version = <恢复时版本>`，
+  冲突者整事务回滚（`SESS_CONFLICT`），绝不部分推进。
 """
 
 from __future__ import annotations
@@ -19,14 +21,19 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.access import Actor, require_session_access
+from app.access import Actor, require_session_access, script_visible_to
 from app.agents.llm_service import LLMService
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.contracts.dto import CreateSessionResponse, SessionStatusResponse
+from app.contracts.dto import (
+    CreateSessionResponse,
+    SessionListResponse,
+    SessionStatusResponse,
+    SessionSummary,
+)
 from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.core.engine_config import EngineConfig
@@ -36,11 +43,13 @@ from app.db.branch import commit_rollback_branch  # noqa: F401  (回溯专用原
 from app.db.event_store import PersistentEventStore, branch_uuid
 from app.errx import codes, new, wrap
 from app.models.command import CommandRecord, CommandStatus
-from app.models.event import EVENTS_SCHEMA_VERSION
+from app.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
+from app.models.event_branch import EventBranchRecord
 from app.models.script import Script as ScriptRecord
 from app.models.session import Session as SessionRecord
 from app.models.snapshot import Snapshot as SnapshotRecord
 from app.session.projection import (
+    messages_from_update,
     project_messages,
     project_state,
     project_status,
@@ -63,8 +72,6 @@ class SessionApplication:
         self._factory = session_factory
         self._agent_llm = agent_llm
         self._config = config or EngineConfig()
-        self._runtimes: dict[uuid.UUID, GameRuntime] = {}
-        self._packages: dict[uuid.UUID, ScriptPackage] = {}
 
     # ===== 创建 =====
 
@@ -89,6 +96,73 @@ class SessionApplication:
             await s.commit()
         return CreateSessionResponse(session_id=sid, created_at=datetime.now(UTC))
 
+    async def open_session(
+        self, *, actor: Actor, script_id: int
+    ) -> SessionStatusResponse:
+        """从可见剧本开局（#21）：校验可见性 → 建会话 → 初始化运行时 → 返回状态。
+
+        可见性：owner 任意状态可玩；他人仅 `published` 且（`org` 同 org / `public` 跨 org）。
+        初始化失败即回收刚建的会话行，绝不在「我的游戏」留下不可玩的 init 空壳。
+        """
+        await self._require_playable_script(actor, script_id)
+        created = await self.create_session(
+            org_id=actor.org_id, owner_user_id=actor.user_id, script_id=script_id
+        )
+        try:
+            await self.initialize_session(created.session_id, actor)
+        except Exception:
+            await self._discard_session(created.session_id)
+            raise
+        return await self.get_status(created.session_id, actor=actor)
+
+    async def list_my_sessions(self, actor: Actor) -> SessionListResponse:
+        """「我的游戏」（#21）：当前用户自己的剧情世界，按最近更新倒序。"""
+        async with self._factory() as s:
+            rows = (
+                await s.execute(
+                    select(SessionRecord, ScriptRecord.name)
+                    .outerjoin(
+                        ScriptRecord, SessionRecord.script_id == ScriptRecord.id
+                    )
+                    .where(SessionRecord.owner_user_id == actor.user_id)
+                    .order_by(SessionRecord.updated_at.desc())
+                )
+            ).all()
+        return SessionListResponse(
+            items=[
+                SessionSummary(
+                    session_id=sess.id,
+                    script_id=sess.script_id,
+                    script_name=name,
+                    stage=sess.current_stage,
+                    status=sess.status,
+                    player_role=sess.player_role,
+                    created_at=sess.created_at,
+                    updated_at=sess.updated_at,
+                )
+                for sess, name in rows
+            ]
+        )
+
+    async def _discard_session(self, session_id: uuid.UUID) -> None:
+        """回收未成功初始化的会话（open_session 失败补偿）：按 FK 顺序删净其数据。"""
+        async with self._factory() as s:
+            for model in (SnapshotRecord, CommandRecord, GameEventRecord, EventBranchRecord):
+                await s.execute(delete(model).where(model.session_id == session_id))
+            await s.execute(
+                delete(SessionRecord).where(SessionRecord.id == session_id)
+            )
+            await s.commit()
+
+    async def _require_playable_script(self, actor: Actor, script_id: int) -> None:
+        """不可见剧本按不存在处理（不泄露存在性）；无生成内容则 SCR_NOT_READY。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+        if row is None or not script_visible_to(actor, row):
+            raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
+        if row.script_data is None:
+            raise new(codes.SCR_NOT_READY, extra={"id": script_id})
+
     async def _access_session(
         self, session_id: uuid.UUID, actor: Actor
     ) -> SessionRecord:
@@ -103,7 +177,7 @@ class SessionApplication:
     async def initialize_session(self, session_id: uuid.UUID, actor: Actor) -> None:
         """从会话引用的剧本初始化运行时：stage1_complete + 开场事件落库。
 
-        #21 会把它接到「从剧本创建 session(script_id)」入口；当前供内部/测试使用。
+        无状态：运行时构建后即丢弃（#21），后续命令一律从 DB 重建。
         """
         await self._access_session(session_id, actor)
         package = await self._load_package(session_id)
@@ -114,30 +188,40 @@ class SessionApplication:
             )
         runtime, store = self._build_runtime(session_id, package)
         await runtime.start()
-        await self._commit_system_events(session_id, store)
-        async with self._factory() as s:
-            await s.execute(
-                update(SessionRecord)
-                .where(SessionRecord.id == session_id)
-                .values(current_stage=runtime.state.stage)
-            )
-            await s.commit()
-        self._runtimes[session_id] = runtime
+        await self._commit_system_events(
+            session_id, store, stage=runtime.state.stage
+        )
 
-    # ===== 命令受理（幂等 + 单事务持久化）=====
+    # ===== 命令受理（幂等 + 单事务持久化 + 无状态重建）=====
 
     async def submit_command(
         self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
     ) -> RuntimeUpdate:
+        update_result, _store = await self._submit(session_id, command, actor=actor)
+        return update_result
+
+    async def submit_command_messages(
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+    ) -> list[dict]:
+        """WS 用：一次提交同时返回投影更新与本次应发布的消息（复用同一 store）。"""
+        update_result, store = await self._submit(session_id, command, actor=actor)
+        return messages_from_update(session_id, store, update_result)
+
+    async def _submit(
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+    ) -> tuple[RuntimeUpdate, PersistentEventStore]:
         await self._access_session(session_id, actor)
-        runtime, store = await self._ensure_runtime(session_id)
+        runtime, store, version = await self._restore_runtime(session_id)
 
         async with self._factory() as s:
             existing = await s.get(CommandRecord, command.command_id)
         if existing is not None:
-            # 第一道幂等闸：对账返回当前状态，不重复执行
-            return project_update(
-                session_id, store, self._idle_result(runtime, duplicate=True)
+            # 幂等闸：对账返回当前状态，不重复执行
+            return (
+                project_update(
+                    session_id, store, self._idle_result(runtime, duplicate=True)
+                ),
+                store,
             )
 
         # 终局闸：已结束的会话不再受理玩家命令（SESSION_ENDED 语义域）
@@ -145,19 +229,20 @@ class SessionApplication:
             raise new(codes.SESS_ENDED, extra={"id": str(session_id)})
 
         payload = self._engine_payload(command, store)
-        try:
-            result = await runtime.submit(
-                command_id=str(command.command_id),
-                kind=command.kind.value,
-                payload=payload,
-            )
-            await self._persist_command(session_id, command, store, runtime, result)
-        except Exception:
-            # 命令受理失败（引擎异常或 DB 事务失败）：丢弃内存运行时，
-            # 使下一次请求从 DB 权威状态重建 —— 绝不保留部分推进的内存状态。
-            self._runtimes.pop(session_id, None)
-            raise
-        return project_update(session_id, store, result)
+        result = await runtime.submit(
+            command_id=str(command.command_id),
+            kind=command.kind.value,
+            payload=payload,
+        )
+        await self._persist_command(
+            session_id,
+            command,
+            store,
+            runtime,
+            result,
+            expected_version=version,
+        )
+        return project_update(session_id, store, result), store
 
     async def _persist_command(
         self,
@@ -166,19 +251,39 @@ class SessionApplication:
         store: PersistentEventStore,
         runtime: GameRuntime,
         result: Any = None,
+        *,
+        expected_version: int,
     ) -> None:
         """命令 + 事件 + head/version/active_branch + 快照，同一事务。
 
-        DB 失败统一转为 `PER_WRITE_FAILED`（可重试）并整事务回滚；
-        显式业务错误（SESS_*）原样上抛，不重复包装。
+        乐观锁（#21）：`expected_version` 是恢复运行时读取到的会话版本。落库先用
+        `UPDATE ... WHERE version = expected_version` 抢占会话行（同时获得行锁，
+        串行化同一会话的写入），失败即 `SESS_CONFLICT` 且不写任何事件；成功后再写
+        事件/命令/head，确保并发命令绝无部分推进、也不会撞 `(branch, sequence)` 唯一键。
+        DB 失败统一转为 `PER_WRITE_FAILED`（可重试）；显式业务错误原样上抛。
         """
         try:
             async with self._factory() as s:
                 sess = await s.get(SessionRecord, session_id)
                 if sess is None:
                     raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
-                expected = sess.version
 
+                # 1) 乐观锁 CAS 抢占：版本不符即冲突，事务内不写任何东西
+                claimed = await s.execute(
+                    update(SessionRecord)
+                    .where(
+                        SessionRecord.id == session_id,
+                        SessionRecord.version == expected_version,
+                    )
+                    .values(version=expected_version + 1)
+                )
+                if claimed.rowcount != 1:
+                    raise new(
+                        codes.SESS_CONFLICT,
+                        extra={"id": str(session_id), "expected": expected_version},
+                    )
+
+                # 2) 持锁后写事件 + 命令（同事务；任何失败整体回滚）
                 rows = await store.write_pending(s, str(session_id))
                 s.add(
                     CommandRecord(
@@ -191,26 +296,19 @@ class SessionApplication:
                 )
                 await s.flush()
                 head_db = rows[-1].id if rows else sess.head_event_id
-                updated = await s.execute(
+
+                # 3) 更新 head/branch/stage/status（head 依赖新事件行，故在写入后）
+                await s.execute(
                     update(SessionRecord)
-                    .where(
-                        SessionRecord.id == session_id,
-                        SessionRecord.version == expected,
-                    )
+                    .where(SessionRecord.id == session_id)
                     .values(
                         head_event_id=head_db,
                         active_branch_id=branch_uuid(session_id, store.active_branch_id),
                         player_role=runtime.state.player_role,
                         current_stage=runtime.state.stage,
                         status="ended" if result.terminal else sess.status,
-                        version=expected + 1,
                     )
                 )
-                if updated.rowcount != 1:
-                    raise new(
-                        codes.SESS_CONFLICT,
-                        extra={"id": str(session_id), "expected": expected},
-                    )
                 if rows:
                     export = runtime.export_state()
                     s.add(
@@ -234,34 +332,43 @@ class SessionApplication:
             raise
 
     async def _commit_system_events(
-        self, session_id: uuid.UUID, store: PersistentEventStore
+        self, session_id: uuid.UUID, store: PersistentEventStore, *, stage: str
     ) -> None:
-        """系统动作（如 runtime.start）产生的事件 + head 推进，单事务。"""
+        """系统动作（如 runtime.start）产生的事件 + head/stage 推进，单事务。
+
+        与 `_persist_command` 同一乐观锁拼写：先 CAS 抢占会话行，再写事件与
+        head/active_branch/current_stage；避免「stage 另起事务写」导致的状态背离。
+        """
         try:
             async with self._factory() as s:
                 sess = await s.get(SessionRecord, session_id)
                 if sess is None:
                     raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
                 expected = sess.version
-                rows = await store.write_pending(s, str(session_id))
-                await s.flush()
-                updated = await s.execute(
+                claimed = await s.execute(
                     update(SessionRecord)
                     .where(
                         SessionRecord.id == session_id,
                         SessionRecord.version == expected,
                     )
-                    .values(
-                        head_event_id=rows[-1].id if rows else sess.head_event_id,
-                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
-                        version=expected + 1,
-                    )
+                    .values(version=expected + 1)
                 )
-                if updated.rowcount != 1:
+                if claimed.rowcount != 1:
                     raise new(
                         codes.SESS_CONFLICT,
                         extra={"id": str(session_id), "expected": expected},
                     )
+                rows = await store.write_pending(s, str(session_id))
+                await s.flush()
+                await s.execute(
+                    update(SessionRecord)
+                    .where(SessionRecord.id == session_id)
+                    .values(
+                        head_event_id=rows[-1].id if rows else sess.head_event_id,
+                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
+                        current_stage=stage,
+                    )
+                )
                 await s.commit()
         except Exception as exc:
             if isinstance(exc, SQLAlchemyError):
@@ -276,9 +383,7 @@ class SessionApplication:
         self, session_id: uuid.UUID, *, actor: Actor
     ) -> SessionStatusResponse:
         sess = await self._access_session(session_id, actor)
-        pkg = self._packages.get(session_id)
-        if pkg is None:
-            pkg = await self._load_package(session_id)
+        pkg = await self._load_package(session_id)
         playable = (
             [c.name for c in pkg.characters if c.is_player_playable] if pkg else []
         )
@@ -298,7 +403,7 @@ class SessionApplication:
     async def session_init(self, session_id: uuid.UUID, *, actor: Actor) -> dict:
         """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。"""
         await self._access_session(session_id, actor)
-        runtime, store = await self._ensure_runtime(session_id)
+        runtime, store, _ = await self._restore_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return {
             "session_id": str(session_id),
@@ -320,7 +425,7 @@ class SessionApplication:
     ) -> list[dict]:
         """按 last_confirmed_seq 补发：从 DB 活动分支重建消息序列。"""
         await self._access_session(session_id, actor)
-        runtime, store = await self._ensure_runtime(session_id)
+        runtime, store, _ = await self._restore_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return project_messages(
             session_id,
@@ -330,28 +435,25 @@ class SessionApplication:
             allowed_commands=[k.value for k in state.allowed_commands()],
         )
 
-    # ===== 恢复（断线重连 / 进程重启）=====
-
-    async def _ensure_runtime(
-        self, session_id: uuid.UUID
-    ) -> tuple[GameRuntime, PersistentEventStore]:
-        runtime = self._runtimes.get(session_id)
-        if runtime is not None:
-            store = runtime.event_store
-            assert isinstance(store, PersistentEventStore)
-            return runtime, store
-        return await self._restore_runtime(session_id)
+    # ===== 恢复（断线重连 / 进程重启 / 每命令）=====
 
     async def _restore_runtime(
         self, session_id: uuid.UUID
-    ) -> tuple[GameRuntime, PersistentEventStore]:
+    ) -> tuple[GameRuntime, PersistentEventStore, int]:
         """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。
+
+        无状态（#21）：每次命令都走此路径，返回 (runtime, store, 恢复时会话版本)；
+        版本用于命令落库的乐观锁 CAS（见 `_persist_command`）。
+
+        一致性：以 `SELECT ... FOR UPDATE` 锁定会话行，使读到的 (version, events)
+        来自同一一致快照（不持锁做 LLM）。
 
         容错（issue #13）：剧本/快照损坏或 schema 不兼容时，宁可忽略快照
         从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
         """
         async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id)
+            sess = await s.get(SessionRecord, session_id, with_for_update=True)
+            version = sess.version if sess is not None else 0
             script_id = sess.script_id if sess is not None else None
             script_row = (
                 await s.get(ScriptRecord, script_id) if script_id is not None else None
@@ -419,9 +521,7 @@ class SessionApplication:
             )
             runtime.replay_from(None, [e.to_dict() for e in events])
 
-        self._packages[session_id] = package
-        self._runtimes[session_id] = runtime
-        return runtime, store
+        return runtime, store, version
 
     # ===== 内部工具 =====
 
@@ -452,9 +552,14 @@ class SessionApplication:
             )
         if row is None or row.script_data is None:
             return None
-        package = ScriptPackage.model_validate(row.script_data)
-        self._packages[session_id] = package
-        return package
+        try:
+            return ScriptPackage.model_validate(row.script_data)
+        except Exception as exc:
+            raise wrap(
+                exc,
+                codes.PER_INCOMPATIBLE_SCHEMA,
+                extra={"id": str(session_id), "reason": "script package invalid"},
+            ) from exc
 
     @staticmethod
     def _engine_payload(
