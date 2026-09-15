@@ -1,26 +1,51 @@
 # Wenjing — Agent Instructions
 
-## Agent skills
+语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。动手前先读 `design/` 中对应模块的设计文档（`design.md`、`design_00_tech_decisions.md`、`design_0X_*`）；若与 `docs/adr/` 冲突，以更新的 ADR 为准。
 
-### Issue tracker
+## 实现工作流
 
-Issues live in this repo's GitHub Issues, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+- 完成新功能/修复后，**开 subagent 用 `code-review` skill 审查改动**，修复发现的问题（如有）再向用户汇报。
 
-### Triage labels
+## 常用命令
 
-Five canonical triage roles, each label string equal to its name (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+命令在仓库根用 Makefile 封装；后端在 `backend/` 用 uv，前端在 `frontend/` 用 npm。
 
-### Domain docs
+```bash
+make dev            # 起 db + 迁移 + backend(:8000) + frontend(:3000)，后台，日志 .run/logs/
+make dev-stop       # 停止；make dev-status 查看状态
+make migrate        # Alembic upgrade head
+make seed           # 默认 org + super_admin/teacher/student 测试账号（幂等）
+make db-reset       # 破坏式重建本地库：删卷 → 迁移 → seed（旧数据不可恢复）
+make test           # backend pytest（PG 可用时含集成测试）
+make lint           # backend ruff + frontend eslint（不含类型检查）
+make e2e            # Playwright（需 backend+frontend 已运行）
+```
 
-Single-context layout: one `CONTEXT.md` at the repo root, ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+- 单个测试：`cd backend && uv run pytest tests/test_x.py::test_y -q`
+- 前端类型检查必须用 `npm run typecheck`（先 `next typegen` 再 `tsc --noEmit`）；直接 `tsc` 会因缺全局生成类型报 `TS2304`。
+- 验证顺序：`make lint` → `cd frontend && npm run typecheck` → `make test`。
 
-系统的模块设计文档在 `design/`：探索代码或实现任何功能前，先参考该模块对应的设计文档（`design.md`、`design_00_tech_decisions.md` 及 `design_0X_*`、`design_0X_*`）；若与 ADR 冲突，以更新的 ADR 为准。
+## 关键约束与陷阱
+
+- **PG 集成测试会静默 skip**：`test_db_event_store`、`test_migrations`、`test_full_flow`、`test_api_sessions` 等在 PostgreSQL 不可用时 `pytest.skip`，全绿不代表跑过。验证前先 `make db-up && make migrate`。
+- **未配置 `WENJING_LLM_API_KEY` 时后端走确定性 fake**（`backend/app/agents/fake_llm.py`），测试与 E2E 依赖此行为；只有设了 key 才真实调用 LLM。
+- **契约单源四处**：`backend/app/contracts/`（Pydantic）→ `contracts/fixtures/` → `contracts/jsonschema/` → `frontend/src/lib/contracts/types.ts`。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 会断言导出与 fixtures 不过期。流程见 `docs/contract-change-process.md`。
+- **后端必须单 worker**：会话运行时与 WS outbox 保存在进程内存，多 worker/多副本需共享运行时 + 粘性会话。
+- **账号基线破坏式重建**（ADR-0002 / #17）：旧匿名库不兼容，跑测试前先 `make db-reset`；匿名 `POST /api/sessions` 已移除，新入口由 #21 提供。鉴权代码在 `backend/app/auth/`。
+- 前端是 Next.js 16，API/约定可能与训练数据不同：写代码前读 `frontend/AGENTS.md` 指向的 `node_modules/next/dist/docs/`。
+- commit 用 Conventional Commits 前缀（`feat`/`fix`/`docs`…），描述、注释、文档用中文。
 
 ## 依赖与包管理器
 
-前端统一使用 **npm**，以 `frontend/package-lock.json` 为准：CI、`frontend/Dockerfile`、`scripts/dev.sh` 均使用 `npm ci` / `npm run`。本地若用 bun，`bun.lock` 已被 gitignore，不要提交；提交依赖变更前请用 `npm ci` 验证，避免与 CI/Docker 解析出不同版本。
+前端统一 **npm**，以 `frontend/package-lock.json` 为准：CI、`frontend/Dockerfile`、`scripts/dev.sh` 均用 `npm ci` / `npm run`。本地若用 bun，`bun.lock` 已被 gitignore，不要提交；提交依赖变更前用 `npm ci` 验证，避免与 CI/Docker 解析出不同版本。
 
-后端统一使用 **uv**，以 `backend/uv.lock` 为准。
+后端统一 **uv**，以 `backend/uv.lock` 为准。
+
+## Agent skills
+
+- Issue tracker：GitHub Issues，用 `gh` CLI。见 `docs/agents/issue-tracker.md`。
+- Triage labels：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。见 `docs/agents/triage-labels.md`。
+- Domain docs：单上下文布局，`CONTEXT.md` 在仓库根、ADR 在 `docs/adr/`。见 `docs/agents/domain.md`。
 
 ### 回复语言
 
