@@ -51,6 +51,10 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "CONTENT_GENERATION_FAILED": (ErrorDomain.CONTENT, True),
     "CONTENT_VALIDATION_FAILED": (ErrorDomain.CONTENT, True),
     "CONTENT_INSUFFICIENT_SOURCE": (ErrorDomain.CONTENT, False),
+    # content / 剧本库（#19）
+    "CONTENT_SCRIPT_NOT_FOUND": (ErrorDomain.CONTENT, False),
+    "CONTENT_SCRIPT_NOT_EDITABLE": (ErrorDomain.CONTENT, False),
+    "CONTENT_MATERIAL_NOT_FOUND": (ErrorDomain.CONTENT, False),
     # search
     "SEARCH_UNAVAILABLE": (ErrorDomain.SEARCH, True),
     "SEARCH_BLOCKED_TARGET": (ErrorDomain.SEARCH, False),

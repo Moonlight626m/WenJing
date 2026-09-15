@@ -39,9 +39,8 @@ class Session(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
     current_stage: Mapped[str] = mapped_column(String(32), default="init")
-    # 逻辑引用（无库级 FK，避免与 scripts/materials.session_id 形成循环依赖）
+    # 逻辑引用（无库级 FK，避免循环依赖）：指向 scripts.id 的「剧情世界」剧本
     script_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    material_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     player_role: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="active")
 

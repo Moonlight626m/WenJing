@@ -1,0 +1,28 @@
+{
+  "$defs": {
+    "ScriptVisibility": {
+      "description": "已发布剧本的可见性：同 org / 公开（跨 org）。",
+      "enum": [
+        "org",
+        "public"
+      ],
+      "title": "ScriptVisibility",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "发布时选择可见性（默认 org）；公开剧本跨 org 可见。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "visibility": {
+      "$ref": "#/$defs/ScriptVisibility",
+      "default": "org"
+    }
+  },
+  "title": "ScriptPublishRequest",
+  "type": "object"
+}

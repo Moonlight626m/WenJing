@@ -60,6 +60,47 @@ async def create_actor(
         return Actor(user_id=user.id, org_id=org.id, role=UserRole(role))
 
 
+MATERIAL_TEXT = (
+    "那年冬天，母亲病了。我离开家，到城里去买药。"
+    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
+)
+
+
+async def generate_script_id(
+    factory, actor, *, script_llm=None, text: str | None = None, name: str = "测试剧本"
+) -> int:
+    """用 ScriptLibrary 导入素材并生成一个剧本，返回其 id（同步等待生成完成）。"""
+    from app.contracts.material import MaterialInput, MaterialSource
+    from app.scripts.service import ScriptLibrary
+
+    library = ScriptLibrary(session_factory=factory, script_llm=script_llm)
+    material = await library.import_material(
+        actor, MaterialInput(source=MaterialSource.PASTE, raw_text=text or MATERIAL_TEXT)
+    )
+    script = await library.create_script(
+        actor, material_id=material.id, name=name, description=None
+    )
+    await library.start_generation(script.id, actor)
+    await library.await_generation(script.id)
+    return script.id
+
+
+async def make_playable_session(factory, actor, *, script_llm=None):
+    """建一个已初始化的可玩 session，返回 (SessionApplication, session_id)。"""
+    from app.agents.fake_llm import DeterministicAgentLLM
+    from app.session.application import SessionApplication
+
+    script_id = await generate_script_id(factory, actor, script_llm=script_llm)
+    app = SessionApplication(session_factory=factory, agent_llm=DeterministicAgentLLM())
+    sid = (
+        await app.create_session(
+            org_id=actor.org_id, owner_user_id=actor.user_id, script_id=script_id
+        )
+    ).session_id
+    await app.initialize_session(sid, actor)
+    return app, sid
+
+
 async def drop_baseline_schema(conn) -> None:
     """测试后清场：连同 alembic_version 一起移除，交还干净库。"""
     from sqlalchemy import text

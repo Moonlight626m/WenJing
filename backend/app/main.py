@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.api.auth import router as auth_router
 from app.api.errors import error_response
 from app.api.routes import router
+from app.api.scripts import router as scripts_router
 from app.config import get_settings
 from app.errx import Error as WJError
 
@@ -33,6 +34,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(scripts_router)
 
     @app.exception_handler(WJError)
     async def _wj_error_handler(request: Request, exc: WJError) -> JSONResponse:

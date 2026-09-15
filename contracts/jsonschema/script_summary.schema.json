@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "ScriptStatus": {
+      "description": "可复用剧本实体的生命周期（ADR-0002 §3）：草稿→发布→下架。",
+      "enum": [
+        "draft",
+        "published",
+        "unpublished"
+      ],
+      "title": "ScriptStatus",
+      "type": "string"
+    },
+    "ScriptVisibility": {
+      "description": "已发布剧本的可见性：同 org / 公开（跨 org）。",
+      "enum": [
+        "org",
+        "public"
+      ],
+      "title": "ScriptVisibility",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "剧本列表项/发布结果的轻量投影。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "integer"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "status": {
+      "$ref": "#/$defs/ScriptStatus"
+    },
+    "visibility": {
+      "$ref": "#/$defs/ScriptVisibility"
+    },
+    "material_id": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Material Id"
+    },
+    "owner_user_id": {
+      "format": "uuid",
+      "title": "Owner User Id",
+      "type": "string"
+    },
+    "org_id": {
+      "format": "uuid",
+      "title": "Org Id",
+      "type": "string"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Created At"
+    },
+    "updated_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Updated At"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "status",
+    "visibility",
+    "owner_user_id",
+    "org_id"
+  ],
+  "title": "ScriptSummary",
+  "type": "object"
+}

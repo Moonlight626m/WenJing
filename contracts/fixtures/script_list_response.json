@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "items": [
+    {
+      "schema_version": "1.0.0",
+      "id": 7,
+      "name": "背影·重构",
+      "description": "以儿子视角重演浦口送别与买橘一段",
+      "status": "draft",
+      "visibility": "org",
+      "material_id": 1,
+      "owner_user_id": "6f9619ff-8b86-d011-b42d-00c04fc964ff",
+      "org_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
+      "created_at": "2026-09-15T08:31:00Z",
+      "updated_at": "2026-09-15T08:31:00Z"
+    }
+  ]
+}

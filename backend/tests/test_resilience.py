@@ -1,8 +1,7 @@
-"""生产化加固：故障注入与可恢复性（issue #13）。
+"""生产化加固：故障注入与可恢复性（issue #13；#19 起生成归剧本库）。
 
 覆盖矩阵：
-- LLM 超时 → retryable 错误、无部分状态（无 script 落库）；
-- LLM 非法结构化输出 → 重试后 terminal 错误、无半合法剧本落库；
+- LLM 超时/非法结构化输出 → 剧本库生成进度失败、无半合法剧本落库；
 - DB 事务失败 → 无部分状态、运行时被丢弃、可安全重试；
 - 快照损坏/schema 不兼容 → 可重建、不崩溃；
 - 剧本数据不兼容 → 明确 PERSISTENCE 错误；
@@ -25,14 +24,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models  # noqa: F401
 from app.access import Actor
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.contracts.content import (
-    CharacterMention,
-    GenreClassification,
-    GenreType,
-    KeyEvent,
-    TextAnalysis,
-)
-from app.contracts.material import MaterialInput, MaterialSource, OriginalEvidence
+from app.contracts.material import MaterialInput, MaterialSource
 from app.db.event_store import PersistentEventStore
 from app.diagnostics.errors import envelope_for
 from app.errx import Error as WJError
@@ -47,10 +39,10 @@ _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
 )
 
-_MATERIAL_TEXT = (
-    "那年冬天，母亲病了。我离开家，到城里去买药。"
-    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
-)
+
+@pytest.fixture(scope="module")
+def anyio_backend():
+    return "asyncio"
 
 
 async def _db_available() -> bool:
@@ -84,6 +76,13 @@ async def factory():
         await engine.dispose()
 
 
+@pytest.fixture(scope="module")
+async def actor(factory) -> Actor:
+    from conftest import create_actor
+
+    return await create_actor(factory, name="韧性测试学校")
+
+
 class _RaisingLLM:
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
@@ -101,54 +100,28 @@ def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> Play
     return PlayerCommand(session_id=sid, kind=kind, payload=payload or {})
 
 
-def _rich_analysis() -> TextAnalysis:
-    ev = OriginalEvidence(
-        char_start=0, char_end=4, paragraph_index=0, excerpt="那年冬天，母亲病了"
+async def _generate_with(factory, actor, llm):
+    """用指定 LLM 走剧本库生成一个剧本，返回 (library, script_id)。"""
+    from conftest import MATERIAL_TEXT
+
+    from app.scripts.service import ScriptLibrary
+
+    library = ScriptLibrary(session_factory=factory, script_llm=llm)
+    material = await library.import_material(
+        actor, MaterialInput(source=MaterialSource.PASTE, raw_text=MATERIAL_TEXT)
     )
-    return TextAnalysis(
-        content_hash="deadbeef",
-        title="买药",
-        genre=GenreClassification(genre=GenreType.NARRATIVE, is_supported=True),
-        characters=[
-            CharacterMention(name="母亲", role="患病的母亲", evidence_refs=[ev]),
-            CharacterMention(name="我", role="儿子", evidence_refs=[ev]),
-        ],
-        key_events=[
-            KeyEvent(
-                title="母亲病了",
-                description="母亲生病，我离家买药",
-                participants=["母亲", "我"],
-                order=1,
-                evidence_refs=[ev],
-            )
-        ],
+    script = await library.create_script(
+        actor, material_id=material.id, name="韧性剧本", description=None
     )
+    await library.start_generation(script.id, actor)
+    await library.await_generation(script.id)
+    return library, script.id
 
 
-async def _prepared_app(
-    factory, *, script_llm
-) -> tuple[SessionApplication, uuid.UUID, Actor]:
-    from conftest import create_actor
+async def _playable(factory, actor) -> tuple[SessionApplication, uuid.UUID]:
+    from conftest import make_playable_session
 
-    from app.agents.fake_llm import DeterministicAgentLLM
-
-    actor = await create_actor(factory, name="韧性测试学校")
-    svc = SessionApplication(
-        session_factory=factory,
-        agent_llm=DeterministicAgentLLM(),
-        script_llm=script_llm,
-    )
-    created = await svc.create_session(
-        org_id=actor.org_id, owner_user_id=actor.user_id
-    )
-    sid = created.session_id
-    await svc.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    svc._analyses[sid] = _rich_analysis()
-    return svc, sid, actor
+    return await make_playable_session(factory, actor)
 
 
 async def _count(factory, model) -> int:
@@ -156,44 +129,53 @@ async def _count(factory, model) -> int:
         return int((await s.execute(select(func.count()).select_from(model))).scalar_one())
 
 
-# ===== LLM 故障 =====
+# ===== 生成故障（剧本库）=====
 
 
-async def test_llm_timeout_is_retryable_and_leaves_no_partial_state(factory):
+async def test_generation_llm_failure_marks_progress_failed(factory, actor):
     llm = _RaisingLLM(new(codes.LLM_CALL_FAILED, extra={"reason": "timeout"}))
-    svc, sid, actor = await _prepared_app(factory, script_llm=llm)
+    library, script_id = await _generate_with(factory, actor, llm)
 
-    with pytest.raises(WJError) as excinfo:
-        await svc.generate_script(sid, actor=actor)
-    assert excinfo.value.code == codes.LLM_CALL_FAILED
+    progress = library.progress(script_id)
+    assert progress is not None and progress["status"] == "failed"
 
-    # 无部分状态：无剧本落库、阶段未推进、生成进度标记失败
-    assert await _count(factory, ScriptRecord) == 0
-    status = await svc.get_status(sid, actor=actor)
-    assert status.stage == "init"
-    assert svc._generation[sid]["status"] == "failed"
-
-    # 对外 envelope：retryable=True，映射为 LLM 域稳定码
-    env = envelope_for(excinfo.value)
-    assert env.code == "LLM_CALL_FAILED"
-    assert env.retryable is True
+    # 无部分状态：未落库任何剧本内容
+    async with factory() as s:
+        row = await s.get(ScriptRecord, script_id)
+    assert row is not None and row.script_data is None
 
 
-async def test_llm_invalid_output_retries_then_terminal(factory):
-    svc, sid, actor = await _prepared_app(factory, script_llm=_GarbageLLM())
+async def test_generation_invalid_output_marks_progress_failed(factory, actor):
+    library, script_id = await _generate_with(factory, actor, _GarbageLLM())
 
-    with pytest.raises(WJError) as excinfo:
-        await svc.generate_script(sid, actor=actor)
-    assert excinfo.value.code == codes.CNT_GENERATION_FAILED
-    assert await _count(factory, ScriptRecord) == 0
+    progress = library.progress(script_id)
+    assert progress is not None and progress["status"] == "failed"
+    async with factory() as s:
+        row = await s.get(ScriptRecord, script_id)
+    assert row is not None and row.script_data is None
+
+
+async def test_generation_failure_is_retryable(factory, actor):
+    llm = _RaisingLLM(new(codes.LLM_CALL_FAILED, extra={"reason": "timeout"}))
+    library, script_id = await _generate_with(factory, actor, llm)
+    assert library.progress(script_id)["status"] == "failed"
+
+    # 失败可重试：换回确定性合成后重新生成
+    library._script_llm = None
+    await library.start_generation(script_id, actor)
+    await library.await_generation(script_id)
+    assert library.progress(script_id)["status"] == "succeeded"
+    async with factory() as s:
+        row = await s.get(ScriptRecord, script_id)
+    assert row.script_data is not None
 
 
 # ===== DB 事务故障 =====
 
 
-async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeypatch):
-    svc, sid, actor = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid, actor=actor)
+async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, actor, monkeypatch):
+    svc, sid = await _playable(factory, actor)
+    role = (await svc.get_status(sid, actor=actor)).playable_roles[0]
     events_before = await _count(factory, GameEventRecord)
 
     original = PersistentEventStore.write_pending
@@ -203,7 +185,7 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeyp
 
     monkeypatch.setattr(PersistentEventStore, "write_pending", _boom)
 
-    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role})
     with pytest.raises(WJError) as excinfo:
         await svc.submit_command(sid, cmd, actor=actor)
     assert excinfo.value.code == codes.PER_WRITE_FAILED
@@ -230,13 +212,11 @@ async def test_db_failure_leaves_no_partial_state_and_can_retry(factory, monkeyp
 # ===== 快照 / schema 兼容性 =====
 
 
-async def test_corrupt_snapshot_rebuilds_without_crash(factory):
-    svc, sid, actor = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid, actor=actor)
+async def test_corrupt_snapshot_rebuilds_without_crash(factory, actor):
+    svc, sid = await _playable(factory, actor)
+    role = (await svc.get_status(sid, actor=actor)).playable_roles[0]
     await svc.submit_command(
-        sid,
-        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
-        actor=actor,
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
 
     async with factory() as s:
@@ -250,16 +230,14 @@ async def test_corrupt_snapshot_rebuilds_without_crash(factory):
     svc._runtimes.clear()
     init = await svc.session_init(sid, actor=actor)
     assert init["stage"] == "stage2_reenacting"
-    assert init["player_role"] == pkg.playable_roles[0]
+    assert init["player_role"] == role
 
 
-async def test_corrupt_snapshot_payload_rebuilds(factory):
-    svc, sid, actor = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid, actor=actor)
+async def test_corrupt_snapshot_payload_rebuilds(factory, actor):
+    svc, sid = await _playable(factory, actor)
+    role = (await svc.get_status(sid, actor=actor)).playable_roles[0]
     await svc.submit_command(
-        sid,
-        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
-        actor=actor,
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
 
     async with factory() as s:
@@ -275,14 +253,13 @@ async def test_corrupt_snapshot_payload_rebuilds(factory):
     assert init["stage"] == "stage2_reenacting"
 
 
-async def test_incompatible_script_schema_returns_clear_error(factory):
-    svc, sid, actor = await _prepared_app(factory, script_llm=None)
-    await svc.generate_script(sid, actor=actor)
+async def test_incompatible_script_schema_returns_clear_error(factory, actor):
+    svc, sid = await _playable(factory, actor)
 
     async with factory() as s:
         await s.execute(
             update(ScriptRecord)
-            .where(ScriptRecord.session_id == sid)
+            .where(ScriptRecord.id == (await _session_script_id(factory, sid)))
             .values(script_data={"broken": True})
         )
         await s.commit()
@@ -294,15 +271,22 @@ async def test_incompatible_script_schema_returns_clear_error(factory):
     assert envelope_for(excinfo.value).code == "PERSISTENCE_INCOMPATIBLE_SCHEMA"
 
 
+async def _session_script_id(factory, sid: uuid.UUID) -> int:
+    from app.models.session import Session as SessionRecord
+
+    async with factory() as s:
+        return int((await s.get(SessionRecord, sid)).script_id)
+
+
 # ===== 幂等 / 搜索降级 =====
 
 
-async def test_command_resend_no_duplicate_domain_events(factory):
-    svc, sid, actor = await _prepared_app(factory, script_llm=None)
-    pkg = await svc.generate_script(sid, actor=actor)
+async def test_command_resend_no_duplicate_domain_events(factory, actor):
+    svc, sid = await _playable(factory, actor)
+    role = (await svc.get_status(sid, actor=actor)).playable_roles[0]
 
     before = await _count(factory, GameEventRecord)
-    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]})
+    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role})
     first = await svc.submit_command(sid, cmd, actor=actor)
     after_first = await _count(factory, GameEventRecord)
     assert after_first > before

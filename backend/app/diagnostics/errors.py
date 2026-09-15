@@ -51,6 +51,9 @@ _CODE_MAP: dict[int, str] = {
     codes.AUTH_FORBIDDEN: "AUTH_FORBIDDEN",
     codes.AUTH_CSRF_FAILED: "AUTH_CSRF_FAILED",
     codes.AUTH_IDENTIFIER_TAKEN: "AUTH_IDENTIFIER_TAKEN",
+    codes.SCR_NOT_FOUND: "CONTENT_SCRIPT_NOT_FOUND",
+    codes.SCR_NOT_EDITABLE: "CONTENT_SCRIPT_NOT_EDITABLE",
+    codes.SCR_MATERIAL_NOT_FOUND: "CONTENT_MATERIAL_NOT_FOUND",
 }
 
 _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
@@ -63,6 +66,7 @@ _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
     "8": ErrorDomain.SEARCH,     # SEARCH
     "9": ErrorDomain.PROTOCOL,  # PRT
     "11": ErrorDomain.AUTH,     # AUTH
+    "12": ErrorDomain.CONTENT,  # SCR（剧本库，归入 content 域）
 }
 
 
@@ -106,6 +110,9 @@ def safe_message(err: Any) -> str:
         codes.AUTH_FORBIDDEN: "没有权限执行该操作。",
         codes.AUTH_CSRF_FAILED: "请求校验失败，请刷新页面后重试。",
         codes.AUTH_IDENTIFIER_TAKEN: "该邮箱或手机号已被注册。",
+        codes.SCR_NOT_FOUND: "剧本不存在。",
+        codes.SCR_NOT_EDITABLE: "当前状态不允许该操作（仅草稿可编辑/删除/重新生成）。",
+        codes.SCR_MATERIAL_NOT_FOUND: "素材不存在或不属于当前账号。",
     }.get(mapped)
     if base:
         return base

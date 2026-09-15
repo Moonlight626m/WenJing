@@ -213,15 +213,15 @@ def test_mutating_endpoint_requires_csrf(client):
     _act_as(client, owner)
 
     missing = client.post(
-        f"/api/sessions/{sid}/material",
-        json={"source": "paste", "raw_text": "从前有座山。"},
+        f"/api/sessions/{sid}/commands",
+        json={"session_id": sid, "kind": "exit_game"},
     )
     assert missing.status_code == 403
     assert missing.json()["code"] == "AUTH_CSRF_FAILED"
 
     bad = client.post(
-        f"/api/sessions/{sid}/material",
-        json={"source": "paste", "raw_text": "从前有座山。"},
+        f"/api/sessions/{sid}/commands",
+        json={"session_id": sid, "kind": "exit_game"},
         headers={"X-CSRF-Token": "wrong"},
     )
     assert bad.status_code == 403
@@ -248,8 +248,8 @@ def test_other_user_in_same_org_denied(client):
     assert resp.json()["code"] == "AUTH_FORBIDDEN"
 
     denied = client.post(
-        f"/api/sessions/{sid}/material",
-        json={"source": "paste", "raw_text": "从前有座山。"},
+        f"/api/sessions/{sid}/commands",
+        json={"session_id": sid, "kind": "exit_game"},
         headers=_csrf(other),
     )
     assert denied.status_code == 403

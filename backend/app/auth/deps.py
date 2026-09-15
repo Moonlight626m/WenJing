@@ -117,11 +117,14 @@ async def require_csrf(
 def require_role(
     *roles: UserRole,
 ) -> Callable[..., Coroutine[Any, Any, Principal]]:
-    """RBAC 角色门：当前用户角色不在允许集合即 403（教师创作端点等）。"""
+    """RBAC 角色门（教师创作端点等使用）。
+
+    依赖 `require_csrf`，因此在状态变更方法上同时强制角色与 CSRF 校验（GET 只校验角色）。
+    """
     allowed = frozenset(roles)
 
     async def _require_role(
-        principal: Annotated[Principal, Depends(get_principal)],
+        principal: Annotated[Principal, Depends(require_csrf)],
     ) -> Principal:
         if principal.actor.role not in allowed:
             raise new(codes.AUTH_FORBIDDEN, extra={"reason": "insufficient role"})

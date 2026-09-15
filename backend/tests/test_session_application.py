@@ -1,10 +1,10 @@
 """SessionApplication 集成测试（issue #5 验收标准，真实 PG + fake adapters）。
 
-覆盖：创建会话入库 → 真实 ingestion 导入 → fake 生成 → 命令受理（单事务持久化
-+ 幂等）→ 回溯分支 → 进程重启恢复（restore_active_branch + 快照重放）。
+覆盖：从剧本建可玩会话 → 命令受理（单事务持久化 + 幂等）→ 回溯分支 →
+进程重启恢复（restore_active_branch + 快照重放）。
 依赖真实 PostgreSQL；不可用时 skip。
 
-注（issue #18）：会话需归属，所有应用层调用显式携带 `actor`。
+注：#19 起剧本由剧本库生成，会话经 `script_id` 引用；util 见 `conftest`。
 """
 
 from __future__ import annotations
@@ -18,19 +18,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
 from app.access import Actor
-from app.agents.fake_llm import DeterministicAgentLLM
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.contracts.material import MaterialInput, MaterialSource
 from app.errx import Error as WJError
 from app.session.application import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
-)
-
-_MATERIAL_TEXT = (
-    "那年冬天，母亲病了。我离开家，到城里去买药。"
-    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
 )
 
 
@@ -77,152 +70,117 @@ async def actor(factory) -> Actor:
     return await create_actor(factory, name="应用测试学校")
 
 
-@pytest.fixture
-def app_svc(factory) -> SessionApplication:
-    return SessionApplication(
-        session_factory=factory, agent_llm=DeterministicAgentLLM(), script_llm=None
-    )
-
-
 def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> PlayerCommand:
     return PlayerCommand(session_id=sid, kind=kind, payload=payload or {})
 
 
-async def _new_session(app_svc: SessionApplication, actor: Actor) -> uuid.UUID:
-    created = await app_svc.create_session(
-        org_id=actor.org_id, owner_user_id=actor.user_id
-    )
-    return created.session_id
+async def test_full_vertical_flow(factory, actor):
+    from conftest import make_playable_session
 
-
-async def test_full_vertical_flow(app_svc: SessionApplication, actor: Actor):
-    # 1. 创建会话（真实 sessions 表，带归属）
-    sid = await _new_session(app_svc, actor)
-    status = await app_svc.get_status(sid, actor=actor)
-    assert status.stage == "init"
-
-    # 2. 导入材料（真实 ingestion + 原文分析）
-    analysis = await app_svc.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    assert analysis.characters, "叙事样例应提取出人物"
-
-    # 3. 生成（fake-backed：确定性合成）
-    pkg = await app_svc.generate_script(sid, actor=actor)
-    assert pkg.characters and pkg.scenes
-    status = await app_svc.get_status(sid, actor=actor)
+    app, sid = await make_playable_session(factory, actor)
+    status = await app.get_status(sid, actor=actor)
     assert status.stage == "stage1_complete"
-    assert "我" in status.playable_roles or status.playable_roles
+    assert status.playable_roles
+    role = status.playable_roles[0]
 
-    # 4. 选角 → RuntimeUpdate 投影
-    upd = await app_svc.submit_command(
-        sid,
-        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
-        actor=actor,
+    # 选角 → RuntimeUpdate 投影
+    upd = await app.submit_command(
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.new_events
     assert upd.state.active_interaction is not None
 
-    # 5. 输入命令推进
-    upd2 = await app_svc.submit_command(
+    # 输入命令推进
+    upd2 = await app.submit_command(
         sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd2.new_events
 
-    # 6. 会话行 head/version/active_branch 已推进
-    status = await app_svc.get_status(sid, actor=actor)
+    # 会话行 head/version/active_branch 已推进
+    status = await app.get_status(sid, actor=actor)
     assert status.head_sequence > 0
-    assert status.selected_role == pkg.playable_roles[0]
+    assert status.selected_role == role
 
 
-async def test_command_idempotent_via_commands_table(
-    app_svc: SessionApplication, actor: Actor
-):
-    sid = await _new_session(app_svc, actor)
-    await app_svc.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    await app_svc.generate_script(sid, actor=actor)
+async def test_command_idempotent_via_commands_table(factory, actor):
+    from conftest import make_playable_session
 
-    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"})
-    first = await app_svc.submit_command(sid, cmd, actor=actor)
+    app, sid = await make_playable_session(factory, actor)
+    role = (await app.get_status(sid, actor=actor)).playable_roles[0]
+
+    cmd = _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role})
+    first = await app.submit_command(sid, cmd, actor=actor)
     events_after_first = len(first.new_events)
 
     # 同 command_id 重发：不重复执行、不产生新事件
-    second = await app_svc.submit_command(sid, cmd, actor=actor)
+    second = await app.submit_command(sid, cmd, actor=actor)
     assert second.new_events == []
     assert second.state.stage == first.state.stage
     _ = events_after_first
 
 
-async def test_rollback_switches_branch_atomically(
-    app_svc: SessionApplication, actor: Actor
-):
-    sid = await _new_session(app_svc, actor)
-    await app_svc.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
+async def test_rollback_switches_branch_atomically(factory, actor):
+    from conftest import make_playable_session
+
+    app, sid = await make_playable_session(factory, actor)
+    role = (await app.get_status(sid, actor=actor)).playable_roles[0]
+    await app.submit_command(
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
-    await app_svc.generate_script(sid, actor=actor)
-    await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"}), actor=actor
-    )
-    await app_svc.submit_command(
+    await app.submit_command(
         sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
 
-    upd = await app_svc.submit_command(
+    upd = await app.submit_command(
         sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3}), actor=actor
     )
     assert upd.new_events  # rollback 事件 + 重新推进
-    status = await app_svc.get_status(sid, actor=actor)
+    status = await app.get_status(sid, actor=actor)
     assert status.head_sequence > 0
 
 
-async def test_restore_after_restart_replays_state(
-    app_svc: SessionApplication, actor: Actor
-):
-    sid = await _new_session(app_svc, actor)
-    await app_svc.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    await app_svc.generate_script(sid, actor=actor)
-    upd1 = await app_svc.submit_command(
-        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": "我"}), actor=actor
+async def test_restore_after_restart_replays_state(factory, actor):
+    from conftest import make_playable_session
+
+    app, sid = await make_playable_session(factory, actor)
+    role = (await app.get_status(sid, actor=actor)).playable_roles[0]
+    upd1 = await app.submit_command(
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
     stage_before = upd1.state.stage.value
 
     # 模拟进程重启：清空进程内运行时，命令触发 DB 重建
-    app_svc._runtimes.clear()
-    upd2 = await app_svc.submit_command(
+    app._runtimes.clear()
+    upd2 = await app.submit_command(
         sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd2.state.stage.value == stage_before  # 从恢复点继续推进
     assert upd2.state.active_interaction is not None
-    assert upd2.state.plot_context["player_role"] == "我"
+    assert upd2.state.plot_context["player_role"] == role
 
 
-async def test_generate_without_material_fails_cleanly(
-    app_svc: SessionApplication, actor: Actor
-):
-    sid = await _new_session(app_svc, actor)
+async def test_initialize_without_script_fails_cleanly(factory, actor):
+    from app.agents.fake_llm import DeterministicAgentLLM
+
+    app = SessionApplication(
+        session_factory=factory, agent_llm=DeterministicAgentLLM()
+    )
+    sid = (
+        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
+    ).session_id
     with pytest.raises(WJError):
-        await app_svc.generate_script(sid, actor=actor)
+        await app.initialize_session(sid, actor)
 
 
-async def test_commands_on_unknown_session_rejected(
-    app_svc: SessionApplication, actor: Actor
-):
+async def test_commands_on_unknown_session_rejected(factory, actor):
+    from app.agents.fake_llm import DeterministicAgentLLM
+
+    app = SessionApplication(
+        session_factory=factory, agent_llm=DeterministicAgentLLM()
+    )
     ghost = uuid.uuid4()
     with pytest.raises(WJError):
-        await app_svc.submit_command(
+        await app.submit_command(
             ghost, _cmd(ghost, CommandKind.EXIT_GAME), actor=actor
         )

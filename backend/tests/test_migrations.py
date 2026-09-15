@@ -201,6 +201,44 @@ async def test_resource_ownership_columns(migrated: Config):
         await engine.dispose()
 
 
+async def test_script_library_columns(migrated: Config):
+    """剧本实体化（ADR-0002 / #19）：scripts 生命周期列齐备，session 解绑。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            script_cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'scripts' and table_schema = 'public'"
+                    )
+                )
+            }
+            material_cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'materials' and table_schema = 'public'"
+                    )
+                )
+            }
+        required = {
+            "name",
+            "description",
+            "material_id",
+            "status",
+            "visibility",
+            "updated_at",
+        }
+        assert required <= script_cols, f"scripts 缺列: {required - script_cols}"
+        assert "session_id" not in script_cols
+        assert "session_id" not in material_cols
+    finally:
+        await engine.dispose()
+
+
 async def test_events_branch_sequence_unique(migrated: Config):
     """(branch_id, sequence) 唯一约束能阻断重复回放写入。"""
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})

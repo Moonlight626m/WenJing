@@ -22,6 +22,14 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.material import Material, MaterialInput
 from app.contracts.runtime import GameSnapshot, RuntimeState, RuntimeUpdate
+from app.contracts.script_library import (
+    MaterialPublic,
+    ScriptCreateRequest,
+    ScriptDetail,
+    ScriptListResponse,
+    ScriptPublishRequest,
+    ScriptSummary,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO_ROOT / "contracts" / "jsonschema"
@@ -33,6 +41,7 @@ EXPORTS: dict[str, type] = {
     "auth_session_info": AuthSessionInfo,
     "material_input": MaterialInput,
     "material": Material,
+    "material_public": MaterialPublic,
     "text_analysis": TextAnalysis,
     "player_command": PlayerCommand,
     "domain_event": DomainEvent,
@@ -41,6 +50,11 @@ EXPORTS: dict[str, type] = {
     "runtime_update": RuntimeUpdate,
     "error_envelope": ErrorEnvelope,
     "server_message": ServerMessage,
+    "script_create_request": ScriptCreateRequest,
+    "script_publish_request": ScriptPublishRequest,
+    "script_summary": ScriptSummary,
+    "script_detail": ScriptDetail,
+    "script_list_response": ScriptListResponse,
 }
 
 

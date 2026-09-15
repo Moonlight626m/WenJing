@@ -64,6 +64,11 @@ AUTH_FORBIDDEN = 11003              # 已登录但无权限访问该资源
 AUTH_CSRF_FAILED = 11004            # 状态变更请求缺少/错误的 CSRF token
 AUTH_IDENTIFIER_TAKEN = 11005       # 邮箱或手机号已被注册
 
+# ===== 剧本库（SCR，issue #19 / ADR-0002）=====
+SCR_NOT_FOUND = 12001               # 剧本不存在
+SCR_NOT_EDITABLE = 12002            # 当前状态不允许该操作（非草稿删除/重生、发布后改内容）
+SCR_MATERIAL_NOT_FOUND = 12003      # 素材不存在或不属于当前用户
+
 
 def register_all() -> None:
     """注册全部错误码（应用启动时调用一次，幂等）。"""
@@ -162,5 +167,17 @@ def register_all() -> None:
     register(
         AUTH_IDENTIFIER_TAKEN,
         "identifier already registered: {identifier}",
+        is_affect_stability=False,
+    )
+
+    register(SCR_NOT_FOUND, "script {id} not found", is_affect_stability=False)
+    register(
+        SCR_NOT_EDITABLE,
+        "script {id} is not editable in status {status}",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_MATERIAL_NOT_FOUND,
+        "material {id} not found or not owned by actor",
         is_affect_stability=False,
     )

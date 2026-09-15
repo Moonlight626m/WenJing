@@ -1,0 +1,538 @@
+{
+  "$defs": {
+    "Beat": {
+      "additionalProperties": false,
+      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "beat_id": {
+          "title": "Beat Id",
+          "type": "integer"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "is_key_event": {
+          "default": false,
+          "title": "Is Key Event",
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "original_text": "#/$defs/OriginalEvidence",
+                "web": "#/$defs/WebEvidence"
+              },
+              "propertyName": "source_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/OriginalEvidence"
+              },
+              {
+                "$ref": "#/$defs/WebEvidence"
+              }
+            ]
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "beat_id",
+        "description"
+      ],
+      "title": "Beat",
+      "type": "object"
+    },
+    "CharacterProfile": {
+      "additionalProperties": false,
+      "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "public_background": {
+          "title": "Public Background",
+          "type": "string"
+        },
+        "personality_traits": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Personality Traits",
+          "type": "array"
+        },
+        "speech_style": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speech Style"
+        },
+        "is_player_playable": {
+          "default": false,
+          "title": "Is Player Playable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "public_background"
+      ],
+      "title": "CharacterProfile",
+      "type": "object"
+    },
+    "GenerationPhaseState": {
+      "additionalProperties": false,
+      "description": "单个生成阶段（体裁判断/网络研究/生成/验证）的状态。",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "degraded"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        }
+      },
+      "required": [
+        "name",
+        "state"
+      ],
+      "title": "GenerationPhaseState",
+      "type": "object"
+    },
+    "GenerationProgress": {
+      "additionalProperties": false,
+      "description": "生成进度：长时间生成过程不是黑盒。",
+      "properties": {
+        "status": {
+          "enum": [
+            "idle",
+            "running",
+            "succeeded",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "phases": {
+          "items": {
+            "$ref": "#/$defs/GenerationPhaseState"
+          },
+          "title": "Phases",
+          "type": "array"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "GenerationProgress",
+      "type": "object"
+    },
+    "OriginalEvidence": {
+      "additionalProperties": false,
+      "description": "原文证据：以原文字符区间或段落标识定位。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "const": "original_text",
+          "default": "original_text",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "excerpt": {
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "paragraph_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paragraph Index"
+        },
+        "char_start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char Start"
+        },
+        "char_end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char End"
+        }
+      },
+      "required": [
+        "excerpt"
+      ],
+      "title": "OriginalEvidence",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "description": "剧本中的一个场景：参与者 + 有序 beats。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scene_id": {
+          "title": "Scene Id",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/Beat"
+          },
+          "title": "Beats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scene_id",
+        "title"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "ScriptPackage": {
+      "additionalProperties": false,
+      "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "characters": {
+          "items": {
+            "$ref": "#/$defs/CharacterProfile"
+          },
+          "minItems": 1,
+          "title": "Characters",
+          "type": "array"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/Scene"
+          },
+          "minItems": 1,
+          "title": "Scenes",
+          "type": "array"
+        },
+        "teaching_focus": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Teaching Focus",
+          "type": "array"
+        },
+        "playable_roles": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Playable Roles",
+          "type": "array"
+        },
+        "stage2_ending_beat_id": {
+          "title": "Stage2 Ending Beat Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "title",
+        "characters",
+        "scenes",
+        "playable_roles",
+        "stage2_ending_beat_id"
+      ],
+      "title": "ScriptPackage",
+      "type": "object"
+    },
+    "ScriptStatus": {
+      "description": "可复用剧本实体的生命周期（ADR-0002 §3）：草稿→发布→下架。",
+      "enum": [
+        "draft",
+        "published",
+        "unpublished"
+      ],
+      "title": "ScriptStatus",
+      "type": "string"
+    },
+    "ScriptSummary": {
+      "additionalProperties": false,
+      "description": "剧本列表项/发布结果的轻量投影。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "status": {
+          "$ref": "#/$defs/ScriptStatus"
+        },
+        "visibility": {
+          "$ref": "#/$defs/ScriptVisibility"
+        },
+        "material_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Material Id"
+        },
+        "owner_user_id": {
+          "format": "uuid",
+          "title": "Owner User Id",
+          "type": "string"
+        },
+        "org_id": {
+          "format": "uuid",
+          "title": "Org Id",
+          "type": "string"
+        },
+        "created_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created At"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "visibility",
+        "owner_user_id",
+        "org_id"
+      ],
+      "title": "ScriptSummary",
+      "type": "object"
+    },
+    "ScriptVisibility": {
+      "description": "已发布剧本的可见性：同 org / 公开（跨 org）。",
+      "enum": [
+        "org",
+        "public"
+      ],
+      "title": "ScriptVisibility",
+      "type": "string"
+    },
+    "WebEvidence": {
+      "additionalProperties": false,
+      "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "const": "web",
+          "default": "web",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "fetched_at": {
+          "format": "date-time",
+          "title": "Fetched At",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "excerpt": {
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "fetched_at",
+        "content_hash",
+        "excerpt"
+      ],
+      "title": "WebEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "script": {
+      "$ref": "#/$defs/ScriptSummary"
+    },
+    "package": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScriptPackage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "generation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GenerationProgress"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "script"
+  ],
+  "title": "ScriptDetail",
+  "type": "object"
+}

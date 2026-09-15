@@ -28,34 +28,28 @@ _application = None
 def get_application():
     """进程级 SessionApplication 单例。
 
-    #12 真实集成组装：配置 LLM key 时 agent/script 共用同一 provider
-    （DeepSeek/OpenAI…），RAG 走安全抓取（无搜索 provider 时降级为纯原文）；
-    无 key 回落 DeterministicAgentLLM + 确定性合成（快速演示模式）。
+    #12 真实集成组装：配置 LLM key 时用真实 provider（DeepSeek/OpenAI…）；
+    无 key 回落 DeterministicAgentLLM（快速演示/测试模式）。
+    剧本生成/素材导入在 `app/api/scripts.py` 的 ScriptLibrary 中组装。
     """
     global _application
     if _application is None:
         from app.agents.fake_llm import DeterministicAgentLLM
         from app.db.session import SessionLocal
-        from app.rag.service import RagService
         from app.session.application import SessionApplication
 
         settings = get_settings()
         agent_llm: object = DeterministicAgentLLM()
-        script_llm = None
         if settings.llm_api_key:
             try:
                 from app.agents.model_config import ModelServiceFactory
 
                 agent_llm = ModelServiceFactory.build(settings.llm_model_config())
-                script_llm = agent_llm
             except Exception:
                 agent_llm = DeterministicAgentLLM()
         _application = SessionApplication(
             session_factory=SessionLocal,
             agent_llm=agent_llm,
-            script_llm=script_llm,
-            rag=RagService(),
-            model_name=settings.llm_model,
         )
     return _application
 
@@ -124,7 +118,7 @@ async def session_status(
     session_id: str,
     principal: Annotated[Principal, Depends(get_principal)],
 ) -> dict[str, Any]:
-    """会话状态查询（#5）：stage/分支/head/可扮演角色/生成进度。"""
+    """会话状态查询（#5）：stage/分支/head/可扮演角色。"""
     try:
         resp = await get_application().get_status(
             _ensure_uuid(session_id), actor=principal.actor
@@ -132,40 +126,6 @@ async def session_status(
     except WJError as exc:
         return _error_response(exc)
     return resp.model_dump(mode="json")
-
-
-@router.post("/api/sessions/{session_id}/material")
-async def import_material(
-    session_id: str,
-    body: dict[str, Any],
-    principal: Annotated[Principal, Depends(require_csrf)],
-) -> dict[str, Any]:
-    """导入课文材料（#5）：走真实 ingestion 校验 + 原文分析。"""
-    from app.contracts.material import MaterialInput
-
-    try:
-        inp = MaterialInput.model_validate(body)
-        analysis = await get_application().import_material(
-            _ensure_uuid(session_id), inp, actor=principal.actor
-        )
-    except WJError as exc:
-        return _error_response(exc)
-    return analysis.model_dump(mode="json")
-
-
-@router.post("/api/sessions/{session_id}/generate")
-async def generate_script(
-    session_id: str,
-    principal: Annotated[Principal, Depends(require_csrf)],
-) -> dict[str, Any]:
-    """Stage1 生成（#5 fake-backed）：产出合法 ScriptPackage。"""
-    try:
-        pkg = await get_application().generate_script(
-            _ensure_uuid(session_id), actor=principal.actor
-        )
-    except WJError as exc:
-        return _error_response(exc)
-    return pkg.model_dump(mode="json")
 
 
 @router.post("/api/sessions/{session_id}/commands")

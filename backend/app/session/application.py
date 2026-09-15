@@ -1,8 +1,8 @@
-"""SessionApplication：fake-backed 后端竖切的应用核心（issue #5）。
+"""SessionApplication：游玩竖切的应用核心（issue #5；#19 起剧本由剧本库提供）。
 
 职责与接缝：
-- 生命周期：create_session → import_material（真实 ingestion）→ generate_script
-  （默认确定性合成，可注入 LLM）→ submit_command → get_status。
+- 生命周期：create_session(script_id) → submit_command → get_status；剧本由剧本库
+  生成并发布，会话经 `script_id` 引用（生成/导入素材不在此，见 `app/scripts`）。
 - 事务边界：一次命令受理 = commands 行 + events 行 + sessions head/version/
   active_branch 同一事务提交（`PersistentEventStore.write_pending` 事务外置）。
 - 幂等：commands 表主键为第一道闸；runtime 内存 `_processed_commands` 为第二道。
@@ -25,11 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.access import Actor, require_session_access
 from app.agents.llm_service import LLMService
-from app.content.pipeline import ContentPipeline
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.contracts.content import TextAnalysis
 from app.contracts.dto import CreateSessionResponse, SessionStatusResponse
-from app.contracts.material import MaterialInput, WebEvidence
 from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.core.engine_config import EngineConfig
@@ -38,27 +35,17 @@ from app.core.script_adapter import script_package_to_script
 from app.db.branch import commit_rollback_branch  # noqa: F401  (回溯专用原子路径)
 from app.db.event_store import PersistentEventStore, branch_uuid
 from app.errx import codes, new, wrap
-from app.generation.stage1 import (
-    PROMPT_VERSION,
-    GenerationTelemetry,
-    Stage1Generator,
-    synthesize_script_package,
-)
 from app.models.command import CommandRecord, CommandStatus
 from app.models.event import EVENTS_SCHEMA_VERSION
-from app.models.material import Material as MaterialRecord
 from app.models.script import Script as ScriptRecord
 from app.models.session import Session as SessionRecord
 from app.models.snapshot import Snapshot as SnapshotRecord
-from app.rag.service import RagService
 from app.session.projection import (
     project_messages,
     project_state,
     project_status,
     project_update,
 )
-
-_GENERATION_PHASES = ("genre", "research", "generate", "verify")
 
 logger = logging.getLogger("wenjing.session.application")
 
@@ -71,33 +58,34 @@ class SessionApplication:
         *,
         session_factory: async_sessionmaker[AsyncSession],
         agent_llm: LLMService,
-        script_llm: LLMService | None = None,
-        content_pipeline: ContentPipeline | None = None,
-        rag: RagService | None = None,
         config: EngineConfig | None = None,
-        model_name: str = "",
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
-        self._script_llm = script_llm
-        self._pipeline = content_pipeline or ContentPipeline()
-        self._rag = rag
         self._config = config or EngineConfig()
-        self._model_name = model_name
         self._runtimes: dict[uuid.UUID, GameRuntime] = {}
         self._packages: dict[uuid.UUID, ScriptPackage] = {}
-        self._analyses: dict[uuid.UUID, TextAnalysis] = {}
-        self._generation: dict[uuid.UUID, dict] = {}
 
     # ===== 创建 =====
 
     async def create_session(
-        self, *, org_id: uuid.UUID, owner_user_id: uuid.UUID
+        self,
+        *,
+        org_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        script_id: int | None = None,
     ) -> CreateSessionResponse:
-        """新建「剧情世界」，归属创建者（owner/org 由调用方从 Principal 带来）。"""
+        """新建「剧情世界」，归属创建者并引用一个剧本（owner/org 由 Principal 带来）。"""
         sid = uuid.uuid4()
         async with self._factory() as s:
-            s.add(SessionRecord(id=sid, org_id=org_id, owner_user_id=owner_user_id))
+            s.add(
+                SessionRecord(
+                    id=sid,
+                    org_id=org_id,
+                    owner_user_id=owner_user_id,
+                    script_id=script_id,
+                )
+            )
             await s.commit()
         return CreateSessionResponse(session_id=sid, created_at=datetime.now(UTC))
 
@@ -112,127 +100,29 @@ class SessionApplication:
         require_session_access(actor, sess)
         return sess
 
-    # ===== 材料导入（真实 ingestion）=====
+    async def initialize_session(self, session_id: uuid.UUID, actor: Actor) -> None:
+        """从会话引用的剧本初始化运行时：stage1_complete + 开场事件落库。
 
-    async def import_material(
-        self,
-        session_id: uuid.UUID,
-        inp: MaterialInput,
-        *,
-        actor: Actor,
-        raw_bytes: bytes | None = None,
-    ) -> TextAnalysis:
-        # 先鉴权再处理：非 owner 不应触发 ingestion/RAG 等任何处理。
-        sess = await self._access_session(session_id, actor)
-        org_id, owner_user_id = sess.org_id, sess.owner_user_id
-        analysis = self._pipeline.analyze(inp, raw_bytes=raw_bytes)
-        async with self._factory() as s:
-            row = MaterialRecord(
-                session_id=session_id,
-                org_id=org_id,
-                owner_user_id=owner_user_id,
-                raw_text=inp.raw_text,
-                collection_output=analysis.model_dump(mode="json"),
+        #21 会把它接到「从剧本创建 session(script_id)」入口；当前供内部/测试使用。
+        """
+        await self._access_session(session_id, actor)
+        package = await self._load_package(session_id)
+        if package is None:
+            raise new(
+                codes.SESS_NOT_FOUND,
+                extra={"id": str(session_id), "reason": "script not generated"},
             )
-            s.add(row)
-            await s.flush()
-            material_id = row.id
-            await s.execute(
-                update(SessionRecord)
-                .where(SessionRecord.id == session_id)
-                .values(material_id=material_id)
-            )
-            await s.commit()
-        self._analyses[session_id] = analysis
-        return analysis
-
-    # ===== Stage1 生成（真实 LLM 默认 / 无 key 确定性合成）=====
-
-    async def _research(self, analysis: TextAnalysis) -> tuple[list[WebEvidence], str]:
-        """开放网络资料补充（#12 真实 RAG 集成）：失败/无来源降级为空证据。"""
-        if self._rag is None:
-            return [], "degraded"
-        query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
-        web = await self._rag.research(query or analysis.genre.genre.value)
-        return web, ("succeeded" if web else "degraded")
-
-    async def generate_script(
-        self, session_id: uuid.UUID, *, actor: Actor
-    ) -> ScriptPackage:
-        sess = await self._access_session(session_id, actor)
-        org_id, owner_user_id = sess.org_id, sess.owner_user_id
-        analysis = await self._load_analysis(session_id)
-        web, research_state = await self._research(analysis)
-        self._generation[session_id] = self._progress(
-            "running", {"genre": "succeeded", "research": research_state}
-        )
-
-        started = datetime.now(UTC)
-        try:
-            if self._script_llm is None:
-                package = synthesize_script_package(analysis)
-                telemetry = GenerationTelemetry(
-                    model="deterministic",
-                    prompt_version=PROMPT_VERSION,
-                    schema_version=package.schema_version,
-                    latency_ms=0,
-                    token_count=0,
-                    retries=0,
-                )
-            else:
-                outcome = await Stage1Generator(
-                    self._script_llm, model=self._model_name
-                ).generate(
-                    analysis,
-                    web_evidence=web,
-                    session_id=str(session_id),
-                )
-                package, telemetry = outcome.script_package, outcome.telemetry
-        except Exception as exc:
-            self._generation[session_id] = self._progress(
-                "failed", detail=str(getattr(exc, "code", exc))
-            )
-            raise
-
-        async with self._factory() as s:
-            row = ScriptRecord(
-                session_id=session_id,
-                org_id=org_id,
-                owner_user_id=owner_user_id,
-                title=package.title,
-                script_data=package.model_dump(mode="json"),
-                verification={
-                    "model": telemetry.model,
-                    "prompt_version": telemetry.prompt_version,
-                    "schema_version": telemetry.schema_version,
-                    "latency_ms": telemetry.latency_ms,
-                    "token_count": telemetry.token_count,
-                    "retries": telemetry.retries,
-                },
-            )
-            s.add(row)
-            await s.flush()
-            script_db_id = row.id
-            await s.execute(
-                update(SessionRecord)
-                .where(SessionRecord.id == session_id)
-                .values(
-                    script_id=script_db_id,
-                    current_stage="stage1_complete",
-                )
-            )
-            await s.commit()
-
-        self._packages[session_id] = package
-        self._generation[session_id] = self._progress(
-            "succeeded", {"research": research_state}
-        )
         runtime, store = self._build_runtime(session_id, package)
         await runtime.start()
         await self._commit_system_events(session_id, store)
+        async with self._factory() as s:
+            await s.execute(
+                update(SessionRecord)
+                .where(SessionRecord.id == session_id)
+                .values(current_stage=runtime.state.stage)
+            )
+            await s.commit()
         self._runtimes[session_id] = runtime
-        _ = started
-        return package
 
     # ===== 命令受理（幂等 + 单事务持久化）=====
 
@@ -400,7 +290,7 @@ class SessionApplication:
             head_event_id=sess.head_event_id,
             playable_roles=playable,
             selected_role=sess.player_role,
-            generation=self._generation.get(session_id),
+            generation=None,
         )
 
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====
@@ -461,18 +351,15 @@ class SessionApplication:
         从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
         """
         async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+            script_id = sess.script_id if sess is not None else None
             script_row = (
-                await s.execute(
-                    select(ScriptRecord)
-                    .where(ScriptRecord.session_id == session_id)
-                    .order_by(ScriptRecord.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if script_row is None:
+                await s.get(ScriptRecord, script_id) if script_id is not None else None
+            )
+            if script_row is None or script_row.script_data is None:
                 raise new(
                     codes.SESS_NOT_FOUND,
-                    extra={"id": str(session_id), "reason": "script not generated"},
+                    extra={"id": str(session_id), "reason": "script not available"},
                 )
             try:
                 package = ScriptPackage.model_validate(script_row.script_data)
@@ -558,41 +445,16 @@ class SessionApplication:
 
     async def _load_package(self, session_id: uuid.UUID) -> ScriptPackage | None:
         async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+            script_id = sess.script_id if sess is not None else None
             row = (
-                await s.execute(
-                    select(ScriptRecord)
-                    .where(ScriptRecord.session_id == session_id)
-                    .order_by(ScriptRecord.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-        if row is None:
+                await s.get(ScriptRecord, script_id) if script_id is not None else None
+            )
+        if row is None or row.script_data is None:
             return None
         package = ScriptPackage.model_validate(row.script_data)
         self._packages[session_id] = package
         return package
-
-    async def _load_analysis(self, session_id: uuid.UUID) -> TextAnalysis:
-        analysis = self._analyses.get(session_id)
-        if analysis is not None:
-            return analysis
-        async with self._factory() as s:
-            row = (
-                await s.execute(
-                    select(MaterialRecord)
-                    .where(MaterialRecord.session_id == session_id)
-                    .order_by(MaterialRecord.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-        if row is None:
-            raise new(
-                codes.SESS_NOT_FOUND,
-                extra={"id": str(session_id), "reason": "material not imported"},
-            )
-        analysis = TextAnalysis.model_validate(row.collection_output)
-        self._analyses[session_id] = analysis
-        return analysis
 
     @staticmethod
     def _engine_payload(
@@ -637,29 +499,6 @@ class SessionApplication:
             allowed_commands=[],
             duplicate=duplicate,
         )
-
-    @staticmethod
-    def _progress(
-        status: str, phase_states: dict | None = None, *, detail: str | None = None
-    ) -> dict:
-        phase_state = {
-            "genre": "pending",
-            "research": "pending",
-            "generate": "pending",
-            "verify": "pending",
-        }
-        phase_state.update(phase_states or {})
-        if status == "running":
-            phase_state["generate"] = "running"
-        elif status == "succeeded":
-            phase_state |= {"genre": "succeeded", "generate": "succeeded", "verify": "succeeded"}
-        return {
-            "status": status,
-            "phases": [
-                {"name": name, "state": phase_state[name], "detail": detail}
-                for name in _GENERATION_PHASES
-            ],
-        }
 
 
 __all__ = ["SessionApplication"]

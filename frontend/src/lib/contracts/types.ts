@@ -109,6 +109,76 @@ export interface AuthSessionInfo {
   csrf_token: string;
 }
 
+// ===== 剧本库（issue #19 / ADR-0002 §3）=====
+
+export type ScriptStatus = "draft" | "published" | "unpublished";
+export type ScriptVisibility = "org" | "public";
+
+export type GenerationPhaseStateValue =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "degraded";
+
+export interface GenerationPhaseState {
+  name: string;
+  state: GenerationPhaseStateValue;
+  detail: string | null;
+}
+
+export interface GenerationProgress {
+  status: "idle" | "running" | "succeeded" | "failed";
+  phases: GenerationPhaseState[];
+}
+
+export interface MaterialPublic {
+  schema_version: string;
+  id: number;
+  title: string | null;
+  content_hash: string;
+  char_count: number;
+  created_at: string | null;
+}
+
+export interface ScriptCreateRequest {
+  schema_version: string;
+  material_id: number;
+  name: string;
+  description: string | null;
+}
+
+export interface ScriptPublishRequest {
+  schema_version: string;
+  visibility: ScriptVisibility;
+}
+
+export interface ScriptSummary {
+  schema_version: string;
+  id: number;
+  name: string;
+  description: string | null;
+  status: ScriptStatus;
+  visibility: ScriptVisibility;
+  material_id: number | null;
+  owner_user_id: string;
+  org_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ScriptDetail {
+  schema_version: string;
+  script: ScriptSummary;
+  package: ScriptPackage | null;
+  generation: GenerationProgress | null;
+}
+
+export interface ScriptListResponse {
+  schema_version: string;
+  items: ScriptSummary[];
+}
+
 // ===== 材料与证据 =====
 
 export interface MaterialInput {

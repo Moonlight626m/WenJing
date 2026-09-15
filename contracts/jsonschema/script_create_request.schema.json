@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "从素材创建剧本草稿：name/description 为教师命名，内容待生成。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "material_id": {
+      "title": "Material Id",
+      "type": "integer"
+    },
+    "name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    }
+  },
+  "required": [
+    "material_id",
+    "name"
+  ],
+  "title": "ScriptCreateRequest",
+  "type": "object"
+}

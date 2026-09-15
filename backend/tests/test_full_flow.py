@@ -1,7 +1,7 @@
 """真实核心集成端到端（issue #12，真实 PG + 真实管线 + fake agent LLM）。
 
 以 SessionApplication 为唯一入口跑通：
-Stage1 生成 → 选角 → Stage2 至结局 → Stage3（三交互模式）→ 回溯分支 →
+（剧本由剧本库生成）→ 选角 → Stage2 至结局 → Stage3（三交互模式）→ 回溯分支 →
 重启恢复 → 退出（terminal）→ 终局后命令报错（envelope + error_id）。
 
 生成用确定性合成（真 LLM 路径由 scripts/e2e_real_flow.py 驱动）；
@@ -19,22 +19,15 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
-from app.access import Actor
 from app.agents.fake_llm import DeterministicAgentLLM
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.contracts.material import MaterialInput, MaterialSource
-from app.db.event_store import PersistentEventStore, branch_uuid
+from app.db.event_store import branch_uuid
 from app.diagnostics.errors import envelope_for
 from app.errx import Error as WJError
 from app.session.application import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
-)
-
-_MATERIAL_TEXT = (
-    "那年冬天，母亲病了。我离开家，到城里去买药。"
-    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
 )
 
 
@@ -74,27 +67,30 @@ async def factory():
         await engine.dispose()
 
 
-def _make_app(factory) -> SessionApplication:
-    return SessionApplication(
-        session_factory=factory,
-        agent_llm=DeterministicAgentLLM(),
-        script_llm=None,
-    )
-
-
 @pytest.fixture(scope="module")
-async def actor(factory) -> Actor:
-    """会话归属所需的领域身份（#18）：一个 org + 一个教师账号。"""
+async def actor(factory):
     from conftest import create_actor
 
     return await create_actor(factory, name="全流程测试学校")
+
+
+def _make_app(factory) -> SessionApplication:
+    return SessionApplication(
+        session_factory=factory, agent_llm=DeterministicAgentLLM()
+    )
+
+
+async def _playable(factory, actor):
+    from conftest import make_playable_session
+
+    return await make_playable_session(factory, actor)
 
 
 def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> PlayerCommand:
     return PlayerCommand(session_id=sid, kind=kind, payload=payload or {})
 
 
-async def _active_store(app: SessionApplication, sid: uuid.UUID) -> PersistentEventStore:
+async def _active_store(app: SessionApplication, sid: uuid.UUID):
     runtime, store = await app._ensure_runtime(sid)
     _ = runtime
     return store
@@ -104,7 +100,7 @@ async def _advance_until(
     app: SessionApplication,
     sid: uuid.UUID,
     *,
-    actor: Actor,
+    actor,
     kind: CommandKind = CommandKind.CHOOSE_OPTION,
     payload: dict | None = None,
     predicate,
@@ -124,32 +120,14 @@ async def _advance_until(
 
 
 async def test_stage1_to_stage3_full_flow(factory, actor):
-    app = _make_app(factory)
-    sid = (
-        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
-    ).session_id
-
-    # 导入（真实 ContentPipeline）
-    analysis = await app.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    assert analysis.genre.is_supported and analysis.characters
-
-    # 生成（确定性合成）+ 进度记录
-    pkg = await app.generate_script(sid, actor=actor)
+    app, sid = await _playable(factory, actor)
     status = await app.get_status(sid, actor=actor)
     assert status.stage == "stage1_complete"
-    assert status.generation is not None and status.generation.status == "succeeded"
-    phases = {p.name: p.state for p in status.generation.phases}
-    assert phases["genre"] == "succeeded" and phases["verify"] == "succeeded"
+    role = status.playable_roles[0]
 
     # 选角 → Stage2（模式 A：options）
     upd = await app.submit_command(
-        sid,
-        _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": pkg.playable_roles[0]}),
-        actor=actor,
+        sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
     )
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.state.active_interaction is not None
@@ -189,7 +167,8 @@ async def test_stage1_to_stage3_full_flow(factory, actor):
     before_events = len(store.active_events())
     before_branch = branch_uuid(sid, store.active_branch_id)
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3}),
+        sid,
+        _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_sequence": 3}),
         actor=actor,
     )
     store = await _active_store(app, sid)
@@ -230,52 +209,6 @@ async def test_stage1_to_stage3_full_flow(factory, actor):
         assert env.code == "SESSION_ENDED"
         assert str(env.error_id), "error_id 必须存在（服务端日志可对账）"
         assert env.message
-
-
-async def test_import_rejects_garbage_with_envelope(factory, actor):
-    app = _make_app(factory)
-    sid = (
-        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
-    ).session_id
-    try:
-        # 非叙事体裁（说明文）→ 内容域错误 envelope
-        await app.import_material(
-            sid,
-            MaterialInput(
-                source=MaterialSource.PASTE,
-                raw_text="地球绕太阳公转。水由氢和氧组成。光速约为每秒三十万公里。",
-            ),
-            actor=actor,
-        )
-        raise AssertionError("说明文应被拒绝")
-    except WJError as exc:
-        env = envelope_for(exc)
-        assert env.domain.value == "content"
-        assert env.code == "CONTENT_UNSUPPORTED_GENRE"
-        assert str(env.error_id)
-
-
-async def test_generation_progress_failed_keeps_session_clean(factory, actor):
-    """未导入材料直接生成 → CNT/SESSION 错误；会话仍可继续导入。"""
-    app = _make_app(factory)
-    sid = (
-        await app.create_session(org_id=actor.org_id, owner_user_id=actor.user_id)
-    ).session_id
-    try:
-        await app.generate_script(sid, actor=actor)
-        raise AssertionError("未导入材料生成应失败")
-    except WJError as exc:
-        assert envelope_for(exc).code in {
-            "SESSION_NOT_FOUND",
-            "CONTENT_INSUFFICIENT_SOURCE",
-        }
-
-    analysis = await app.import_material(
-        sid,
-        MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
-        actor=actor,
-    )
-    assert analysis.characters
 
 
 async def _count_all_events(factory, sid: uuid.UUID) -> int:

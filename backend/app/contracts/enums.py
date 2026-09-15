@@ -109,6 +109,21 @@ class UserRole(StrEnum):
     STUDENT = "student"
 
 
+class ScriptStatus(StrEnum):
+    """可复用剧本实体的生命周期（ADR-0002 §3）：草稿→发布→下架。"""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    UNPUBLISHED = "unpublished"
+
+
+class ScriptVisibility(StrEnum):
+    """已发布剧本的可见性：同 org / 公开（跨 org）。"""
+
+    ORG = "org"
+    PUBLIC = "public"
+
+
 class MessageCategory(StrEnum):
     """前端渲染类别：叙事消息 / 角色发言 / 系统提示 / 当前交互。"""
 

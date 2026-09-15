@@ -35,6 +35,14 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.material import Material, MaterialInput
 from app.contracts.runtime import GameSnapshot, RuntimeState
+from app.contracts.script_library import (
+    MaterialPublic,
+    ScriptCreateRequest,
+    ScriptDetail,
+    ScriptListResponse,
+    ScriptPublishRequest,
+    ScriptSummary,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "contracts" / "fixtures"
@@ -57,6 +65,12 @@ def _load(name: str) -> dict:
         ("auth_session_info", AuthSessionInfo),
         ("material_input", MaterialInput),
         ("material", Material),
+        ("material_public", MaterialPublic),
+        ("script_create_request", ScriptCreateRequest),
+        ("script_publish_request", ScriptPublishRequest),
+        ("script_summary", ScriptSummary),
+        ("script_detail", ScriptDetail),
+        ("script_list_response", ScriptListResponse),
         ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),
