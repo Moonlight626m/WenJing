@@ -43,6 +43,9 @@ _CODE_MAP: dict[int, str] = {
     codes.SEARCH_TIMEOUT: "SEARCH_TIMEOUT",
     codes.PRT_MALFORMED_MESSAGE: "PROTOCOL_MALFORMED_MESSAGE",
     codes.PRT_UNKNOWN_COMMAND: "PROTOCOL_UNKNOWN_COMMAND",
+    codes.PER_WRITE_FAILED: "PERSISTENCE_WRITE_FAILED",
+    codes.PER_INCOMPATIBLE_SCHEMA: "PERSISTENCE_INCOMPATIBLE_SCHEMA",
+    codes.PER_CORRUPT_SNAPSHOT: "PERSISTENCE_CORRUPT_SNAPSHOT",
 }
 
 _DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
@@ -89,6 +92,9 @@ def safe_message(err: Any) -> str:
         codes.SEARCH_TIMEOUT: "网络资料获取超时，将仅基于原文生成。",
         codes.PRT_MALFORMED_MESSAGE: "请求格式无法处理。",
         codes.PRT_UNKNOWN_COMMAND: "不支持的命令类型。",
+        codes.PER_WRITE_FAILED: "数据保存失败，请稍后重试。",
+        codes.PER_INCOMPATIBLE_SCHEMA: "会话数据版本不兼容，无法恢复。",
+        codes.PER_CORRUPT_SNAPSHOT: "存档数据损坏，正在尝试重建。",
     }.get(mapped)
     if base:
         return base

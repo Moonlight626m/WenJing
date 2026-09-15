@@ -14,11 +14,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.llm_service import LLMService
@@ -34,7 +36,7 @@ from app.core.game_runtime import GameRuntime
 from app.core.script_adapter import script_package_to_script
 from app.db.branch import commit_rollback_branch  # noqa: F401  (回溯专用原子路径)
 from app.db.event_store import PersistentEventStore, branch_uuid
-from app.errx import codes, new
+from app.errx import codes, new, wrap
 from app.generation.stage1 import (
     PROMPT_VERSION,
     GenerationTelemetry,
@@ -56,6 +58,8 @@ from app.session.projection import (
 )
 
 _GENERATION_PHASES = ("genre", "research", "generate", "verify")
+
+logger = logging.getLogger("wenjing.session.application")
 
 
 class SessionApplication:
@@ -225,12 +229,18 @@ class SessionApplication:
             raise new(codes.SESS_ENDED, extra={"id": str(session_id)})
 
         payload = self._engine_payload(command, store)
-        result = await runtime.submit(
-            command_id=str(command.command_id),
-            kind=command.kind.value,
-            payload=payload,
-        )
-        await self._persist_command(session_id, command, store, runtime, result)
+        try:
+            result = await runtime.submit(
+                command_id=str(command.command_id),
+                kind=command.kind.value,
+                payload=payload,
+            )
+            await self._persist_command(session_id, command, store, runtime, result)
+        except Exception:
+            # 命令受理失败（引擎异常或 DB 事务失败）：丢弃内存运行时，
+            # 使下一次请求从 DB 权威状态重建 —— 绝不保留部分推进的内存状态。
+            self._runtimes.pop(session_id, None)
+            raise
         return project_update(session_id, store, result)
 
     async def _persist_command(
@@ -241,90 +251,108 @@ class SessionApplication:
         runtime: GameRuntime,
         result: Any = None,
     ) -> None:
-        """命令 + 事件 + head/version/active_branch + 快照，同一事务。"""
-        async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id)
-            if sess is None:
-                raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
-            expected = sess.version
+        """命令 + 事件 + head/version/active_branch + 快照，同一事务。
 
-            rows = await store.write_pending(s, str(session_id))
-            s.add(
-                CommandRecord(
-                    command_id=command.command_id,
-                    session_id=session_id,
-                    kind=command.kind.value,
-                    payload=command.payload,
-                    status=CommandStatus.SUCCEEDED.value,
-                )
-            )
-            await s.flush()
-            head_db = rows[-1].id if rows else sess.head_event_id
-            updated = await s.execute(
-                update(SessionRecord)
-                .where(
-                    SessionRecord.id == session_id,
-                    SessionRecord.version == expected,
-                )
-                .values(
-                    head_event_id=head_db,
-                    active_branch_id=branch_uuid(session_id, store.active_branch_id),
-                    player_role=runtime.state.player_role,
-                    current_stage=runtime.state.stage,
-                    status="ended" if result.terminal else sess.status,
-                    version=expected + 1,
-                )
-            )
-            if updated.rowcount != 1:
-                raise new(
-                    codes.SESS_CONFLICT,
-                    extra={"id": str(session_id), "expected": expected},
-                )
-            if rows:
-                export = runtime.export_state()
+        DB 失败统一转为 `PER_WRITE_FAILED`（可重试）并整事务回滚；
+        显式业务错误（SESS_*）原样上抛，不重复包装。
+        """
+        try:
+            async with self._factory() as s:
+                sess = await s.get(SessionRecord, session_id)
+                if sess is None:
+                    raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
+                expected = sess.version
+
+                rows = await store.write_pending(s, str(session_id))
                 s.add(
-                    SnapshotRecord(
+                    CommandRecord(
+                        command_id=command.command_id,
                         session_id=session_id,
-                        event_id=head_db,
-                        state_machine=json.dumps(
-                            {"stage": export["stage"], "phase": export.get("phase")}
-                        ),
-                        character_memories=export.get("character_memories") or {},
-                        plot_context=export,
-                        schema_version=EVENTS_SCHEMA_VERSION,
+                        kind=command.kind.value,
+                        payload=command.payload,
+                        status=CommandStatus.SUCCEEDED.value,
                     )
                 )
-            await s.commit()
+                await s.flush()
+                head_db = rows[-1].id if rows else sess.head_event_id
+                updated = await s.execute(
+                    update(SessionRecord)
+                    .where(
+                        SessionRecord.id == session_id,
+                        SessionRecord.version == expected,
+                    )
+                    .values(
+                        head_event_id=head_db,
+                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
+                        player_role=runtime.state.player_role,
+                        current_stage=runtime.state.stage,
+                        status="ended" if result.terminal else sess.status,
+                        version=expected + 1,
+                    )
+                )
+                if updated.rowcount != 1:
+                    raise new(
+                        codes.SESS_CONFLICT,
+                        extra={"id": str(session_id), "expected": expected},
+                    )
+                if rows:
+                    export = runtime.export_state()
+                    s.add(
+                        SnapshotRecord(
+                            session_id=session_id,
+                            event_id=head_db,
+                            state_machine=json.dumps(
+                                {"stage": export["stage"], "phase": export.get("phase")}
+                            ),
+                            character_memories=export.get("character_memories") or {},
+                            plot_context=export,
+                            schema_version=EVENTS_SCHEMA_VERSION,
+                        )
+                    )
+                await s.commit()
+        except Exception as exc:
+            if isinstance(exc, SQLAlchemyError):
+                raise wrap(
+                    exc, codes.PER_WRITE_FAILED, extra={"op": "persist_command"}
+                ) from exc
+            raise
 
     async def _commit_system_events(
         self, session_id: uuid.UUID, store: PersistentEventStore
     ) -> None:
         """系统动作（如 runtime.start）产生的事件 + head 推进，单事务。"""
-        async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id)
-            if sess is None:
-                raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
-            expected = sess.version
-            rows = await store.write_pending(s, str(session_id))
-            await s.flush()
-            updated = await s.execute(
-                update(SessionRecord)
-                .where(
-                    SessionRecord.id == session_id,
-                    SessionRecord.version == expected,
+        try:
+            async with self._factory() as s:
+                sess = await s.get(SessionRecord, session_id)
+                if sess is None:
+                    raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
+                expected = sess.version
+                rows = await store.write_pending(s, str(session_id))
+                await s.flush()
+                updated = await s.execute(
+                    update(SessionRecord)
+                    .where(
+                        SessionRecord.id == session_id,
+                        SessionRecord.version == expected,
+                    )
+                    .values(
+                        head_event_id=rows[-1].id if rows else sess.head_event_id,
+                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
+                        version=expected + 1,
+                    )
                 )
-                .values(
-                    head_event_id=rows[-1].id if rows else sess.head_event_id,
-                    active_branch_id=branch_uuid(session_id, store.active_branch_id),
-                    version=expected + 1,
-                )
-            )
-            if updated.rowcount != 1:
-                raise new(
-                    codes.SESS_CONFLICT,
-                    extra={"id": str(session_id), "expected": expected},
-                )
-            await s.commit()
+                if updated.rowcount != 1:
+                    raise new(
+                        codes.SESS_CONFLICT,
+                        extra={"id": str(session_id), "expected": expected},
+                    )
+                await s.commit()
+        except Exception as exc:
+            if isinstance(exc, SQLAlchemyError):
+                raise wrap(
+                    exc, codes.PER_WRITE_FAILED, extra={"op": "commit_system_events"}
+                ) from exc
+            raise
 
     # ===== 状态查询 =====
 
@@ -398,7 +426,11 @@ class SessionApplication:
     async def _restore_runtime(
         self, session_id: uuid.UUID
     ) -> tuple[GameRuntime, PersistentEventStore]:
-        """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。"""
+        """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。
+
+        容错（issue #13）：剧本/快照损坏或 schema 不兼容时，宁可忽略快照
+        从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
+        """
         async with self._factory() as s:
             script_row = (
                 await s.execute(
@@ -413,7 +445,14 @@ class SessionApplication:
                     codes.SESS_NOT_FOUND,
                     extra={"id": str(session_id), "reason": "script not generated"},
                 )
-            package = ScriptPackage.model_validate(script_row.script_data)
+            try:
+                package = ScriptPackage.model_validate(script_row.script_data)
+            except Exception as exc:
+                raise wrap(
+                    exc,
+                    codes.PER_INCOMPATIBLE_SCHEMA,
+                    extra={"id": str(session_id), "reason": "script package invalid"},
+                ) from exc
             snap = (
                 await s.execute(
                     select(SnapshotRecord)
@@ -423,15 +462,46 @@ class SessionApplication:
                 )
             ).scalar_one_or_none()
             store = PersistentEventStore()
-            events = await store.restore_active_branch(s, str(session_id))
+            try:
+                events = await store.restore_active_branch(s, str(session_id))
+            except SQLAlchemyError as exc:
+                raise wrap(
+                    exc, codes.PER_WRITE_FAILED, extra={"op": "restore_events"}
+                ) from exc
+            except ValueError as exc:
+                raise wrap(
+                    exc, codes.PER_CORRUPT_SNAPSHOT, extra={"reason": "events corrupt"}
+                ) from exc
 
         runtime, store = self._build_runtime(session_id, package, store=store)
         base: dict | None = None
-        if snap is not None and isinstance(snap.plot_context, dict):
-            base = snap.plot_context
+        if snap is not None:
+            if snap.schema_version != EVENTS_SCHEMA_VERSION:
+                logger.warning(
+                    "snapshot_schema_incompatible",
+                    extra={
+                        "session_id": str(session_id),
+                        "found": snap.schema_version,
+                        "expected": EVENTS_SCHEMA_VERSION,
+                    },
+                )
+            elif isinstance(snap.plot_context, dict):
+                base = snap.plot_context
+            else:
+                logger.warning(
+                    "snapshot_payload_corrupt",
+                    extra={"session_id": str(session_id)},
+                )
         cutoff = int((base or {}).get("latest_event_id", 0))
         replay = [e.to_dict() for e in events if e.event_id > cutoff]
-        runtime.replay_from(base, replay)
+        try:
+            runtime.replay_from(base, replay)
+        except Exception as exc:
+            logger.warning(
+                "snapshot_replay_failed_rebuild",
+                extra={"session_id": str(session_id), "reason": str(exc)},
+            )
+            runtime.replay_from(None, [e.to_dict() for e in events])
 
         self._packages[session_id] = package
         self._runtimes[session_id] = runtime

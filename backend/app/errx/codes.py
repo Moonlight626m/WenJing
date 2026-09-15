@@ -52,6 +52,11 @@ SEARCH_TIMEOUT = 8003               # 抓取连接/读取超时
 PRT_MALFORMED_MESSAGE = 9001        # 请求消息/标识格式非法
 PRT_UNKNOWN_COMMAND = 9002          # 未知的命令类型
 
+# ===== 持久化（PER，issue #13）=====
+PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
+PER_INCOMPATIBLE_SCHEMA = 10002     # 持久化数据 schema 不兼容
+PER_CORRUPT_SNAPSHOT = 10003        # 快照损坏，无法作为重放基线
+
 
 def register_all() -> None:
     """注册全部错误码（应用启动时调用一次，幂等）。"""
@@ -130,3 +135,7 @@ def register_all() -> None:
         is_affect_stability=False,
     )
     register(PRT_UNKNOWN_COMMAND, "unknown command: {kind}", is_affect_stability=False)
+
+    register(PER_WRITE_FAILED, "persistence write failed: {op}")
+    register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")
+    register(PER_CORRUPT_SNAPSHOT, "corrupt snapshot: {reason}")
