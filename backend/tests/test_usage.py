@@ -219,6 +219,37 @@ async def test_stage1_generation_is_metered(factory) -> None:
     assert rows[0].provider == "test-provider"
 
 
+@pytest.mark.anyio
+async def test_no_key_synth_generation_still_metered(factory) -> None:
+    """生产无 key 组合根：script_llm=None 走确定性合成，仍入账 stage1 用量。
+
+    回归 CI：全新库（WENJING_LLM_API_KEY 为空）下运营后台用量看板不得为空。
+    """
+    actor = await _new_actor(factory)
+    from app.contracts.material import MaterialInput, MaterialSource
+    from app.scripts.service import ScriptLibrary
+
+    text_in = "那年冬天，母亲病了。我离开家，到城里去买药。母亲说：路上小心。"
+    recorder = UsageRecorder(session_factory=factory)
+    library = ScriptLibrary(session_factory=factory, usage_recorder=recorder)
+    material = await library.import_material(
+        actor, MaterialInput(source=MaterialSource.PASTE, raw_text=text_in)
+    )
+    script = await library.create_script(
+        actor, material_id=material.id, name="合成计量剧本", description=None
+    )
+    await library.start_generation(script.id, actor)
+    await library.await_generation(script.id)
+    assert library.progress(script.id)["status"] == "succeeded"
+
+    rows = await _usage_rows(factory, actor.org_id, purpose="stage1")
+    assert len(rows) == 1
+    assert rows[0].script_id == script.id
+    assert rows[0].provider == "deterministic"
+    assert rows[0].model == "deterministic"
+    assert rows[0].total_tokens > 0
+
+
 async def test_agent_and_verify_calls_are_metered(factory) -> None:
     """游玩命令触发角色提议（agent）+ 验证（verify），各写入一条并带 session_id。"""
     actor = await _new_actor(factory)

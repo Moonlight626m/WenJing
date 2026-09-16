@@ -17,7 +17,7 @@ from sqlalchemy import or_, select
 from app.access import Actor, script_visible_to
 from app.content.pipeline import ContentPipeline
 from app.contracts.content import TextAnalysis
-from app.contracts.enums import ScriptStatus, ScriptVisibility
+from app.contracts.enums import ScriptStatus, ScriptVisibility, UsagePurpose
 from app.contracts.material import MaterialInput
 from app.errx import codes, new
 from app.generation.stage1 import (
@@ -205,6 +205,23 @@ class ScriptLibrary:
                     token_count=0,
                     retries=0,
                 )
+                # 计量不依赖真实 provider：无 key 合成路径同样按 stage1 用途
+                # 入账一条 llm_usage（#22 验收），否则 CI 全新库的用量看板为空。
+                if self._usage_recorder is not None and script is not None:
+                    from app.usage import UsageContext
+
+                    await self._usage_recorder.record(
+                        UsageContext(
+                            org_id=script.org_id,
+                            user_id=script.owner_user_id,
+                            script_id=script.id,
+                        ),
+                        provider="deterministic",
+                        model="deterministic",
+                        purpose=UsagePurpose.STAGE1,
+                        messages=[{"role": "user", "content": material.raw_text}],
+                        completion=package.model_dump_json(),
+                    )
             else:
                 outcome = await Stage1Generator(
                     self._stage1_llm(script), model=self._model_name
