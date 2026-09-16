@@ -12,6 +12,7 @@ import type {
   ScriptPublishRequest,
   ScriptSummary,
   SessionListResponse,
+  UsageAggregateResponse,
 } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -222,6 +223,43 @@ export function unpublishScript(scriptId: number): Promise<ScriptSummary> {
 
 export function deleteScript(scriptId: number): Promise<void> {
   return request(`/api/scripts/${scriptId}`, { method: "DELETE" });
+}
+
+// ===== 运营后台（super_admin 只读，backend/app/api/admin.py 镜像）=====
+
+function toQuery(params: Record<string, string | null | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) search.set(key, value);
+  }
+  const qs = search.toString();
+  return qs ? `?${qs}` : "";
+}
+
+export function listAdminScripts(
+  filters: { orgId?: string | null; status?: string | null } = {}
+): Promise<ScriptListResponse> {
+  return request(
+    `/api/admin/scripts${toQuery({ org_id: filters.orgId, status: filters.status })}`
+  );
+}
+
+export function listAdminUsage(
+  filters: {
+    orgId?: string | null;
+    purpose?: string | null;
+    since?: string | null;
+    until?: string | null;
+  } = {}
+): Promise<UsageAggregateResponse> {
+  return request(
+    `/api/admin/usage${toQuery({
+      org_id: filters.orgId,
+      purpose: filters.purpose,
+      since: filters.since,
+      until: filters.until,
+    })}`
+  );
 }
 
 // ===== 账号（backend/app/api/auth.py 镜像）=====

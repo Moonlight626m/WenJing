@@ -2,6 +2,7 @@
 import { expect, type Page } from "@playwright/test";
 
 const SEED_PASSWORD = process.env.WENJING_SEED_PASSWORD ?? "wenjing123";
+export const ADMIN = { email: "admin@wenjing.local", password: SEED_PASSWORD };
 export const TEACHER = { email: "teacher@wenjing.local", password: SEED_PASSWORD };
 export const STUDENT = { email: "student@wenjing.local", password: SEED_PASSWORD };
 
@@ -20,7 +21,7 @@ export async function login(page: Page, account: typeof TEACHER) {
     await page.getByLabel("密码").fill(account.password);
     await page.getByRole("button", { name: "登录" }).click();
     try {
-      await page.waitForURL(/\/(teacher|student)$/, { timeout: 5000 });
+      await page.waitForURL(/\/(admin|teacher|student)$/, { timeout: 5000 });
       return;
     } catch {
       // 重新加载 /login 再试一次

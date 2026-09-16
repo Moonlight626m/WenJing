@@ -1,4 +1,8 @@
-import type { ScriptStatus, ScriptVisibility } from "@/lib/contracts/types";
+import type {
+  ScriptStatus,
+  ScriptVisibility,
+  UsagePurpose,
+} from "@/lib/contracts/types";
 
 export const STAGE_LABELS: Record<string, string> = {
   init: "待导入",
@@ -59,4 +63,15 @@ export const SCRIPT_VISIBILITY_LABELS: Record<ScriptVisibility, string> = {
 
 export function scriptVisibilityLabel(visibility: ScriptVisibility): string {
   return SCRIPT_VISIBILITY_LABELS[visibility] ?? visibility;
+}
+
+/** LLM 调用用途（backend/app/contracts/enums.py UsagePurpose，issue #22）。 */
+export const USAGE_PURPOSE_LABELS: Record<UsagePurpose, string> = {
+  stage1: "剧本生成",
+  agent: "角色 Agent",
+  verify: "校验",
+};
+
+export function usagePurposeLabel(purpose: UsagePurpose): string {
+  return USAGE_PURPOSE_LABELS[purpose] ?? purpose;
 }
