@@ -1,47 +1,55 @@
 /**
- * 核心流程浏览器端到端（issue #12）。
+ * 学生端核心流程端到端（issue #24，重写自 issue #12 旧核心流程用例）。
  *
- * ⚠️ 已 skip（issue #17）：匿名 `POST /api/sessions` 入口随 ADR-0002 移除，
- * 本用例依赖的「首页开始新游戏」路径尚不存在。教师/学生端新流程落地后
- * 由 #24 重写本用例并取消 skip。
+ * 覆盖验收：广场浏览与搜索 → 剧本详情 → 开局 → 选角 → 游玩（消息流/交互卡）→
+ * 回溯 → 刷新恢复 → 我的游戏续玩；未登录不可见学生空间。
+ * 教师先经 UI 建本并发布（fake LLM 模式秒级；真实 LLM 约 100s，故放宽等待）。
  *
- * 前置（重写后）：后端 :8000（`WENJING_LLM_API_KEY= uv run uvicorn ...`），
- * 前端 dev server :3000（`npm run dev`）。
+ * 前置：后端 :8000（已 `make seed`）、前端 :3000。
  */
 import { expect, test } from "@playwright/test";
 
-const SAMPLE_TEXT =
-  "那年冬天，母亲病了。我离开家，到城里去买药。母亲说：路上小心。" +
-  "我回头看见她站在门口，眼泪流了下来。我守在母亲的床边，一夜没合眼。" +
-  "天亮时，她握住我的手说：去吧。路上雪很大，我走得很慢。";
+import { createScript, login, STUDENT, TEACHER } from "./helpers";
 
-test.skip("核心流程：创建 → 导入 → 生成 → 选角 → 游戏 → 回溯 → 刷新恢复", async ({
+test("学生完整核心流程：广场 → 详情 → 开局 → 选角 → 游戏 → 回溯 → 恢复 → 我的游戏", async ({
   page,
 }) => {
-  // 1. 首页创建会话
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "文境" })).toBeVisible();
-  await page.getByRole("button", { name: "开始新游戏" }).click();
-  await page.waitForURL(/\/import\?id=/);
+  test.setTimeout(240_000);
+  const name = `E2E 学生流程 ${Date.now()}`;
 
-  // 2. 导入课文（粘贴）
-  await page.getByPlaceholder(/粘贴课文原文/).fill(SAMPLE_TEXT);
-  await page.getByRole("button", { name: "导入并分析" }).click();
-  await expect(page.getByText("原文分析")).toBeVisible();
-  await expect(page.getByText(/人物（\d+）/)).toBeVisible();
+  // 前置：教师建本并发布（本校可见，学生同 org）
+  await login(page, TEACHER);
+  await createScript(page, name);
+  await expect(page.getByText("生成完成")).toBeVisible({ timeout: 120_000 });
+  await page.getByRole("button", { name: "发布", exact: true }).click();
+  await expect(page.getByText("已发布").first()).toBeVisible();
 
-  // 3. 生成剧本
-  await page.getByRole("button", { name: "生成剧本" }).click();
-  await expect(page.getByText("剧本已生成。")).toBeVisible();
-  await page.getByRole("link", { name: "前去选角" }).first().click();
+  // 切换到学生
+  await page.context().clearCookies();
+  await login(page, STUDENT);
+
+  // 1. 广场可见且可搜索
+  await expect(page.getByRole("heading", { name: "剧本广场" })).toBeVisible();
+  await page.getByRole("searchbox").fill(name);
+  await expect(page.getByRole("link", { name })).toBeVisible();
+
+  // 2. 详情页
+  await page.getByRole("link", { name }).click();
+  await page.waitForURL(/\/student\/scripts\/\d+$/);
+  await expect(page.getByRole("heading", { name })).toBeVisible();
+  await expect(page.getByText("教学重点")).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始游玩" })).toBeEnabled();
+
+  // 3. 开局 → 选角
+  await page.getByRole("button", { name: "开始游玩" }).click();
   await page.waitForURL(/\/roles\?id=/);
-
-  // 4. 选角
   await expect(page.getByText("选择角色")).toBeVisible();
+  // 角色卡从剧本详情重建，含真实简介而非"仅角色名"兜底
+  await expect(page.getByText(/是文中人物/).first()).toBeVisible();
   await page.getByRole("button", { name: /扮演此角色/ }).first().click();
   await page.waitForURL(/\/game\?id=/);
 
-  // 5. 游戏页：消息流出现 + 交互卡可选项推进
+  // 4. 游戏页：消息流出现 + 交互卡可选项推进
   const rows = page.getByTestId("message-row");
   await expect(page.getByText("已连接")).toBeVisible();
   await expect(rows.first()).toBeVisible();
@@ -52,7 +60,7 @@ test.skip("核心流程：创建 → 导入 → 生成 → 选角 → 游戏 →
     .poll(async () => await rows.count(), { timeout: 30_000 })
     .toBeGreaterThan(messagesBefore);
 
-  // 6. 回溯：选目标 → 回到 → 确认
+  // 5. 回溯：选目标 → 回到 → 确认
   await page.locator("select").selectOption({ index: 1 });
   await page.getByRole("button", { name: /回到 #\d+/ }).click();
   await page.getByRole("button", { name: "确认", exact: true }).click();
@@ -60,9 +68,25 @@ test.skip("核心流程：创建 → 导入 → 生成 → 选角 → 游戏 →
     page.getByTestId("message-stream").getByText(/已回溯到事件/)
   ).toBeVisible({ timeout: 30_000 });
 
-  // 7. 刷新恢复：session_init 重建 + resync 补发，消息流与连接恢复
+  // 6. 刷新恢复：session_init 重建 + resync 补发，消息流与连接恢复
   await page.reload();
   await expect(page.getByText("已连接")).toBeVisible({ timeout: 30_000 });
   await expect(rows.first()).toBeVisible();
   await expect(page.locator("header").getByText(/扮演：/)).toBeVisible();
+
+  // 7. 我的游戏：列表有该局并可续玩
+  await page.goto("/student");
+  const gameRow = page.locator("li", { hasText: name });
+  await expect(gameRow).toBeVisible();
+  await gameRow.getByRole("button", { name: "继续" }).click();
+  await page.waitForURL(/\/game\?id=/);
+  await expect(page.getByText("已连接")).toBeVisible({ timeout: 30_000 });
+});
+
+test("未登录无法进入学生空间与剧本详情", async ({ page }) => {
+  await page.goto("/student");
+  await expect(page).toHaveURL(/\/login/);
+
+  await page.goto("/student/scripts/1");
+  await expect(page).toHaveURL(/\/login/);
 });

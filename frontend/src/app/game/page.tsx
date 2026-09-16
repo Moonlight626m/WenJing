@@ -5,9 +5,9 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
 import { useGameChannel } from "@/lib/ws";
-import { getStatus } from "@/lib/api";
+import { getStatus, } from "@/lib/api";
 import { stageLabel } from "@/lib/labels";
-import { upsertRecent } from "@/lib/session-cache";
+import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
 import { InteractionCard } from "@/components/interaction-card";
@@ -50,6 +50,8 @@ function GameContent() {
   }, [sessionId, resetSession]);
 
   // 刷新恢复：REST 状态查询补齐头部信息（角色/阶段），并记录最近会话
+  // scriptId：优先取 URL（开局/选角链路携带），否则保留 localStorage 里的旧值，
+  // 避免每次游戏页刷新都把记录的剧本来源覆盖丢失。
   useEffect(() => {
     if (!sessionId) return;
     let cancelled = false;
@@ -57,11 +59,17 @@ function GameContent() {
       .then((status) => {
         if (cancelled) return;
         setStatusInfo(status);
+        const scriptParam = searchParams.get("script");
+        const scriptId = scriptParam
+          ? Number(scriptParam)
+          : (loadRecents().find((r) => r.sessionId === sessionId)?.scriptId ??
+            null);
         upsertRecent({
           sessionId,
           stage: status.stage,
           title: useGameStore.getState().scriptTitle,
           playerRole: status.selected_role,
+          scriptId,
           updatedAt: new Date().toISOString(),
         });
       })
@@ -73,7 +81,7 @@ function GameContent() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId, setStatusInfo, push]);
+  }, [sessionId, searchParams, setStatusInfo, push]);
 
   if (!sessionId) {
     return (

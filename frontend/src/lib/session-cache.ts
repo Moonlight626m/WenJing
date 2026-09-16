@@ -12,6 +12,8 @@ export interface SessionRecord {
   stage: string;
   title: string | null;
   playerRole: string | null;
+  /** 开局来源剧本；旧匿名会话无此字段。 */
+  scriptId?: number | null;
   updatedAt: string;
 }
 
@@ -81,14 +83,22 @@ export function buildCommand<K extends CommandKind>(
   };
 }
 
-/** 按阶段决定恢复会话时应进入的页面（id 作为 query 参数拼接）。 */
+/**
+ * 按阶段决定恢复会话时应进入的页面（id 作为 query 参数拼接）。
+ * 旧匿名导入流程（/import）已随 ADR-0002 移除；无法推进的 init/stage1_creating
+ * 会话回落学生空间。scriptId 透传给选角页以便刷新后重建角色卡。
+ */
 export function routeForStage(
   sessionId: string,
   stage: string,
-  selectedRole: string | null
+  selectedRole: string | null,
+  scriptId: number | null = null
 ): string {
-  const q = `?id=${sessionId}`;
-  if (stage === "init" || stage === "stage1_creating") return `/import${q}`;
-  if (stage === "stage1_complete") return selectedRole ? `/game${q}` : `/roles${q}`;
-  return `/game${q}`;
+  if (stage === "init" || stage === "stage1_creating") return "/student";
+  const script = scriptId ? `&script=${scriptId}` : "";
+  if (stage === "stage1_complete")
+    return selectedRole
+      ? `/game?id=${sessionId}`
+      : `/roles?id=${sessionId}${script}`;
+  return `/game?id=${sessionId}`;
 }

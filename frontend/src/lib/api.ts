@@ -9,10 +9,9 @@ import type {
   ScriptCreateRequest,
   ScriptDetail,
   ScriptListResponse,
-  ScriptPackage,
   ScriptPublishRequest,
   ScriptSummary,
-  TextAnalysis,
+  SessionListResponse,
 } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -137,26 +136,21 @@ export interface RuntimeUpdateDto {
 
 // ===== 端点 =====
 
-export function createSession(): Promise<{ session_id: string }> {
-  return request("/api/sessions", { method: "POST" });
+/** 学生从剧本开局：POST /api/sessions {script_id} → 201 SessionStatusResponse。 */
+export function openSession(scriptId: number): Promise<SessionStatus> {
+  return request("/api/sessions", {
+    method: "POST",
+    body: JSON.stringify({ schema_version: "1.0.0", script_id: scriptId }),
+  });
 }
 
 export function getStatus(sessionId: string): Promise<SessionStatus> {
   return request(`/api/sessions/${sessionId}`);
 }
 
-export function importMaterial(
-  sessionId: string,
-  input: MaterialInput
-): Promise<TextAnalysis> {
-  return request(`/api/sessions/${sessionId}/material`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
-
-export function generateScript(sessionId: string): Promise<ScriptPackage> {
-  return request(`/api/sessions/${sessionId}/generate`, { method: "POST" });
+/** 我的游戏列表（GET /api/sessions，仅自己的剧情世界）。 */
+export function listMySessions(): Promise<SessionListResponse> {
+  return request("/api/sessions");
 }
 
 export function submitCommandRest(
@@ -170,6 +164,11 @@ export function submitCommandRest(
 }
 
 // ===== 剧本库（教师创作，backend/app/api/scripts.py 镜像）=====
+
+/** 剧本广场：org + public 的已发布剧本（backend GET /api/scripts/square）。 */
+export function listSquareScripts(): Promise<ScriptListResponse> {
+  return request("/api/scripts/square");
+}
 
 export function listMyScripts(): Promise<ScriptListResponse> {
   return request("/api/scripts");

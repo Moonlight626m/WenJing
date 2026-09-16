@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ApiError, getStatus, submitCommandRest } from "@/lib/api";
+import { ApiError, getScriptDetail, getStatus, submitCommandRest } from "@/lib/api";
 import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -15,10 +15,13 @@ function RolesContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const sessionId = searchParams.get("id");
+  const scriptParam = searchParams.get("script");
+  const scriptId = scriptParam && /^\d+$/.test(scriptParam) ? scriptParam : null;
 
   const push = useUiStore((s) => s.push);
   const storeCharacters = useGameStore((s) => s.characters);
   const storeTitle = useGameStore((s) => s.scriptTitle);
+  const setScriptInfo = useGameStore((s) => s.setScriptInfo);
 
   const [playableRoles, setPlayableRoles] = useState<string[]>([]);
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
@@ -29,7 +32,9 @@ function RolesContent() {
     getStatus(sessionId)
       .then((status) => {
         if (status.stage === "init" || status.stage === "stage1_creating") {
-          router.replace(`/import?id=${sessionId}`);
+          // 旧匿名导入流程已移除，无法推进的会话回落学生空间。
+          push({ kind: "error", title: "该会话缺少剧本，请从剧本广场重新开局" });
+          router.replace("/student");
           return;
         }
         setPlayableRoles(status.playable_roles);
@@ -42,6 +47,18 @@ function RolesContent() {
         }
       });
   }, [sessionId, push, router]);
+
+  // 角色简介只在开局时的内存 store 中；刷新后丢失，从剧本详情重建。
+  useEffect(() => {
+    if (storeCharacters.length > 0 || !scriptId) return;
+    getScriptDetail(Number(scriptId))
+      .then((detail) => {
+        if (detail.package) setScriptInfo(detail.package);
+      })
+      .catch(() => {
+        // 拿不到剧本包时退化为仅角色名，不阻塞选角。
+      });
+  }, [scriptId, storeCharacters.length, setScriptInfo]);
 
   const characters: CharacterProfile[] =
     storeCharacters.length > 0
