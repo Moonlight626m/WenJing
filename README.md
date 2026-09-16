@@ -147,9 +147,10 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 
 ## 当前状态
 
-核心 MVP 已完成（issue #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
+核心 MVP 已完成（规划 #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
 导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
 前端全流程与生产化加固。多用户化（ADR-0002 / #16）已完成（#17–#26）：账号后端、
 鉴权隔离、教师创作 API、学生游玩 API、用量计量、账号/教师/学生端 UI、运营后台 UI、
-文档收尾。剩余：内容质量门禁 #14；运营后台「用户/组织」面板待后端补充端点（见 #25）。
+文档收尾。剩余规划项：内容质量 Gold Set 与人工评分门禁（roadmap #14，尚未建票）；
+运营后台「用户/组织」面板待后端补充端点（见 #25）。
 领域术语见 [`CONTEXT.md`](CONTEXT.md)。
