@@ -313,6 +313,69 @@
 - [ ] 生成与评分脚本可复跑；人工评分表落盘
 - [ ] 结果评审确定 MVP 质量基线；未达标缺陷回流对应 ticket
 
+## 第六波 · 多用户化（ADR-0002 / #16，2026-09 起）
+
+> spec 见 ADR-0002（`docs/adr/0002-multi-user-rbac-script-play-separation.md`）：
+> 多用户 + RBAC + 剧本创作/游玩分离。旧匿名库破坏式重建（基线重设 + seed）。
+
+### [#17] 账号后端 ✅ 已完成（2026-09-15）
+
+- [x] `orgs` / `users`（`org_id + role`，argon2）/ `auth_sessions`（14 天滑动，可撤销）
+- [x] 注册/登录/登出 + CSRF double-submit + HttpOnly Cookie（`wenjing_session`）
+- [x] 破坏式迁移基线重设 + seed（默认 org「文境演示学校」+ 三测试账号）
+- [x] 匿名 `POST /api/sessions` 移除
+
+### [#18] 鉴权与资源隔离 + WS 鉴权 ✅ 已完成（2026-09-15）
+
+- [x] 全 API 按登录态 + 资源归属（owner/org）鉴权；WS 握手校验会话 Cookie 与世界归属
+- [x] 契约新增 Auth/User 域；fixtures 同步
+
+### [#19] 剧本实体与教师创作 API ✅ 已完成（2026-09-15）
+
+- [x] `scripts` 升级可复用实体（status: draft|published|unpublished，visibility: org|public）
+- [x] 导入素材 → 创建剧本 → 进程内 asyncio 异步 Stage1 生成（不落库，重启丢在途）
+- [x] 发布/下架/改可见性/重新生成/删除草稿；发布后核心内容不可变
+
+### [#20] 账号前端 ✅ 已完成（2026-09-15）
+
+- [x] 登录/注册页 + 服务端会话读取（`requireRole`）+ 角色跳转 + 退出
+- [x] `ProtectedShell` 布局与路由守卫；E2E 覆盖登录与越权重定向
+
+### [#21] 学生游玩 API + 命令路径无状态化 ✅ 已完成（2026-09-15）
+
+- [x] 从剧本开局创建剧情世界；命令路径每次从 DB 重建运行时（无常驻内存）
+- [x] 我的游戏列表/续玩；刷新与重启可恢复
+
+### [#22] LLM 用量计量 + 只读运营后台 API ✅ 已完成（2026-09-16）
+
+- [x] `llm_usage` 逐次调用记录（provider/model/tokens/purpose/org/user/script/session）
+- [x] UsageRecorder 接缝接入 Stage1/Agent 调用链；`app/scripts/projection.py`
+- [x] super_admin 只读 API：剧本库列表 + 按 org/时间/用途 token 聚合
+
+### [#23] 教师端 UI ✅ 已完成（2026-09-16）
+
+- [x] 剧本库（三态分组）/ 创建流程（导入→生成）/ 详情（进度轮询、预览、发布/下架/删除）
+- [x] 角色守卫 + E2E（全流程、越权）
+
+### [#24] 学生端 UI：广场 / 详情 / 游玩 / 我的游戏 ⬜ 未开始
+
+- [ ] 广场（org + public，可搜索）→ 详情 → 开局/选角/游玩（复用消息流/交互卡/回溯）
+- [ ] 我的游戏续玩与回溯；刷新/断线重连恢复；公开剧本仅登录可见
+- 阻塞：#21 ✅、#20 ✅（可开工）；落地后重写 core-flow.spec.ts 取消 skip
+
+### [#25] 运营后台 UI ⬜ 未开始
+
+- [ ] `/admin` 只读看板：剧本库、用户/组织、按 org/时间/用途 token 聚合 + 筛选
+- [ ] 非 super_admin 拒绝；无任何写操作入口
+- 阻塞：#22 ✅、#20 ✅（可开工）
+
+### [#26] 文档、术语与部署收尾 🔄 进行中（2026-09-16）
+
+- [x] `CONTEXT.md` 术语表（org/教师/学生/剧本/剧情世界/发布/可见性）
+- [x] README 部署段补：生成不持久化代价与重试路径、生产 seed 凭据
+- [x] 契约 fixtures 同步（export_contracts 零 diff）
+- [x] roadmap 更新（本节）
+
 ## 基础设施层（横切，配合对应 issue 落地）
 
 ### Infra (docker-compose / 部署) ✅ 已完成（2026-09-14）

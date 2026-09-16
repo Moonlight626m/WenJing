@@ -129,6 +129,17 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
   `NEXT_PUBLIC_API_BASE=""`；若前后端不同源，使用 `frontend/.env.example` 中的变量。
 - **单进程约束**：会话运行时与 WS outbox 保存在进程内存中，`backend` 必须以单 worker
   运行（默认 CMD 即单 worker）。多副本/多 worker 需引入共享运行时与粘性会话。
+- **生成不持久化**：Stage1 剧本生成（实测 ~100s）是进程内 asyncio 后台任务，进度只在
+  内存中。**进程重启会丢失在途生成**（剧本保持 `draft`，无半成品落库）；重试路径 =
+  教师在剧本详情页点击「重新生成」重跑即可，无需要人工清理的数据。
+- **seed 凭据**：生产栈首次部署后需手动执行 seed（幂等），写入默认 org
+  「文境演示学校」与测试账号：
+  ```bash
+  docker compose exec backend uv run python -m app.auth.seed
+  ```
+  `admin@wenjing.local` / `teacher@wenjing.local` / `student@wenjing.local`，
+  密码默认 `wenjing123`（`WENJING_SEED_PASSWORD` 覆盖）。
+  **生产环境必须改掉默认密码或部署后立即修改**，测试账号仅用于验证。
 - **迁移**：入口脚本默认执行 `alembic upgrade head`（`WENJING_RUN_MIGRATIONS=0` 可关闭）。
 - **数据库**：仅绑定 `127.0.0.1:5432`，不直接暴露公网；生产请设置强密码。
 - **CI**：`.github/workflows/ci.yml` 覆盖后端 lint + PG 集成测试 + 契约测试、前端
@@ -138,6 +149,7 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 
 核心 MVP 已完成（issue #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
 导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
-前端全流程与生产化加固。多用户化（ADR-0002 / #16）进行中：账号后端 #17 已落地
-（`orgs`/`users`/`auth_sessions`、注册/登录/登出/CSRF/Cookie 会话、seed），
-后续见 #18–#26。剩余内容质量门禁 #14。
+前端全流程与生产化加固。多用户化（ADR-0002 / #16）：账号后端 #17–#18、教师创作 API #19、
+学生游玩 API #21、用量计量与后台 API #22、账号前端 #20、教师端 UI #23 已落地；
+剩余：学生端 UI #24、运营后台 UI #25、文档收尾 #26。内容质量门禁 #14 未开始。
+领域术语见 [`CONTEXT.md`](CONTEXT.md)。
