@@ -159,7 +159,7 @@ def _generate_direct(client: TestClient, script_id: int) -> None:
             library = ScriptLibrary(session_factory=factory, script_llm=None)
             await library.start_generation(script_id, actor)
             await library.await_generation(script_id)
-            assert library.progress(script_id)["status"] == "succeeded"
+            assert (await library.progress(script_id)).status == "succeeded"
         finally:
             await engine.dispose()
 

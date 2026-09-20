@@ -1,0 +1,267 @@
+"""剧本生成 workflow 骨架测试（issue #28）。
+
+- 纯逻辑路径用 ScriptedWorkflowLLM（按 purpose 路由的确定性假 LLM，
+  仅测试用，生产路径不引用）无 key 全绿——测试策略 C。
+- 真实 LLM 连通的冒烟：本文件的 key-gated 单节点冒烟 +
+  scripts/smoke_workflow.py 完整链路（无 key skip）。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.config import get_settings
+from app.content.pipeline import ContentPipeline
+from app.contracts.enums import UsagePurpose
+from app.contracts.material import MaterialInput, MaterialSource
+from app.contracts.script import ScriptPackage
+from app.errx import Error
+from app.generation.stage1 import synthesize_script_package
+from app.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
+from app.prompts import character_design, collect_materials, divide_events
+
+MATERIAL_TEXT = (
+    "那年冬天，母亲病了。我离开家，到城里去买药。"
+    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
+)
+
+_DOSSIER_JSON = json.dumps(
+    {
+        "background": "朱自清《背影》式的家庭叙事",
+        "era_setting": "民国初年，家道中落的知识分子家庭",
+        "character_notes": [
+            {"name": "我", "note": "离家买药的青年，回望时落泪"},
+            {"name": "母亲", "note": "病中仍叮嘱儿子路上小心"},
+        ],
+        "plot_summary": "母亲病了；我离家买药；回头看见母亲在门口流泪。",
+        "teaching_analysis": ["品味平实白描中的深情"],
+    },
+    ensure_ascii=False,
+)
+
+_DIVISION_JSON = json.dumps(
+    {
+        "scenes": [
+            {
+                "title": "冬日启程",
+                "participants": ["我", "母亲"],
+                "beats": [
+                    {
+                        "description": "母亲病了，我出门买药",
+                        "is_key_event": True,
+                        "key_event_order": 1,
+                    },
+                    {
+                        "description": "母亲叮嘱路上小心",
+                        "is_key_event": True,
+                        "key_event_order": 2,
+                    },
+                    {
+                        "description": "我回头看见母亲在门口流泪",
+                        "is_key_event": True,
+                        "key_event_order": 3,
+                    },
+                ],
+            }
+        ]
+    },
+    ensure_ascii=False,
+)
+
+_PROFILE_JSON = json.dumps(
+    {
+        "public_background": "文中的儿子，为母买药",
+        "personality_traits": ["重情", "孝顺"],
+        "speech_style": None,
+        "is_player_playable": True,
+    },
+    ensure_ascii=False,
+)
+
+
+def make_analysis():
+    return ContentPipeline().analyze(
+        MaterialInput(source=MaterialSource.PASTE, raw_text=MATERIAL_TEXT)
+    )
+
+
+class ScriptedWorkflowLLM:
+    """按 purpose 路由的确定性假 LLM（生成 workflow 测试专用，非生产路径）。"""
+
+    def __init__(self, analysis, *, doubter_verdicts=("pass",), division_json=None):
+        self.calls: list[str] = []
+        self._verdicts = list(doubter_verdicts)
+        self._division_json = division_json or _DIVISION_JSON
+        self._package_json = synthesize_script_package(analysis).model_dump_json()
+
+    async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
+        name = getattr(purpose, "value", purpose)
+        self.calls.append(name)
+        if name == UsagePurpose.COLLECT_MATERIALS.value:
+            return _DOSSIER_JSON
+        if name == UsagePurpose.DOUBTER.value:
+            verdict = self._verdicts.pop(0) if self._verdicts else "pass"
+            issues = [] if verdict == "pass" else ["时代背景结论缺少原文依据"]
+            return json.dumps({"verdict": verdict, "issues": issues}, ensure_ascii=False)
+        if name == UsagePurpose.DIVIDE_EVENTS.value:
+            return self._division_json
+        if name == UsagePurpose.CHARACTER_DESIGN.value:
+            return _PROFILE_JSON
+        if name in (UsagePurpose.STAGE1.value, UsagePurpose.SCRIPT_WRITING.value):
+            return self._package_json
+        raise AssertionError(f"unexpected purpose: {name}")
+
+
+def _make_runner(analysis, llm, *, sink=None):
+    from langgraph.checkpoint.memory import MemorySaver
+
+    nodes = WorkflowNodes(llm)
+    runner = WorkflowRunner(nodes, checkpointer=MemorySaver(), progress_sink=sink)
+    state = initial_state(
+        script_id=1,
+        session_id="test-workflow",
+        analysis=analysis,
+        web_evidence=[],
+    )
+    return runner, state
+
+
+async def test_workflow_end_to_end_with_scripted_llm() -> None:
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    runner, state = _make_runner(analysis, llm)
+    final = await runner.run(state, thread_id="t-e2e")
+
+    assert isinstance(final["package"], ScriptPackage)
+    assert len(final["merged_profiles"]) == 2  # MATERIAL_TEXT 分析出 2 个人物
+    snap = runner.snapshot()
+    assert snap.status == "succeeded"
+    assert all(n.status == "succeeded" for n in snap.nodes)
+    assert [e.verdict for e in snap.doubter_events] == ["pass", "pass"]  # 验证 + 总审各记一条
+    # 节点用细分 purpose 调用，人物设定并行 fan-out 到每个人物；write 走 script_writing
+    assert UsagePurpose.COLLECT_MATERIALS.value in llm.calls
+    assert UsagePurpose.DIVIDE_EVENTS.value in llm.calls
+    assert UsagePurpose.SCRIPT_WRITING.value in llm.calls
+    assert UsagePurpose.STAGE1.value not in llm.calls  # S4：write_script 不再记 stage1
+    assert llm.calls.count(UsagePurpose.CHARACTER_DESIGN.value) == 2
+
+
+async def test_doubter_reject_then_pass_reruns_collection() -> None:
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject", "pass"))
+    runner, state = _make_runner(analysis, llm)
+    await runner.run(state, thread_id="t-reject")
+
+    assert llm.calls.count(UsagePurpose.COLLECT_MATERIALS.value) == 2
+    events = runner.snapshot().doubter_events
+    # verify 节点 reject→pass 各记一条；总审再记一条 pass
+    assert [e.verdict for e in events] == ["reject", "pass", "pass"]
+    assert events[0].issues == ["时代背景结论缺少原文依据"]
+    assert runner.snapshot().status == "succeeded"
+
+
+async def test_audit_reject_then_pass_reruns_writing() -> None:
+    """总审打回 → 书写重做 → 通过（S1/S6 风险路径）。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("pass", "reject", "pass"))
+    runner, state = _make_runner(analysis, llm)
+    final = await runner.run(state, thread_id="t-audit-reject")
+
+    assert final["package"] is not None
+    assert llm.calls.count(UsagePurpose.SCRIPT_WRITING.value) == 2  # 打回后重写一次
+    events = runner.snapshot().doubter_events
+    assert [e.verdict for e in events] == ["pass", "reject", "pass"]
+    assert events[1].round == 1  # 首轮书写被打回
+    assert runner.snapshot().status == "succeeded"
+
+
+async def test_audit_exhaustion_fails_within_contract_rounds() -> None:
+    """三次打回耗尽即失败；DoubterEvent.round 不超契约上限（le=3，S1）。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(
+        analysis, doubter_verdicts=("pass", "reject", "reject", "reject")
+    )
+    runner, state = _make_runner(analysis, llm)
+    with pytest.raises(Error):
+        await runner.run(state, thread_id="t-audit-exhaust")
+    audit_rounds = [
+        e.round for e in runner.snapshot().doubter_events if e.node.value == "final_audit"
+    ]
+    assert audit_rounds == [1, 2, 3]
+
+
+async def test_doubter_exhaustion_fails_the_attempt() -> None:
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject", "reject", "reject"))
+    runner, state = _make_runner(analysis, llm)
+    with pytest.raises(Error):
+        await runner.run(state, thread_id="t-exhaust")
+
+
+async def test_invalid_division_is_rejected_by_machine_check() -> None:
+    analysis = make_analysis()
+    bad_division = json.loads(_DIVISION_JSON)
+    bad_division["scenes"][0]["beats"][0]["key_event_order"] = 99
+    llm = ScriptedWorkflowLLM(
+        analysis, division_json=json.dumps(bad_division, ensure_ascii=False)
+    )
+    runner, state = _make_runner(analysis, llm)
+    with pytest.raises(Error):
+        await runner.run(state, thread_id="t-bad-division")
+
+
+async def test_progress_sink_receives_node_events() -> None:
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    snapshots: list = []
+    runner, state = _make_runner(
+        analysis, llm, sink=lambda s: _collect(snapshots, s)
+    )
+    await runner.run(state, thread_id="t-sink")
+
+    assert snapshots
+    final = snapshots[-1]
+    statuses = {n.node.value: n.status for n in final.nodes}
+    assert statuses["collect_materials"] == "succeeded"
+    assert statuses["design_characters"] == "succeeded"
+    assert any(n.node.value == "design_characters" and n.detail for n in final.nodes)
+
+
+async def _collect(snapshots, snapshot) -> None:
+    snapshots.append(snapshot)
+
+
+def test_prompts_embed_prompt_version() -> None:
+    analysis = make_analysis()
+    assert collect_materials.PROMPT_VERSION in collect_materials.build_user_message(
+        analysis, []
+    )
+    assert divide_events.PROMPT_VERSION in divide_events.build_user_message(analysis, "{}")
+    assert character_design.PROMPT_VERSION in character_design.build_user_message(
+        name="我", original_traits="", dossier_json="{}"
+    )
+
+
+@pytest.mark.skipif(
+    not get_settings().llm_api_key,
+    reason="真实 LLM 冒烟需要 WENJING_LLM_API_KEY（测试策略 C：key-gated）",
+)
+async def test_collect_materials_real_llm_smoke() -> None:
+    """有 key 时对单个节点做真实连通冒烟（完整链路见 scripts/smoke_workflow.py）。"""
+    from app.agents.model_config import ModelServiceFactory
+    from app.config import get_settings
+
+    settings = get_settings()
+    llm = ModelServiceFactory.build(settings.llm_model_config())
+    analysis = make_analysis()
+    nodes = WorkflowNodes(llm, model_name=settings.llm_model)
+    state = initial_state(
+        script_id=1,
+        session_id="smoke",
+        analysis=analysis,
+        web_evidence=[],
+    )
+    result = await nodes.collect_materials(state)
+    assert result["dossier"].background

@@ -35,6 +35,13 @@ router = APIRouter(prefix="/api", tags=["scripts"])
 _logger = logging.getLogger("wenjing.api.scripts")
 
 _library: ScriptLibrary | None = None
+_checkpointer = None
+
+
+def set_generation_checkpointer(saver) -> None:
+    """lifespan 注入 AsyncPostgresSaver（闸门恢复用；None = 无 checkpointer 降级）。"""
+    global _checkpointer
+    _checkpointer = saver
 
 
 def get_script_library() -> ScriptLibrary:
@@ -64,6 +71,8 @@ def get_script_library() -> ScriptLibrary:
             rag=RagService(),
             model_name=settings.llm_model,
             usage_recorder=UsageRecorder(session_factory=SessionLocal),
+            workflow_checkpointer=_checkpointer,
+            workflow_enabled=script_llm is not None,
         )
     return _library
 
@@ -75,10 +84,12 @@ _Viewer = Annotated[
 ]
 
 
-def _detail(library: ScriptLibrary, row: ScriptRecord, actor) -> ScriptDetail:
+async def _detail(library: ScriptLibrary, row: ScriptRecord, actor) -> ScriptDetail:
     package = ScriptPackage.model_validate(row.script_data) if row.script_data else None
     # 生成进度仅对 owner 可见（含失败详情）；他人读取已发布剧本时不暴露
-    generation = library.progress(row.id) if row.owner_user_id == actor.user_id else None
+    generation = (
+        await library.progress(row.id) if row.owner_user_id == actor.user_id else None
+    )
     return ScriptDetail(
         script=script_summary(row),
         package=package,
@@ -155,7 +166,7 @@ async def get_script(
 ) -> ScriptDetail:
     """剧本详情：owner 全量；他人仅已发布（org 同 org / public 跨 org）。"""
     row = await library.get_script(script_id, principal.actor)
-    return _detail(library, row, principal.actor)
+    return await _detail(library, row, principal.actor)
 
 
 @router.post("/scripts/{script_id}/generate", status_code=202, response_model=ScriptDetail)
@@ -166,7 +177,7 @@ async def generate_script(
 ) -> ScriptDetail:
     """启动异步生成（进程内任务 + 内存进度）；前端轮询详情。"""
     row = await library.start_generation(script_id, principal.actor)
-    return _detail(library, row, principal.actor)
+    return await _detail(library, row, principal.actor)
 
 
 @router.post(
@@ -179,7 +190,7 @@ async def regenerate_script(
 ) -> ScriptDetail:
     """清除草稿内容并重新生成（仅草稿）。"""
     row = await library.regenerate(script_id, principal.actor)
-    return _detail(library, row, principal.actor)
+    return await _detail(library, row, principal.actor)
 
 
 @router.post("/scripts/{script_id}/publish", response_model=ScriptSummary)

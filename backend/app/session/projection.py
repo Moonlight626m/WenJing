@@ -240,11 +240,8 @@ def project_status(
     head_event_id: int | None,
     playable_roles: list[str],
     selected_role: str | None,
-    generation: dict[str, Any] | None = None,
 ) -> SessionStatusResponse:
     """会话行 + 运行时摘要 → SessionStatusResponse。"""
-    from app.contracts.dto import GenerationProgress
-
     return SessionStatusResponse(
         session_id=session_id,
         stage=stage,
@@ -252,5 +249,4 @@ def project_status(
         head_sequence=head_event_id or 0,
         playable_roles=playable_roles,
         selected_role=selected_role,
-        generation=GenerationProgress.model_validate(generation) if generation else None,
     )

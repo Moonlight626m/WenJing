@@ -50,11 +50,16 @@
       "type": "object"
     },
     "UsagePurpose": {
-      "description": "LLM 调用用途（ADR-0002 §5）：Stage1 生成 / 角色 Agent / 验证 Agent。",
+      "description": "LLM 调用用途（ADR-0002 §5 / issue #28 workflow 节点细分）。\n\nAGENT/VERIFY 服务于游戏运行时多 agent（Stage2/3）；其余为剧本生成\nworkflow 的节点用途（#28 骨架：write_script 暂由 Stage1Generator 承担，\n#33 退役旧路径后 STAGE1 随之废弃）。",
       "enum": [
         "stage1",
         "agent",
-        "verify"
+        "verify",
+        "collect_materials",
+        "doubter",
+        "divide_events",
+        "character_design",
+        "script_writing"
       ],
       "title": "UsagePurpose",
       "type": "string"

@@ -114,22 +114,48 @@ export interface AuthSessionInfo {
 export type ScriptStatus = "draft" | "published" | "unpublished";
 export type ScriptVisibility = "org" | "public";
 
-export type GenerationPhaseStateValue =
+export type GenerationStatus =
+  | "idle"
+  | "running"
+  | "awaiting_review"
+  | "succeeded"
+  | "failed";
+
+export type GenerationNode =
+  | "collect_materials"
+  | "verify_materials"
+  | "divide_events"
+  | "design_characters"
+  | "write_script"
+  | "final_audit";
+
+export type GenerationNodeStatusValue =
   | "pending"
   | "running"
   | "succeeded"
-  | "failed"
-  | "degraded";
+  | "rejected"
+  | "failed";
 
-export interface GenerationPhaseState {
-  name: string;
-  state: GenerationPhaseStateValue;
+export interface NodeProgress {
+  node: GenerationNode;
+  status: GenerationNodeStatusValue;
   detail: string | null;
 }
 
+export interface DoubterEvent {
+  node: GenerationNode;
+  verdict: "pass" | "reject";
+  issues: string[];
+  round: number;
+}
+
 export interface GenerationProgress {
-  status: "idle" | "running" | "succeeded" | "failed";
-  phases: GenerationPhaseState[];
+  schema_version: string;
+  status: GenerationStatus;
+  nodes: NodeProgress[];
+  doubter_events: DoubterEvent[];
+  error: string | null;
+  updated_at: string | null;
 }
 
 export interface MaterialPublic {
@@ -205,7 +231,15 @@ export interface SessionListResponse {
 
 // ===== 运营后台（issue #22 / ADR-0002 §5）=====
 
-export type UsagePurpose = "stage1" | "agent" | "verify";
+export type UsagePurpose =
+  | "stage1"
+  | "agent"
+  | "verify"
+  | "collect_materials"
+  | "doubter"
+  | "divide_events"
+  | "character_design"
+  | "script_writing";
 
 export interface UsageAggregateRow {
   schema_version: string;
