@@ -103,15 +103,25 @@ make dev-frontend   # frontend: http://localhost:3000 (next dev)
 
 | 命令 | 作用 |
 |------|------|
+| `make dev` / `make dev-stop` / `make dev-status` | 一键后台启动/停止/查看开发服务（日志在 `.run/logs/`） |
+| `make db-up` / `make db-down` | 启动/停止本地 PostgreSQL (docker compose) |
+| `make migrate` | 运行 Alembic 迁移 (backend) |
+| `make seed` | 写入默认 org 与测试账号（幂等） |
+| `make db-reset` | 破坏式重建本地库（删卷 → 迁移 → seed，数据不可恢复） |
 | `make test` | backend pytest（PG 可用时含集成测试） |
 | `make lint` | backend ruff + frontend eslint |
 | `make build` | frontend 生产构建 |
+| `make e2e` | 浏览器端到端测试（Playwright，需 backend+frontend 已运行） |
+| `make demo` | 端到端流程演示（需 backend 运行在 :8000） |
 | `make build-backend` / `make build-frontend` | 构建生产镜像 |
 | `make up` / `make down` / `make logs` | 启动/停止/查看完整生产栈 |
-| `make seed` | 写入默认 org 与测试账号（幂等） |
-| `make db-reset` | 破坏式重建本地库（删卷 → 迁移 → seed） |
-| `make e2e` | 浏览器端到端测试（Playwright） |
-| `make db-down` | 停止本地 PG |
+
+其他常用验证命令：
+
+```bash
+cd backend && uv run pytest tests/test_x.py::test_y -q   # 运行单个后端测试
+cd frontend && npm run typecheck                          # 前端类型检查（勿直接跑 tsc）
+```
 
 ## 生产部署（Docker Compose）
 
