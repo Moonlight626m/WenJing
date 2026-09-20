@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FormError } from "@/components/auth/form-error";
 import {
@@ -49,6 +49,76 @@ const selectClass =
 
 function shortOrg(orgId: string): string {
   return orgId.slice(0, 8);
+}
+
+function toYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** 「过去 N 天」区间（含今天）。 */
+function lastNDays(n: number): { since: string; until: string } {
+  const until = new Date();
+  const since = new Date();
+  since.setDate(since.getDate() - (n - 1));
+  return { since: toYmd(since), until: toYmd(until) };
+}
+
+/**
+ * 日期筛选输入：原生 date input 隐藏，由可见按钮呼出
+ * （点击/键盘均可打开浏览器日期选择面板，见 showPicker()）。
+ */
+function DateFilterInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const openPicker = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    // showPicker 需用户手势触发；旧浏览器无此 API 时退化为聚焦。
+    if (typeof input.showPicker === "function") {
+      try {
+        input.showPicker();
+      } catch {
+        input.focus();
+      }
+    } else {
+      input.focus();
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={openPicker}
+      className="relative flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-600 hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+    >
+      <span aria-hidden className="text-zinc-400 dark:text-zinc-500">
+        📅
+      </span>
+      <span className={value ? "" : "text-zinc-400 dark:text-zinc-500"}>
+        {value || label}
+      </span>
+      <input
+        ref={inputRef}
+        type="date"
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        tabIndex={-1}
+      />
+    </button>
+  );
 }
 
 /** 组织筛选下拉：两个区块共享同一 state（剧本库与用量的 org 维度联动筛选）。 */
@@ -131,8 +201,9 @@ export function AdminDashboard() {
   const [orgId, setOrgId] = useState("");
   const [status, setStatus] = useState("");
   const [purpose, setPurpose] = useState("");
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
+  // 日期筛选默认「过去 7 天」（含今天），可清空恢复不限区间。
+  const [since, setSince] = useState(() => lastNDays(7).since);
+  const [until, setUntil] = useState(() => lastNDays(7).until);
 
   useEffect(() => {
     let active = true;
@@ -261,19 +332,15 @@ export function AdminDashboard() {
                 </option>
               ))}
             </select>
-            <input
-              type="date"
-              aria-label="起始日期"
+            <DateFilterInput
+              label="起始日期"
               value={since}
-              onChange={(e) => setSince(e.target.value)}
-              className={selectClass}
+              onChange={setSince}
             />
-            <input
-              type="date"
-              aria-label="截止日期"
+            <DateFilterInput
+              label="截止日期"
               value={until}
-              onChange={(e) => setUntil(e.target.value)}
-              className={selectClass}
+              onChange={setUntil}
             />
           </div>
         </div>
