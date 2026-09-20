@@ -12,8 +12,9 @@ Create Date: 2026-09-15
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql as pg
+
+from alembic import op
 
 revision: str = "0004_llm_usage"
 down_revision: str | None = "0003_script_library"
