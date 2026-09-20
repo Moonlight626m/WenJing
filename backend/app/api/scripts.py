@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -24,11 +25,14 @@ from app.contracts.script_library import (
     ScriptPublishRequest,
     ScriptSummary,
 )
+from app.diagnostics.logging import exc_reason
 from app.models.script import Script as ScriptRecord
 from app.scripts.projection import script_summary
 from app.scripts.service import ScriptLibrary
 
 router = APIRouter(prefix="/api", tags=["scripts"])
+
+_logger = logging.getLogger("wenjing.api.scripts")
 
 _library: ScriptLibrary | None = None
 
@@ -47,7 +51,12 @@ def get_script_library() -> ScriptLibrary:
         if settings.llm_api_key:
             try:
                 script_llm = ModelServiceFactory.build(settings.llm_model_config())
-            except Exception:
+            except Exception as exc:
+                # 上游组件（真实 provider）构建失败，回落到下游（无 LLM 降级模式）前先告警
+                _logger.warning(
+                    "script_llm_build_failed_fallback_degraded",
+                    extra={"wj_extra": {"reason": exc_reason(exc)}},
+                )
                 script_llm = None
         _library = ScriptLibrary(
             session_factory=SessionLocal,

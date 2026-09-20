@@ -4,6 +4,7 @@ import useWebSocket, { ReadyState } from "react-use-websocket";
 import { useEffect } from "react";
 
 import { wsBaseUrl } from "@/lib/config";
+import { logger } from "@/lib/logger";
 import { useGameStore } from "@/stores/gameStore";
 
 export { wsBaseUrl };
@@ -30,13 +31,16 @@ export function useGameChannel(sessionId: string | null) {
 
   useEffect(() => {
     const store = useGameStore.getState();
-    if (readyState === ReadyState.OPEN) store.setConnection("connected");
-    else if (readyState === ReadyState.CONNECTING || readyState === ReadyState.UNINSTANTIATED)
+    if (readyState === ReadyState.OPEN) {
+      logger.info(`ws 连接已建立 /ws/${sessionId}`);
+      store.setConnection("connected");
+    } else if (readyState === ReadyState.CONNECTING || readyState === ReadyState.UNINSTANTIATED) {
       store.setConnection("connecting");
-    else store.setConnection("reconnecting");
-  }, [readyState]);
-
-  useEffect(() => {
+    } else {
+      logger.warning(`ws 断线（将自动重连） /ws/${sessionId} state=${ReadyState[readyState]}`);
+      store.setConnection("reconnecting");
+    }
+  }, [readyState, sessionId]);  useEffect(() => {
     if (lastJsonMessage != null) {
       useGameStore.getState().handleServerMessage(lastJsonMessage);
     }

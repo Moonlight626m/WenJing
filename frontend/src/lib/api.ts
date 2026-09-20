@@ -1,4 +1,5 @@
 import { apiBaseUrl } from "@/lib/config";
+import { logger } from "@/lib/logger";
 import type {
   AuthSessionInfo,
   ErrorEnvelope,
@@ -67,7 +68,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       credentials: "include",
       headers,
     });
-  } catch {
+  } catch (err) {
+    logger.error(`请求失败（网络） ${method} ${path}`, err);
     throw new ApiError(
       {
         error_id: "network",
@@ -89,20 +91,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       // 非 JSON 错误体（如代理层错误页）
     }
     if (isEnvelope(parsed)) {
+      // 业务错误（4xx envelope）：warning，页面可恢复展示
+      logger.warning(`响应 ${resp.status} ${method} ${path}`, parsed);
       throw new ApiError(parsed, resp.status);
     }
-    throw new ApiError(
-      {
-        error_id: "unknown",
-        code: "INTERNAL_ERROR",
-        domain: "internal",
-        message: body.slice(0, 200) || `HTTP ${resp.status}`,
-        retryable: false,
-        details: null,
-      },
-      resp.status
-    );
+    const envelope = {
+      error_id: "unknown",
+      code: "INTERNAL_ERROR",
+      domain: "internal",
+      message: body.slice(0, 200) || `HTTP ${resp.status}`,
+      retryable: false,
+      details: null,
+    } satisfies ErrorEnvelope;
+    logger.error(`响应 ${resp.status}（非 envelope） ${method} ${path}`, envelope);
+    throw new ApiError(envelope, resp.status);
   }
+  logger.info(`请求 ${method} ${path} → ${resp.status}`);
   if (resp.status === 204) {
     return undefined as T;
   }

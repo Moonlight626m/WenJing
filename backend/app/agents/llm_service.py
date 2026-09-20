@@ -106,11 +106,13 @@ class ChatLLMService:
             logger.info(
                 "llm_call_start",
                 extra={
-                    "provider": self.provider,
-                    "model": self.model,
-                    "messages": len(messages),
                     "session_id": session_id or None,
-                    "purpose": purpose.value,
+                    "wj_extra": {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "messages": len(messages),
+                        "purpose": purpose.value,
+                    },
                 },
             )
             try:
@@ -127,10 +129,27 @@ class ChatLLMService:
                 )
                 content = resp.choices[0].message.content or ""
                 usage = _token_usage(resp)
+                logger.info(
+                    "llm_call_end",
+                    extra={
+                        "session_id": session_id or None,
+                        "wj_extra": {
+                            "provider": self.provider,
+                            "model": self.model,
+                            "purpose": purpose.value,
+                            "content": content,  # 模型响应全文（业务层关键信息）
+                            "prompt_tokens": usage.prompt_tokens if usage else None,
+                            "completion_tokens": usage.completion_tokens if usage else None,
+                        },
+                    },
+                )
             except Exception as exc:
                 logger.error(
                     "llm_call_failed",
-                    extra={"reason": str(exc), "session_id": session_id or None},
+                    extra={
+                        "wj_extra": {"reason": str(exc)},
+                        "session_id": session_id or None,
+                    },
                 )
                 raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
             finally:

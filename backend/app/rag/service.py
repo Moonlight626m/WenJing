@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from app.contracts.material import WebEvidence
+from app.diagnostics.logging import exc_reason
 from app.rag.html_extractor import HtmlDocumentExtractor
 from app.rag.providers import (
     DocumentExtractor,
@@ -19,6 +21,8 @@ from app.rag.providers import (
     SearchProvider,
 )
 from app.rag.safe_fetcher import SafePageFetcher
+
+logger = logging.getLogger("wenjing.rag.service")
 
 UNTRUSTED_BEGIN = "\n<<<UNTRUSTED_WEB_BEGIN>>>\n"
 UNTRUSTED_END = "\n<<<UNTRUSTED_WEB_END>>>\n"
@@ -50,7 +54,12 @@ class RagService:
         """检索 + 抓取 + 提取 → WebEvidence 列表；任何失败降级为空列表。"""
         try:
             hits = await self.search.search(query, limit=self.max_documents)
-        except Exception:
+        except Exception as exc:
+            # 上游搜索失败，降级为纯原文前先告警
+            logger.warning(
+                "rag_search_failed_degrade_to_source_only",
+                extra={"wj_extra": {"reason": exc_reason(exc), "query": query}},
+            )
             return []
 
         evidence: list[WebEvidence] = []
@@ -59,8 +68,18 @@ class RagService:
                 ev = await self._research_one(hit)
                 if ev is not None:
                     evidence.append(ev)
-            except Exception:
-                continue  # 单文档失败不影响其余（最终可整体降级为空）
+            except Exception as exc:
+                # 单文档失败不影响其余；全部失败时最终可整体降级为空
+                logger.warning(
+                    "rag_document_fetch_failed_skipped",
+                    extra={
+                        "wj_extra": {
+                            "reason": exc_reason(exc),
+                            "url": getattr(hit, "url", ""),
+                        }
+                    },
+                )
+                continue
         return evidence
 
     async def _research_one(self, hit) -> WebEvidence | None:

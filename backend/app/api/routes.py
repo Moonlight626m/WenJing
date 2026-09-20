@@ -21,9 +21,12 @@ from app.contracts.dto import (
 )
 from app.db.session import SessionLocal
 from app.db.session import create_engine as create_db_engine
+from app.diagnostics.logging import exc_reason, get_logger
 from app.diagnostics.metrics import metrics
 from app.errx import Error as WJError
 from app.errx import codes, new
+
+logger = get_logger("api.routes")
 
 router = APIRouter()
 
@@ -51,7 +54,12 @@ def get_application():
                 from app.agents.model_config import ModelServiceFactory
 
                 agent_llm = ModelServiceFactory.build(settings.llm_model_config())
-            except Exception:
+            except Exception as exc:
+                # 上游组件（真实 provider）构建失败，回落到下游确定性实现前先告警
+                logger.warning(
+                    "llm_factory_build_failed_fallback_fake",
+                    extra={"wj_extra": {"reason": exc_reason(exc)}},
+                )
                 agent_llm = DeterministicAgentLLM()
         _application = SessionApplication(
             session_factory=SessionLocal,

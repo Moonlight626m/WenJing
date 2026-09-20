@@ -98,10 +98,10 @@ class GameRuntime:
         on_flush: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         if enable_logging:
-            from app.core.logging_config import configure_logging
+            from app.diagnostics.logging import configure_logging
 
             configure_logging()
-        from app.core.logging_config import get_logger
+        from app.diagnostics.logging import get_logger
 
         self.session_id = session_id
         self.script = script
@@ -112,7 +112,7 @@ class GameRuntime:
             event_store if event_store is not None else EventStore()
         )
         self._on_flush = on_flush
-        self._log = get_logger("core.runtime", session_id=session_id)
+        self._log = get_logger("core.runtime")
 
         self.state_machine = GameStateMachine()
         self.screenwriter = ScreenwriterAgent(llm)

@@ -21,7 +21,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    from app.diagnostics.logging import configure_logging
+
     settings = get_settings()
+    configure_logging(debug=settings.debug)
     app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
@@ -57,6 +60,11 @@ def create_app() -> FastAPI:
         if response.status_code >= 500:
             metrics.inc("wenjing_errors_total")
         return response
+
+    # 访问日志中间件放最外层（后注册的先执行），能看到经异常处理器转换后的最终状态码
+    from app.diagnostics.access_log import AccessLogMiddleware
+
+    app.add_middleware(AccessLogMiddleware, log_body=settings.log_body)
 
     return app
 

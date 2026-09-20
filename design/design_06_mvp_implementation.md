@@ -16,7 +16,7 @@
 > - 玩家操作由 pytest 注入的**脚本化决策回调**驱动，不做真实交互/CLI；
 > - 引入横切 **errx 错误体系**（仿 Go errorx）与 **log/trace 日志**（标准库 logging，事件即日志）。
 >
-> **已实现**（本轮）：`app/errx/`、`core/logging_config`、`core/state_machine`、`core/event`、
+> **已实现**（本轮）：`app/errx/`、`core/state_machine`、`core/event`、
 > `core/game_engine`、`core/types`、`core/engine_config`、`agents/{llm_service,character,screenwriter,verifier}`；
 > 测试 `tests/{conftest,test_errx,test_engine}.py` 全部通过（18 例）。
 >
@@ -186,7 +186,7 @@ Phase 4  Stage3 续写与回溯  高自由度 + 快照回溯 + 存档/恢复
 | 状态机 | `design_03` §2 | `app/core/state_machine.py`（枚举，砍 LangGraph） |
 | 事件存储 | `design_03` §4 | `app/core/event.py`（内存，事件即日志） |
 | 错误体系 | —（仿 Go errorx） | `app/errx/`（已实现） |
-| 日志 | — | `app/core/logging_config.py`（已实现） |
+| 日志 | — | `app/diagnostics/logging.py`（issue #3 结构化日志；`app/core/logging_config.py` 已并入删除） |
 | 消息类型化 schema | `design_02` §2.2 | `app/schemas/messages.py`（泛型 dict） |
 | WS 会话/回显 | `design_02` §5 | `app/api/routes.py`（占位，前端后置） |
 | REST 会话端点 | `design_05` §六 | `POST /api/sessions` / `GET /api/sessions/{id}` |
@@ -234,7 +234,7 @@ Phase 4  Stage3 续写与回溯  高自由度 + 快照回溯 + 存档/恢复
 | Agent | 3001–3002 | 角色不在会话 / 全部提议被驳回（僵局） |
 | LLM | 4001–4002 | 调用失败 / 结构化输出解析失败 |
 
-### 9.2 日志 / trace（`app/core/logging_config.py`）
+### 9.2 日志 / trace（`app/diagnostics/logging.py`）
 
 - 标准库 `logging`，`logger = logging.getLogger("wenjing.<module>")`。
 - 覆盖六类关键节点：引擎生命周期、phase cycle 各步、Agent 调度（提议/验证/重试/放弃）、玩家操作、回溯、LLM 调用。

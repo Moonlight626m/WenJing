@@ -1,7 +1,8 @@
 """诊断基础设施测试（issue #3 验收标准）。
 
 - 错误可经 error_id 定位到服务端日志（caplog 断言）。
-- 敏感内容不出现在日志：api_key/prompt/raw_text/玩家输入被替换为占位。
+- 凭据（api_key/password/authorization/secret）永不落日志，替换为占位；
+  业务内容（prompt/课文/玩家输入）全量落日志（排障优先，脱敏已放宽）。
 - envelope 稳定码映射正确；未知整数码回落 INTERNAL_ERROR。
 - contextvars 关联字段经 CorrelationFilter 注入每条记录。
 """
@@ -58,28 +59,58 @@ def _release_capture(name: str, cap) -> None:
 # ===== 脱敏 =====
 
 
-def test_sanitize_redacts_sensitive_keys():
+def test_sanitize_redacts_credentials_only():
+    """凭据键替换为占位；业务内容键全量保留（不再截断）。"""
+    raw_text = "我与父亲不相见已二年余了" * 20
     out = sanitize_extra(
         {
             "llm_api_key": "sk-super-secret-value",
+            "authorization": "Bearer abc",
+            "password": "hunter2",
             "prompt": "你是一名演员，请扮演……",
-            "raw_text": "我与父亲不相见已二年余了" * 20,
+            "raw_text": raw_text,
             "player_input": "我想对父亲说……",
             "session_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
             "duration_ms": 123.4,
         }
     )
-    assert out["llm_api_key"].startswith("<redacted")
+    assert out["llm_api_key"] == "<redacted>"
     assert "sk-super-secret" not in str(out)
-    assert out["prompt"].startswith("<redacted")
-    assert len(out["raw_text"]) < 40
-    assert out["player_input"].startswith("<redacted")
+    assert out["authorization"] == "<redacted>"
+    assert out["password"] == "<redacted>"
+    # 业务内容原样保留
+    assert out["prompt"] == "你是一名演员，请扮演……"
+    assert out["raw_text"] == raw_text
+    assert out["player_input"] == "我想对父亲说……"
     # 非敏感键保持明文
     assert out["session_id"] == "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910"
     assert out["duration_ms"] == "123.4"
 
 
-def test_sensitive_content_never_in_log_output():
+def test_credentials_never_in_log_output():
+    configure_logging(json_mode=True, level=logging.INFO)
+    log = get_logger("diag.test")
+    cap = _capture_target("wenjing.diag.test")
+    try:
+        log.info(
+            "import_attempt",
+            extra={
+                "wj_extra": {
+                    "api_key": "sk-should-not-leak",
+                    "password": "p@ss",
+                }
+            },
+        )
+    finally:
+        _release_capture("wenjing.diag.test", cap)
+    rendered = cap.text
+    assert "sk-should-not-leak" not in rendered
+    assert "p@ss" not in rendered
+    assert "<redacted>" in rendered
+
+
+def test_business_content_full_in_log_output():
+    """业务内容（prompt/课文/玩家输入）全量落日志（脱敏放宽后的约定）。"""
     configure_logging(json_mode=True, level=logging.INFO)
     log = get_logger("diag.test")
     cap = _capture_target("wenjing.diag.test")
@@ -96,9 +127,8 @@ def test_sensitive_content_never_in_log_output():
     finally:
         _release_capture("wenjing.diag.test", cap)
     rendered = cap.text
-    assert "背影正文全文" not in rendered
-    assert "我不想去车站" not in rendered
-    assert "<redacted>" in rendered
+    assert "背影正文全文" in rendered
+    assert "我不想去车站" in rendered
 
 
 # ===== envelope 映射与 error_id 日志定位 =====

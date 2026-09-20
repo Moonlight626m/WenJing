@@ -1,7 +1,8 @@
-"""结构化日志（issue #3）：部署输出 JSON、开发可读；默认脱敏。
+"""结构化日志（issue #3）：部署输出 JSON、开发可读。
 
-脱敏原则（spec 决策）：默认日志不含 API key、完整课文、完整 prompt、
-完整玩家自由输入 —— 命中敏感键的值截断为 `<redacted:N>`。
+内容脱敏策略（放宽，排障优先）：业务内容（prompt、课文、玩家输入）全量落日志；
+仅凭据类键（api_key / password / authorization / secret）仍替换为 `<redacted>`，
+日志中永不出现密钥、口令、凭证。
 """
 
 from __future__ import annotations
@@ -15,44 +16,49 @@ from app.diagnostics.context import CorrelationFilter
 
 LOGGER_NAME = "wenjing"
 
-# 键名命中即视为敏感（大小写不敏感子串匹配）
+# 凭据类键名命中即替换（大小写不敏感子串匹配）；业务内容不再脱敏
 SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
     "authorization",
     "password",
     "secret",
-    "prompt",
-    "raw_text",
-    "normalized_text",
-    "player_input",
-    "free_input",
+    "token",
 )
-
-MAX_SAFE_VALUE_LEN = 80
 
 
 def _is_sensitive(key: str) -> bool:
     low = key.lower()
+    if low.endswith("tokens"):
+        # 用量计量字段（prompt_tokens/completion_tokens）不是凭据
+        return False
     return any(part in low for part in SENSITIVE_KEY_PARTS)
 
 
-def sanitize_value(value: Any) -> str:
-    text = str(value)
-    if len(text) > MAX_SAFE_VALUE_LEN:
-        return f"<redacted:len={len(text)}>"
-    return text
-
-
 def sanitize_extra(extra: dict[str, Any]) -> dict[str, str]:
-    """extra 落日志前的统一处理：敏感键替换为占位，其余截断限长。"""
+    """extra 落日志前的统一处理：凭据键替换为占位，业务内容原样保留。"""
     out: dict[str, str] = {}
     for key, value in extra.items():
         if _is_sensitive(key):
             out[key] = "<redacted>"
         else:
-            out[key] = sanitize_value(value)
+            out[key] = str(value)
     return out
+
+
+def redact_credentials(obj: Any) -> Any:
+    """递归擦除凭据键（供 body 级全量打印使用）：命中敏感键的值替换为占位。
+
+    只处理 dict/list 结构；其他类型原样返回。JSON 解析失败的 body 由调用方决定去留。
+    """
+    if isinstance(obj, dict):
+        return {
+            key: "<redacted>" if _is_sensitive(key) else redact_credentials(value)
+            for key, value in obj.items()
+        }
+    if isinstance(obj, list):
+        return [redact_credentials(item) for item in obj]
+    return obj
 
 
 _CORRELATION_FIELDS = (
@@ -152,4 +158,16 @@ def log_event(record: logging.LogRecord) -> None:
     logging.getLogger(LOGGER_NAME).handle(record)
 
 
-__all__ = ["configure_logging", "get_logger", "LOGGER_NAME", "sanitize_extra"]
+def exc_reason(exc: BaseException) -> str:
+    """统一 fallback 日志的原因格式：`类型: 消息`。"""
+    return f"{type(exc).__name__}: {exc}"
+
+
+__all__ = [
+    "configure_logging",
+    "exc_reason",
+    "get_logger",
+    "LOGGER_NAME",
+    "redact_credentials",
+    "sanitize_extra",
+]

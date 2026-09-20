@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { ApiError, logout } from "@/lib/api";
+import { logger } from "@/lib/logger";
 
 export function LogoutButton() {
   const router = useRouter();
@@ -17,7 +18,7 @@ export function LogoutButton() {
     } catch (err) {
       // 会话已失效（401）等价于登出成功；其它错误提示后仍回登录页。
       if (!(err instanceof ApiError && err.status === 401)) {
-        console.error("logout failed", err);
+        logger.error("登出失败", err);
       }
     } finally {
       router.replace("/login");
