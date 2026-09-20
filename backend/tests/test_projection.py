@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 
 from app.contracts.runtime import RuntimeUpdate
-from app.core.script_adapter import script_package_to_script
-from app.session.projection import project_state, project_update
+from app.domain.game.script_adapter import script_package_to_script
+from app.services.session_projection import project_state, project_update
 
 _SID = uuid.UUID("0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910")
 

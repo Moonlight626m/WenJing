@@ -11,9 +11,9 @@ import logging
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-from app.diagnostics.access_log import AccessLogMiddleware
-from app.diagnostics.logging import configure_logging
-from app.errx import new
+from app.infrastructure.diagnostics.access_log import AccessLogMiddleware
+from app.infrastructure.diagnostics.logging import configure_logging
+from app.infrastructure.errx import new
 
 
 class Capture(logging.Handler):
@@ -150,7 +150,7 @@ def test_access_log_body_switch_off():
 
 
 def test_routes_llm_factory_fallback_logs_warning():
-    import app.api.routes as routes_mod
+    import app.controllers.routes as routes_mod
 
     class _StubSettings:
         llm_api_key = "sk-test"
@@ -166,7 +166,7 @@ def test_routes_llm_factory_fallback_logs_warning():
     cap = _capture("wenjing.api.routes")
     try:
         app_obj = routes_mod.get_application()
-        from app.agents.fake_llm import DeterministicAgentLLM
+        from app.infrastructure.llm.fake import DeterministicAgentLLM
 
         assert isinstance(app_obj._agent_llm, DeterministicAgentLLM)
     finally:
@@ -177,7 +177,7 @@ def test_routes_llm_factory_fallback_logs_warning():
 
 
 def test_scripts_llm_fallback_logs_warning():
-    import app.api.scripts as scripts_mod
+    import app.controllers.scripts as scripts_mod
 
     class _StubSettings:
         llm_api_key = "sk-test"
@@ -202,7 +202,7 @@ def test_scripts_llm_fallback_logs_warning():
 
 
 def test_rag_search_failure_logs_warning():
-    from app.rag.service import RagService
+    from app.infrastructure.rag.service import RagService
 
     class _BoomSearch:
         async def search(self, query, limit=3):

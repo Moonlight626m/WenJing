@@ -7,13 +7,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.admin import router as admin_router
-from app.api.auth import router as auth_router
-from app.api.errors import error_response
-from app.api.routes import router
-from app.api.scripts import router as scripts_router
-from app.config import get_settings
-from app.errx import Error as WJError
+from app.controllers.admin import router as admin_router
+from app.controllers.auth import router as auth_router
+from app.controllers.errors import error_response
+from app.controllers.routes import router
+from app.controllers.scripts import router as scripts_router
+from app.infrastructure.config import get_settings
+from app.infrastructure.errx import Error as WJError
 
 logger = logging.getLogger("wenjing.main")
 
@@ -38,7 +38,7 @@ async def _open_checkpointer(database_url: str):
 
     PG 不可达时降级返回 None：workflow 无 checkpointer 也可跑（闸门恢复 #34 完整启用）。
     """
-    from app.api.scripts import set_generation_checkpointer
+    from app.controllers.scripts import set_generation_checkpointer
 
     pool = None
     try:
@@ -61,7 +61,7 @@ async def _open_checkpointer(database_url: str):
 
 
 def create_app() -> FastAPI:
-    from app.diagnostics.logging import configure_logging
+    from app.infrastructure.diagnostics.logging import configure_logging
 
     settings = get_settings()
     configure_logging(debug=settings.debug)
@@ -87,8 +87,8 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def correlation_and_metrics(request, call_next):  # type: ignore[no-untyped-def]
-        from app.diagnostics.context import bind_request, reset_ids
-        from app.diagnostics.metrics import metrics, observe_latency
+        from app.infrastructure.diagnostics.context import bind_request, reset_ids
+        from app.infrastructure.diagnostics.metrics import metrics, observe_latency
 
         reset_ids()
         req_id = bind_request()
@@ -102,7 +102,7 @@ def create_app() -> FastAPI:
         return response
 
     # 访问日志中间件放最外层（后注册的先执行），能看到经异常处理器转换后的最终状态码
-    from app.diagnostics.access_log import AccessLogMiddleware
+    from app.infrastructure.diagnostics.access_log import AccessLogMiddleware
 
     app.add_middleware(AccessLogMiddleware, log_body=settings.log_body)
 

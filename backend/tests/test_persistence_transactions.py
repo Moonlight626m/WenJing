@@ -17,12 +17,12 @@ import pytest
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
-from app.models.command import CommandRecord
-from app.models.event import GameEventRecord
-from app.models.event_branch import EventBranchRecord
-from app.models.session import Session
+import app.infrastructure.models  # noqa: F401
+from app.infrastructure.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
+from app.infrastructure.models.command import CommandRecord
+from app.infrastructure.models.event import GameEventRecord
+from app.infrastructure.models.event_branch import EventBranchRecord
+from app.infrastructure.models.session import Session
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"

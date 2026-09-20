@@ -17,11 +17,11 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.access import Actor
+import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.errx import Error as WJError
-from app.session.application import SessionApplication
+from app.domain.access import Actor
+from app.infrastructure.errx import Error as WJError
+from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -152,7 +152,7 @@ async def test_restore_after_restart_replays_state(factory, actor):
     stage_before = upd1.state.stage.value
 
     # 模拟进程重启：全新应用实例无内存运行时，命令触发 DB 重建
-    from app.agents.fake_llm import DeterministicAgentLLM
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
 
     revived = SessionApplication(
         session_factory=factory, agent_llm=DeterministicAgentLLM()
@@ -170,7 +170,7 @@ async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, 
     from conftest import make_playable_session
     from sqlalchemy import text
 
-    from app.errx import codes
+    from app.infrastructure.errx import codes
 
     app, sid = await make_playable_session(factory, actor)
     role = (await app.get_status(sid, actor=actor)).playable_roles[0]
@@ -216,7 +216,7 @@ async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, 
 
 
 async def test_initialize_without_script_fails_cleanly(factory, actor):
-    from app.agents.fake_llm import DeterministicAgentLLM
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
 
     app = SessionApplication(
         session_factory=factory, agent_llm=DeterministicAgentLLM()
@@ -229,7 +229,7 @@ async def test_initialize_without_script_fails_cleanly(factory, actor):
 
 
 async def test_commands_on_unknown_session_rejected(factory, actor):
-    from app.agents.fake_llm import DeterministicAgentLLM
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
 
     app = SessionApplication(
         session_factory=factory, agent_llm=DeterministicAgentLLM()

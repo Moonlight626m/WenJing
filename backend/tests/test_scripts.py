@@ -24,11 +24,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.access import Actor
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
+from app.domain.access import Actor
 from app.main import create_app
-from app.scripts.service import ScriptLibrary
+from app.services.script_library import ScriptLibrary
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -99,7 +99,7 @@ def _schema():
 
 @pytest.fixture(scope="module")
 def client(_schema):
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()

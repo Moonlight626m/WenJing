@@ -35,7 +35,7 @@ def test_health_ready_reports_postgres_state(client):
 
 
 def test_request_id_header_and_metrics_increment(client):
-    from app.diagnostics.metrics import metrics
+    from app.infrastructure.diagnostics.metrics import metrics
 
     before = metrics.get("wenjing_requests_total")
     resp = client.get("/health/live")

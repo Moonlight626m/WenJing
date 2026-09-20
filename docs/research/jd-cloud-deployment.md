@@ -15,7 +15,7 @@
   `proxy_read_timeout 3600s`，`/health` 健康检查透传）。
 - 上线操作基本就是：`.env`（改 DB 密码 / LLM key / `WENJING_AUTH_COOKIE_SECURE`）→
   `docker compose up -d --build`（backend 入口自动跑 Alembic 迁移）→
-  `docker compose exec backend uv run python -m app.auth.seed`（幂等 seed，生产必须改默认密码）。
+  `docker compose exec backend uv run python -m app.services.auth_seed`（幂等 seed，生产必须改默认密码）。
 - 关键约束（README/design_00）：
   - **单 worker**：会话运行时与 WS outbox 在进程内存 → 单实例单进程，禁止多 worker/多副本
     （D13：单进程 asyncio，不引入 Redis）。
@@ -197,7 +197,7 @@
    `WENJING_LLM_API_KEY`、`WENJING_SEED_PASSWORD`。`.env` 已被 gitignore，
    **严禁提交**；服务器上权限设 600。LLM 用国内可达 provider 时设
    `WENJING_LLM_PROVIDER/WENJING_LLM_MODEL/WENJING_LLM_BASE_URL`（OpenAI 兼容接口）。
-6. **首启初始化**：`docker compose exec backend uv run python -m app.auth.seed`（幂等），
+6. **首启初始化**：`docker compose exec backend uv run python -m app.services.auth_seed`（幂等），
    随后**立即改掉默认密码**（README 明示生产必须）。
 7. **数据库**：自建 PG 仅绑回环；为防误删卷，定期 `docker exec` 做 `pg_dump` 到云盘/OSS
    （或购买快照策略）。
@@ -236,7 +236,7 @@
    `WENJING_LLM_PROVIDER/MODEL/API_KEY/BASE_URL`（国内可达 provider）、
    `WENJING_SEED_PASSWORD`；HTTPS 就绪后置 `WENJING_AUTH_COOKIE_SECURE=1`。
 7. **启动**：`docker compose up -d --build`（backend 入口自动 Alembic 迁移）。
-8. **Seed**：`docker compose exec backend uv run python -m app.auth.seed`，然后立刻改默认密码。
+8. **Seed**：`docker compose exec backend uv run python -m app.services.auth_seed`，然后立刻改默认密码。
 9. **反代与 HTTPS**：扩展 `deploy/nginx.conf` 增加 443 server 块（京东云免费证书或 certbot），
    80→443 跳转；`docker compose up -d nginx` 重载。
 10. **解析与验证**：云解析 DNS 添加 A 记录指向主机 IP；浏览器访问 `https://<域名>/`，

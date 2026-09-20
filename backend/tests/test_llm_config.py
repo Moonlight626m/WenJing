@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.llm_service import ChatLLMService
-from app.agents.model_config import (
+from app.infrastructure.config import Settings
+from app.infrastructure.errx import codes, match_code
+from app.infrastructure.llm.chat import ChatLLMService
+from app.infrastructure.llm.factory import (
     KNOWN_PROVIDERS,
     ModelConfig,
     ModelServiceFactory,
 )
-from app.config import Settings
-from app.errx import codes, match_code
 
 
 def test_openai_defaults_and_factory():

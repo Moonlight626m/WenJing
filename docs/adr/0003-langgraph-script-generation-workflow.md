@@ -72,7 +72,7 @@ flowchart LR
 
 ### 4. prompt 集中管理
 
-- 新建 `backend/app/prompts/`：每节点一个模块，导出 `PROMPT_VERSION` +
+- 新建 `backend/app/domain/prompts/`：每节点一个模块，导出 `PROMPT_VERSION` +
   `build_user_message(...)`；prompt_version 逐次可溯源。
 - 运行时 Stage2/3 的 prompt（character/verifier）暂维持原状（`agents/` 目录），
   其 fake_llm 关键词路由耦合随 #33 退役时一并处理。

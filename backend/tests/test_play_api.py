@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
 from app.main import create_app
 
@@ -115,10 +115,10 @@ def client():
     asyncio.run(engine.dispose())
 
     # 测试必须走确定性 fake（backend/.env 可能配置了真实 LLM key）
-    from app.agents.fake_llm import DeterministicAgentLLM
-    from app.api import routes as routes_mod
-    from app.db.session import SessionLocal
-    from app.session.application import SessionApplication
+    from app.controllers import routes as routes_mod
+    from app.infrastructure.db.session import SessionLocal
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
+    from app.services.session_runtime import SessionApplication
 
     original = routes_mod._application
     routes_mod._application = SessionApplication(
@@ -168,8 +168,8 @@ def _generate_direct(account: dict, script_id: int) -> None:
     async def _run() -> None:
         import uuid as _uuid
 
-        from app.access import Actor
-        from app.scripts.service import ScriptLibrary
+        from app.domain.access import Actor
+        from app.services.script_library import ScriptLibrary
 
         engine = _engine()
         factory = async_sessionmaker(

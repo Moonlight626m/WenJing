@@ -9,12 +9,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.errx import Error as WJError
-from app.rag.html_extractor import HtmlDocumentExtractor
-from app.rag.network import is_blocked_ip, validate_target, validate_url_scheme
-from app.rag.providers import FetchedPage
-from app.rag.safe_fetcher import SafePageFetcher
-from app.rag.service import RagService, mark_untrusted
+from app.domain.content.trust import mark_untrusted
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.rag.html_extractor import HtmlDocumentExtractor
+from app.infrastructure.rag.network import is_blocked_ip, validate_target, validate_url_scheme
+from app.infrastructure.rag.providers import FetchedPage
+from app.infrastructure.rag.safe_fetcher import SafePageFetcher
+from app.infrastructure.rag.service import RagService
 
 # ===== 1. URL / DNS / IP 封禁校验 =====
 

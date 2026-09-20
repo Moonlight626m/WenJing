@@ -18,13 +18,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.agents.fake_llm import DeterministicAgentLLM
+import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.db.event_store import branch_uuid
-from app.diagnostics.errors import envelope_for
-from app.errx import Error as WJError
-from app.session.application import SessionApplication
+from app.infrastructure.db.event_store import branch_uuid
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.llm.fake import DeterministicAgentLLM
+from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"

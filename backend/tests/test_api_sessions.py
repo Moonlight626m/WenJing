@@ -19,13 +19,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401  # 确保 ORM 元数据注册
-from app.access import Actor
-from app.agents.fake_llm import DeterministicAgentLLM
+import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.contracts.enums import UserRole
+from app.domain.access import Actor
+from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.main import create_app
-from app.scripts.service import ScriptLibrary
-from app.session.application import SessionApplication
+from app.services.script_library import ScriptLibrary
+from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"

@@ -10,8 +10,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from app.content import ContentPipeline, MaterialIngestor, content_hash, normalize_text
-from app.content.genre import GenreDetector
 from app.contracts.content import GenreType, TextAnalysis
 from app.contracts.material import (
     Material,
@@ -19,8 +17,10 @@ from app.contracts.material import (
     OriginalEvidence,
     WebEvidence,
 )
-from app.diagnostics.errors import envelope_for
-from app.errx import Error, codes
+from app.domain.content import ContentPipeline, MaterialIngestor, content_hash, normalize_text
+from app.domain.content.genre import GenreDetector
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import Error, codes
 
 BEIYING = (
     "背影\n\n"

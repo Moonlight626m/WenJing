@@ -145,7 +145,7 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 - **seed 凭据**：生产栈首次部署后需手动执行 seed（幂等），写入默认 org
   「文境演示学校」与测试账号：
   ```bash
-  docker compose exec backend uv run python -m app.auth.seed
+  docker compose exec backend uv run python -m app.services.auth_seed
   ```
   `admin` / `teacher` / `student`，
   密码默认 `123456`（`WENJING_SEED_PASSWORD` 覆盖）。

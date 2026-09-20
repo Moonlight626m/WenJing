@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
 from app.main import create_app
 
@@ -131,7 +131,7 @@ def client():
 
     # app 的 DB engine/连接池绑定事件循环：跨 TestClient 模块复用会触发
     # "attached to a different loop"。创建前释放前序遗留，销毁后释放自身。
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()
@@ -198,8 +198,8 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     script_id = script.json()["id"]
 
     async def _gen() -> None:
-        from app.access import Actor
-        from app.scripts.service import ScriptLibrary
+        from app.domain.access import Actor
+        from app.services.script_library import ScriptLibrary
 
         eng = _engine()
         factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)

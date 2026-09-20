@@ -12,15 +12,15 @@ import json
 
 import pytest
 
-from app.config import get_settings
-from app.content.pipeline import ContentPipeline
 from app.contracts.enums import UsagePurpose
 from app.contracts.material import MaterialInput, MaterialSource
 from app.contracts.script import ScriptPackage
-from app.errx import Error
-from app.generation.stage1 import synthesize_script_package
-from app.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
-from app.prompts import character_design, collect_materials, divide_events
+from app.domain.content.pipeline import ContentPipeline
+from app.domain.generation.stage1 import synthesize_script_package
+from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
+from app.domain.prompts import character_design, collect_materials, divide_events
+from app.infrastructure.config import get_settings
+from app.infrastructure.errx import Error
 
 MATERIAL_TEXT = (
     "那年冬天，母亲病了。我离开家，到城里去买药。"
@@ -274,8 +274,8 @@ def test_prompts_embed_prompt_version() -> None:
 )
 async def test_collect_materials_real_llm_smoke() -> None:
     """有 key 时对单个节点做真实连通冒烟（完整链路见 scripts/smoke_workflow.py）。"""
-    from app.agents.model_config import ModelServiceFactory
-    from app.config import get_settings
+    from app.infrastructure.config import get_settings
+    from app.infrastructure.llm.factory import ModelServiceFactory
 
     settings = get_settings()
     llm = ModelServiceFactory.build(settings.llm_model_config())

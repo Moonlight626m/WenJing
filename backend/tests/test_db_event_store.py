@@ -13,9 +13,9 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401  # 注册元数据
-from app.db.event_store import PersistentEventStore
-from app.models.session import Session
+import app.infrastructure.models  # noqa: F401  # 注册元数据
+from app.infrastructure.db.event_store import PersistentEventStore
+from app.infrastructure.models.session import Session
 
 S1 = str(uuid4())
 S2 = str(uuid4())

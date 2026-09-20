@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.event import MAIN_BRANCH_ID
-from app.errx import Error as WJError
+from app.domain.game.event import MAIN_BRANCH_ID
+from app.infrastructure.errx import Error as WJError
 
 
 def _active_branch_ids(rt) -> list[int]:

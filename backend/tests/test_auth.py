@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401  # 确保 ORM 元数据注册
-from app.auth.seed import seed
-from app.auth.service import DEFAULT_ORG_NAME
+import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.main import create_app
+from app.services.auth import DEFAULT_ORG_NAME
+from app.services.auth_seed import seed
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -105,7 +105,7 @@ def client(_schema):
     # 模块级单例：app 的 DB engine 与会话池绑定事件循环，跨 TestClient 复用会触发
     # asyncpg「another operation in progress」，故整个模块共用一个 client。
     # 同时释放前序 TestClient 模块遗留的连接池（绑定的是已关闭的事件循环）。
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()

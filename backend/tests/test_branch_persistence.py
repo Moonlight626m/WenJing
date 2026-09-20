@@ -12,13 +12,13 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.db.branch import commit_rollback_branch
-from app.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
-from app.models.event import GameEventRecord
-from app.models.event_branch import EventBranchRecord
-from app.models.session import Session
-from app.models.snapshot import Snapshot
+import app.infrastructure.models  # noqa: F401
+from app.infrastructure.db.branch import commit_rollback_branch
+from app.infrastructure.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
+from app.infrastructure.models.event import GameEventRecord
+from app.infrastructure.models.event_branch import EventBranchRecord
+from app.infrastructure.models.session import Session
+from app.infrastructure.models.snapshot import Snapshot
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"

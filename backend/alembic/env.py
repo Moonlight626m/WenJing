@@ -6,10 +6,10 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # 导入模型使 Base.metadata 收集到全部表（供 autogenerate / 迁移使用）
-import app.models  # noqa: F401,E402
+import app.infrastructure.models  # noqa: F401,E402
 from alembic import context
-from app.config import get_settings
-from app.db.session import Base
+from app.infrastructure.config import get_settings
+from app.infrastructure.db.session import Base
 
 config = context.config
 

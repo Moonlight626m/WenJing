@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.errx import codes, lookup, match_code, new, register, wrap
+from app.infrastructure.errx import codes, lookup, match_code, new, register, wrap
 
 
 def test_new_uses_predefined_message_and_extra():

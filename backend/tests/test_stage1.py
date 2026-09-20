@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from app.agents.llm_service import LLMService
-from app.content.pipeline import ContentPipeline
 from app.contracts.content import TextAnalysis
 from app.contracts.material import MaterialInput, MaterialSource
 from app.contracts.script import ScriptPackage
-from app.errx import Error as WJError
-from app.generation.stage1 import (
+from app.domain.content.pipeline import ContentPipeline
+from app.domain.generation.stage1 import (
     PROMPT_VERSION,
     Stage1Generator,
     synthesize_script_package,
 )
-from app.generation.validators import validate_all
+from app.domain.generation.validators import validate_all
+from app.domain.llm import LLMService
+from app.infrastructure.errx import Error as WJError
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -207,7 +207,7 @@ def test_validator_teaching_rejects_empty_focus():
 
 
 def test_non_narrative_text_rejected_by_pipeline():
-    from app.errx import codes
+    from app.infrastructure.errx import codes
 
     with pytest.raises(WJError) as excinfo:
         ContentPipeline().analyze(
