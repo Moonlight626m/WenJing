@@ -125,11 +125,21 @@ class ScriptVisibility(StrEnum):
 
 
 class UsagePurpose(StrEnum):
-    """LLM 调用用途（ADR-0002 §5）：Stage1 生成 / 角色 Agent / 验证 Agent。"""
+    """LLM 调用用途（ADR-0002 §5 / issue #28 workflow 节点细分）。
+
+    AGENT/VERIFY 服务于游戏运行时多 agent（Stage2/3）；其余为剧本生成
+    workflow 的节点用途（#28 骨架：write_script 暂由 Stage1Generator 承担，
+    #33 退役旧路径后 STAGE1 随之废弃）。
+    """
 
     STAGE1 = "stage1"
     AGENT = "agent"
     VERIFY = "verify"
+    COLLECT_MATERIALS = "collect_materials"
+    DOUBTER = "doubter"
+    DIVIDE_EVENTS = "divide_events"
+    CHARACTER_DESIGN = "character_design"
+    SCRIPT_WRITING = "script_writing"
 
 
 class MessageCategory(StrEnum):

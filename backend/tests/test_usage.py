@@ -210,7 +210,7 @@ async def test_stage1_generation_is_metered(factory) -> None:
     )
     await library.start_generation(script.id, actor)
     await library.await_generation(script.id)
-    assert library.progress(script.id)["status"] == "succeeded"
+    assert (await library.progress(script.id)).status == "succeeded"
 
     rows = await _usage_rows(factory, actor.org_id, purpose="stage1")
     assert len(rows) == 1
@@ -240,7 +240,7 @@ async def test_no_key_synth_generation_still_metered(factory) -> None:
     )
     await library.start_generation(script.id, actor)
     await library.await_generation(script.id)
-    assert library.progress(script.id)["status"] == "succeeded"
+    assert (await library.progress(script.id)).status == "succeeded"
 
     rows = await _usage_rows(factory, actor.org_id, purpose="stage1")
     assert len(rows) == 1

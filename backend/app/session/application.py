@@ -401,7 +401,6 @@ class SessionApplication:
             head_event_id=sess.head_event_id,
             playable_roles=playable,
             selected_role=sess.player_role,
-            generation=None,
         )
 
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====

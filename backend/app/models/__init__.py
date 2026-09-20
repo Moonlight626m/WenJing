@@ -14,6 +14,7 @@ from app.models.llm_usage import LlmUsage
 from app.models.material import Material
 from app.models.org import Org
 from app.models.script import Script
+from app.models.script_generation import ScriptGeneration
 from app.models.session import Session
 from app.models.snapshot import Snapshot
 from app.models.user import User
@@ -22,6 +23,7 @@ __all__ = [
     "Session",
     "Material",
     "Script",
+    "ScriptGeneration",
     "EventBranchRecord",
     "GameEventRecord",
     "EVENTS_SCHEMA_VERSION",
@@ -39,6 +41,7 @@ _ = (
     Session,
     Material,
     Script,
+    ScriptGeneration,
     EventBranchRecord,
     GameEventRecord,
     CommandRecord,

@@ -37,6 +37,7 @@ from app.contracts.dto import (
 from app.contracts.enums import ALLOWED_COMMANDS, CommandKind, StageValue
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
+from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
 from app.contracts.runtime import GameSnapshot, RuntimeState
 from app.contracts.script_library import (
@@ -80,6 +81,7 @@ def _load(name: str) -> dict:
         ("session_list_response", SessionListResponse),
         ("usage_aggregate_row", UsageAggregateRow),
         ("usage_aggregate_response", UsageAggregateResponse),
+        ("generation_progress", GenerationProgress),
         ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),

@@ -136,8 +136,8 @@ async def test_generation_llm_failure_marks_progress_failed(factory, actor):
     llm = _RaisingLLM(new(codes.LLM_CALL_FAILED, extra={"reason": "timeout"}))
     library, script_id = await _generate_with(factory, actor, llm)
 
-    progress = library.progress(script_id)
-    assert progress is not None and progress["status"] == "failed"
+    progress = await library.progress(script_id)
+    assert progress is not None and progress.status == "failed"
 
     # 无部分状态：未落库任何剧本内容
     async with factory() as s:
@@ -148,8 +148,8 @@ async def test_generation_llm_failure_marks_progress_failed(factory, actor):
 async def test_generation_invalid_output_marks_progress_failed(factory, actor):
     library, script_id = await _generate_with(factory, actor, _GarbageLLM())
 
-    progress = library.progress(script_id)
-    assert progress is not None and progress["status"] == "failed"
+    progress = await library.progress(script_id)
+    assert progress is not None and progress.status == "failed"
     async with factory() as s:
         row = await s.get(ScriptRecord, script_id)
     assert row is not None and row.script_data is None
@@ -158,13 +158,13 @@ async def test_generation_invalid_output_marks_progress_failed(factory, actor):
 async def test_generation_failure_is_retryable(factory, actor):
     llm = _RaisingLLM(new(codes.LLM_CALL_FAILED, extra={"reason": "timeout"}))
     library, script_id = await _generate_with(factory, actor, llm)
-    assert library.progress(script_id)["status"] == "failed"
+    assert (await library.progress(script_id)).status == "failed"
 
     # 失败可重试：换回确定性合成后重新生成
     library._script_llm = None
     await library.start_generation(script_id, actor)
     await library.await_generation(script_id)
-    assert library.progress(script_id)["status"] == "succeeded"
+    assert (await library.progress(script_id)).status == "succeeded"
     async with factory() as s:
         row = await s.get(ScriptRecord, script_id)
     assert row.script_data is not None

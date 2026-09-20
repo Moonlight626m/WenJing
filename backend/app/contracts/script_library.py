@@ -12,8 +12,8 @@ from datetime import datetime
 from pydantic import Field, field_validator
 
 from app.contracts.base import VersionedContract
-from app.contracts.dto import GenerationProgress
 from app.contracts.enums import ScriptStatus, ScriptVisibility
+from app.contracts.generation import GenerationProgress
 from app.contracts.script import ScriptPackage
 
 

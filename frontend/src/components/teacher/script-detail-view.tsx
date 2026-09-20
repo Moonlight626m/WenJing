@@ -16,23 +16,25 @@ import {
   unpublishScript,
 } from "@/lib/api";
 import {
-  PHASE_LABELS,
+  GENERATION_NODE_LABELS,
   scriptStatusLabel,
   scriptVisibilityLabel,
   SCRIPT_VISIBILITY_LABELS,
 } from "@/lib/labels";
 import type {
-  GenerationPhaseStateValue,
+  DoubterEvent,
+  GenerationNodeStatusValue,
+  NodeProgress,
   ScriptDetail,
   ScriptVisibility,
 } from "@/lib/contracts/types";
 
-const PHASE_DOT: Record<GenerationPhaseStateValue, string> = {
+const PHASE_DOT: Record<GenerationNodeStatusValue, string> = {
   pending: "bg-zinc-300 dark:bg-zinc-700",
   running: "animate-pulse bg-blue-500",
   succeeded: "bg-emerald-500",
+  rejected: "bg-amber-500",
   failed: "bg-red-500",
-  degraded: "bg-amber-500",
 };
 
 const ACTION_CLASS =
@@ -41,9 +43,23 @@ const ACTION_CLASS =
 const GENERATION_STATUS_TEXT = {
   idle: "待生成",
   running: "生成中…",
+  awaiting_review: "等待教师审阅",
   succeeded: "生成完成",
   failed: "生成失败，可重试",
 } as const;
+
+function doubterEventText(event: DoubterEvent): string {
+  const label = GENERATION_NODE_LABELS[event.node] ?? event.node;
+  if (event.verdict === "pass") {
+    return `第 ${event.round} 轮 · ${label}：考证通过`;
+  }
+  return `第 ${event.round} 轮 · ${label}：打回（${event.issues.join("；")}）`;
+}
+
+function nodeText(node: NodeProgress): string {
+  const label = GENERATION_NODE_LABELS[node.node] ?? node.node;
+  return node.detail ? `${label} · ${node.detail}` : label;
+}
 
 /** 发布按钮文案随状态变化（published 只能改可见性，unpublished 为重新发布）。 */
 function publishButtonLabel(
@@ -199,21 +215,35 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
         <section className="flex flex-col gap-2 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
           <span className="text-sm font-medium">
             {GENERATION_STATUS_TEXT[generation.status]}
+            {generation.error && (
+              <span className="ml-2 text-xs text-red-500">{generation.error}</span>
+            )}
           </span>
           <ul className="flex flex-col gap-1">
-            {generation.phases.map((phase) => (
+            {generation.nodes.map((node) => (
               <li
-                key={phase.name}
+                key={node.node}
                 className="flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"
               >
                 <span
-                  className={`inline-block h-1.5 w-1.5 rounded-full ${PHASE_DOT[phase.state]}`}
+                  className={`inline-block h-1.5 w-1.5 rounded-full ${PHASE_DOT[node.status]}`}
                 />
-                {PHASE_LABELS[phase.name] ?? phase.name}
-                {phase.detail && <span className="text-zinc-400">· {phase.detail}</span>}
+                {nodeText(node)}
               </li>
             ))}
           </ul>
+          {generation.doubter_events.length > 0 && (
+            <ul className="flex flex-col gap-1 border-t border-zinc-200 pt-2 dark:border-zinc-800">
+              {generation.doubter_events.map((event, index) => (
+                <li
+                  key={index}
+                  className="text-xs text-zinc-500 dark:text-zinc-400"
+                >
+                  {doubterEventText(event)}
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 

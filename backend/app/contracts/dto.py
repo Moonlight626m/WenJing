@@ -62,22 +62,6 @@ class SessionStatusResponse(ContractModel):
     head_sequence: int = Field(ge=0)
     playable_roles: list[str] = Field(default_factory=list)
     selected_role: str | None = None
-    generation: GenerationProgress | None = None
-
-
-class GenerationPhaseState(ContractModel):
-    """单个生成阶段（体裁判断/网络研究/生成/验证）的状态。"""
-
-    name: str
-    state: Literal["pending", "running", "succeeded", "failed", "degraded"]
-    detail: str | None = None
-
-
-class GenerationProgress(ContractModel):
-    """生成进度：长时间生成过程不是黑盒。"""
-
-    status: Literal["idle", "running", "succeeded", "failed"]
-    phases: list[GenerationPhaseState] = Field(default_factory=list)
 
 
 # ===== WebSocket 协议 =====

@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -24,25 +23,12 @@ from app.contracts.enums import UsagePurpose
 from app.contracts.material import WebEvidence
 from app.contracts.script import Beat, CharacterProfile, Scene, ScriptPackage
 from app.errx import codes, new
+from app.generation.json_text import extract_json
 from app.generation.validators import validate_all
 from app.rag.service import mark_untrusted
 
 PROMPT_VERSION = "stage1.v1"
 MAX_RETRIES = 2
-
-_JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
-
-
-def _extract_json(raw: str) -> str:
-    """从 LLM 输出中提取 JSON 文本：剥掉 markdown 围栏或夹杂的解释文字。"""
-    text = raw.strip()
-    fenced = _JSON_FENCE_RE.match(text)
-    if fenced:
-        return fenced.group(1)
-    start, end = text.find("{"), text.rfind("}")
-    if start != -1 and end > start:
-        return text[start : end + 1]
-    return text
 
 
 @dataclass
@@ -141,6 +127,8 @@ class Stage1Generator:
         *,
         web_evidence: list[WebEvidence] | None = None,
         session_id: str = "",
+        extra_context: list[str] | None = None,
+        purpose: UsagePurpose = UsagePurpose.STAGE1,
     ) -> GenerationOutcome:
         reason = _insufficient_reason(analysis)
         if reason:
@@ -151,16 +139,16 @@ class Stage1Generator:
         feedback: str | None = None
         retries = 0
         while True:
-            prompt = self._build_prompt(analysis, web, feedback)
+            prompt = self._build_prompt(analysis, web, feedback, extra_context)
             raw = await self.llm.chat(
                 [{"role": "user", "content": prompt}],
                 session_id=session_id,
-                purpose=UsagePurpose.STAGE1,
+                purpose=purpose,
             )
 
             package: ScriptPackage | None = None
             try:
-                package = ScriptPackage.model_validate_json(_extract_json(raw))
+                package = ScriptPackage.model_validate_json(extract_json(raw))
             except (ValidationError, ValueError) as exc:
                 feedback = f"输出不符合 ScriptPackage schema：{exc}"
 
@@ -200,6 +188,7 @@ class Stage1Generator:
         analysis: TextAnalysis,
         web: list[WebEvidence],
         feedback: str | None,
+        extra_context: list[str] | None = None,
     ) -> str:
         lines = [
             f"[prompt_version={PROMPT_VERSION}]",
@@ -261,6 +250,8 @@ class Stage1Generator:
 
         if feedback:
             lines.append(f"\n【上次校验反馈（必须逐条修正）】\n{feedback}")
+        for block in extra_context or []:
+            lines.append(f"\n{block}")
         return "\n".join(lines)
 
     @staticmethod

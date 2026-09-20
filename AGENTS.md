@@ -1,6 +1,6 @@
 # Wenjing — Agent Instructions
 
-语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。动手前先读 `design/` 中对应模块的设计文档（`design.md`、`design_00_tech_decisions.md`、`design_0X_*`）；若与 `docs/adr/` 冲突，以更新的 ADR 为准。
+语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。动手前先读 `design/` 中对应模块的设计文档（`design.md`、`design_00_tech_decisions.md`、`design_0X_*`）。**注意：`design/` 是 MVP 时期的文档，很多内容后期都会升级，只作背景参考，不是现行规格**；若与后续演进冲突，以更新者为准，优先级大致为 `docs/adr/`（最新）> GitHub issue/spec > `design/`。
 
 ## 实现工作流
 
@@ -28,7 +28,7 @@ make e2e            # Playwright（需 backend+frontend 已运行）
 ## 关键约束与陷阱
 
 - **PG 集成测试会静默 skip**：`test_db_event_store`、`test_migrations`、`test_full_flow`、`test_api_sessions` 等在 PostgreSQL 不可用时 `pytest.skip`，全绿不代表跑过。验证前先 `make db-up && make migrate`。
-- **未配置 `WENJING_LLM_API_KEY` 时后端走确定性 fake**（`backend/app/agents/fake_llm.py`），测试与 E2E 依赖此行为；只有设了 key 才真实调用 LLM。
+- **LLM key 与测试策略（ADR-0003 / #28）**：生产生成链路已切换 LangGraph workflow，**直连真实 LLM，不再有确定性兜底路径参与生产**。测试分两类：契约/纯逻辑测试无 key 全绿（workflow 测试用按 purpose 路由的 scripted LLM，仅测试用）；真实 LLM 链路测试与冒烟 key-gated（无 key `pytest.skip`，完整冒烟 `cd backend && uv run python -m scripts.smoke_workflow`）。旧确定性合成/fake 路径仅作为测试脚手架保留，随 #33 退役。`backend/app/agents/fake_llm.py` 只服务运行时 Stage2/3 链路。
 - **契约单源四处**：`backend/app/contracts/`（Pydantic）→ `contracts/fixtures/` → `contracts/jsonschema/` → `frontend/src/lib/contracts/types.ts`。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 会断言导出与 fixtures 不过期。流程见 `docs/contract-change-process.md`。
 - **后端必须单 worker**：会话运行时与 WS outbox 保存在进程内存，多 worker/多副本需共享运行时 + 粘性会话。
 - **账号基线破坏式重建**（ADR-0002 / #17）：旧匿名库不兼容，跑测试前先 `make db-reset`；匿名 `POST /api/sessions` 已移除，新入口由 #21 提供。鉴权代码在 `backend/app/auth/`。

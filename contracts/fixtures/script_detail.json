@@ -15,12 +15,25 @@
   },
   "package": null,
   "generation": {
+    "schema_version": "1.0.0",
     "status": "running",
-    "phases": [
-      { "name": "genre", "state": "succeeded", "detail": null },
-      { "name": "research", "state": "degraded", "detail": null },
-      { "name": "generate", "state": "running", "detail": null },
-      { "name": "verify", "state": "pending", "detail": null }
-    ]
+    "nodes": [
+      { "node": "collect_materials", "status": "succeeded", "detail": null },
+      { "node": "verify_materials", "status": "succeeded", "detail": null },
+      { "node": "divide_events", "status": "pending", "detail": null },
+      { "node": "design_characters", "status": "pending", "detail": null },
+      { "node": "write_script", "status": "running", "detail": null },
+      { "node": "final_audit", "status": "pending", "detail": null }
+    ],
+    "doubter_events": [
+      {
+        "node": "collect_materials",
+        "verdict": "reject",
+        "issues": ["时代背景结论缺少原文依据"],
+        "round": 1
+      }
+    ],
+    "error": null,
+    "updated_at": "2026-09-15T08:32:00Z"
   }
 }
