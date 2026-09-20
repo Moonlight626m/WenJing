@@ -1,8 +1,9 @@
 """默认组织与测试账号 seed（issue #17 / ADR-0002 §6）。
 
-幂等可复跑：按邮箱判断账号是否已存在；存在则跳过。
+幂等可复跑：按登录标识（email 字段）判断账号是否已存在；存在则跳过。
 用法：`cd backend && uv run python -m app.auth.seed`
-密码默认 `wenjing123`，可用 `WENJING_SEED_PASSWORD` 覆盖；每次运行都会打印凭据。
+- 标识为无域后缀的演示邮箱（`admin` / `teacher` / `student`），密码默认
+  `123456`，可用 `WENJING_SEED_PASSWORD` 覆盖；每次运行都会打印凭据。
 """
 
 from __future__ import annotations
@@ -19,24 +20,24 @@ from app.db.session import SessionLocal
 _SEED_ACCOUNTS: tuple[dict[str, str], ...] = (
     {
         "role": UserRole.SUPER_ADMIN.value,
-        "email": "admin@wenjing.local",
+        "email": "admin",
         "nickname": "平台管理员",
     },
     {
         "role": UserRole.TEACHER.value,
-        "email": "teacher@wenjing.local",
+        "email": "teacher",
         "nickname": "演示教师",
     },
     {
         "role": UserRole.STUDENT.value,
-        "email": "student@wenjing.local",
+        "email": "student",
         "nickname": "演示学生",
     },
 )
 
 
 def seed_password() -> str:
-    return os.environ.get("WENJING_SEED_PASSWORD", "wenjing123")
+    return os.environ.get("WENJING_SEED_PASSWORD", "123456")
 
 
 async def seed(

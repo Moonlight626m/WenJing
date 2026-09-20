@@ -2,15 +2,14 @@
  * 账号前端端到端（issue #20 / ADR-0002）。
  *
  * 覆盖验收：未登录守卫重定向、登录/注册/登出、按角色跳转、刷新保持登录态。
- * 依赖后端 seed 账号（teacher@wenjing.local / student@wenjing.local，密码
- * `wenjing123`，可用 WENJING_SEED_PASSWORD 覆盖）。
+ * 依赖后端 seed 账号（teacher / student，密码
+ * `123456`，可用 WENJING_SEED_PASSWORD 覆盖）。
  *
  * 前置：后端 :8000（已 `make seed`）、前端 :3000。
  */
 import { expect, test } from "@playwright/test";
 
-const SEED_PASSWORD = process.env.WENJING_SEED_PASSWORD ?? "wenjing123";
-const TEACHER = { email: "teacher@wenjing.local", password: SEED_PASSWORD };
+import { TEACHER } from "./helpers";
 
 test("未登录访问受保护路由重定向到 /login", async ({ page }) => {
   await page.goto("/teacher");

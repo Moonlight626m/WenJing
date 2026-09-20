@@ -1,10 +1,10 @@
 /** E2E 共用 helper：seed 账号登录与教师建本（登录带 hydration 竞态重试）。 */
 import { expect, type Page } from "@playwright/test";
 
-const SEED_PASSWORD = process.env.WENJING_SEED_PASSWORD ?? "wenjing123";
-export const ADMIN = { email: "admin@wenjing.local", password: SEED_PASSWORD };
-export const TEACHER = { email: "teacher@wenjing.local", password: SEED_PASSWORD };
-export const STUDENT = { email: "student@wenjing.local", password: SEED_PASSWORD };
+const SEED_PASSWORD = process.env.WENJING_SEED_PASSWORD ?? "123456";
+export const ADMIN = { email: "admin", password: SEED_PASSWORD };
+export const TEACHER = { email: "teacher", password: SEED_PASSWORD };
+export const STUDENT = { email: "student", password: SEED_PASSWORD };
 
 export const SAMPLE_TEXT =
   "那年冬天，母亲病了。我离开家，到城里去买药。母亲说：路上小心。" +
