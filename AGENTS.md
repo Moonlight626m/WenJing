@@ -32,6 +32,7 @@ make e2e            # Playwright（需 backend+frontend 已运行）
 - **契约单源四处**：`backend/app/contracts/`（Pydantic）→ `contracts/fixtures/` → `contracts/jsonschema/` → `frontend/src/lib/contracts/types.ts`。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 会断言导出与 fixtures 不过期。流程见 `docs/contract-change-process.md`。
 - **后端必须单 worker**：会话运行时与 WS outbox 保存在进程内存，多 worker/多副本需共享运行时 + 粘性会话。
 - **账号基线破坏式重建**（ADR-0002 / #17）：旧匿名库不兼容，跑测试前先 `make db-reset`；匿名 `POST /api/sessions` 已移除，新入口由 #21 提供。鉴权代码在 `backend/app/auth/`。
+- **`make test` 会清空所连的库**（`tests/conftest.py`：集成测试结束 `drop_all` 全部业务表并删 `alembic_version`，交还空库；再手动 `uvicorn app.main:app` 时会因缺表报 `auth_sessions does not exist`，只剩 LangGraph checkpointer 自建的 `checkpoint*` 表）。别对想保留数据的库跑 `make test`；跑了就补 `make migrate && make seed`。手动起后端不会自动迁移（生产入口才默认 `alembic upgrade head`），补表需显式 `make migrate`。
 - 前端是 Next.js 16，API/约定可能与训练数据不同：写代码前读 `frontend/AGENTS.md` 指向的 `node_modules/next/dist/docs/`。
 - commit 用 Conventional Commits 前缀（`feat`/`fix`/`docs`…），描述、注释、文档用中文。
 
