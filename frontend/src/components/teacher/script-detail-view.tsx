@@ -187,6 +187,7 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     (status === "draft" && hasPackage) ||
     status === "published" ||
     status === "unpublished";
+  const runningNode = generation?.nodes.find((n) => n.status === "running");
 
   return (
     <div className="flex flex-col gap-6">
@@ -219,6 +220,15 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
               <span className="ml-2 text-xs text-red-500">{generation.error}</span>
             )}
           </span>
+          {runningNode && (
+            <div className="flex items-center gap-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+              <span className="font-medium">
+                {nodeText(runningNode)}
+              </span>
+              <span className="text-xs opacity-70">进行中</span>
+            </div>
+          )}
           <ul className="flex flex-col gap-1">
             {generation.nodes.map((node) => (
               <li

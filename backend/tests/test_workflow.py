@@ -229,6 +229,30 @@ async def test_progress_sink_receives_node_events() -> None:
     assert any(n.node.value == "design_characters" and n.detail for n in final.nodes)
 
 
+async def test_node_inner_progress_flushes_live_detail() -> None:
+    """节点内子进度（progress_hook→on_step）会在执行中即时落快照，不等到节点完成。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    snapshots: list = []
+    runner, state = _make_runner(
+        analysis, llm, sink=lambda s: _collect(snapshots, s)
+    )
+    await runner.run(state, thread_id="t-inner")
+
+    # write_script 执行中应有 running + 距今 detail 的快照（起草第 N 轮等）
+    seen = [
+        n.detail
+        for s in snapshots
+        for n in s.nodes
+        if n.node.value == "write_script" and n.status == "running" and n.detail
+    ]
+    assert seen, "write_script 执行中应推送带子进度的快照"
+    assert any("起草" in d for d in seen)
+    final = snapshots[-1]
+    ws = next(n for n in final.nodes if n.node.value == "write_script")
+    assert ws.status == "succeeded"
+
+
 async def _collect(snapshots, snapshot) -> None:
     snapshots.append(snapshot)
 

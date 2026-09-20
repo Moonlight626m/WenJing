@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from langgraph.types import Send
@@ -36,6 +37,9 @@ logger = logging.getLogger("wenjing.generation.workflow")
 MAX_DOUBTER_ROUNDS = 2   # doubter 打回上限（沿用 stage1 MAX_RETRIES 心智）
 MAX_WRITE_RETRIES = 2    # final_audit 打回剧本书写的上限
 MAX_MAIN_CHARACTERS = 4  # 复现层主要人物数（骨架上限；#32 深化筛选）
+
+# 节点内子进度回调：(workflow 节点键, detail 文本)；由 runner 注入，转发给进度 sink
+ProgressHook = Callable[[str, str], Awaitable[None]]
 
 
 class VerdictResult:
@@ -70,8 +74,18 @@ class WorkflowNodes:
     ) -> None:
         self._llm = llm
         self._model_name = model_name
+        self._progress_hook: ProgressHook | None = None
+
+    def set_progress_hook(self, hook: ProgressHook | None) -> None:
+        """注入节点内子进度回调（runner 在建图后调用）。"""
+        self._progress_hook = hook
 
     # ===== 工具 =====
+
+    async def _report(self, node: str, detail: str) -> None:
+        """向进度 sink 推送节点内子进度（无 hook 时静默）。"""
+        if self._progress_hook is not None:
+            await self._progress_hook(node, detail)
 
     async def _chat(self, prompt: str, state: WorkflowState, purpose: UsagePurpose) -> str:
         return await self._llm.chat(
@@ -139,7 +153,9 @@ class WorkflowNodes:
         try:
             verdict = _parse_verdict(raw)
         except ValueError as exc:
-            logger.warning("doubter_verdict_parse_failed reason=%s", exc)
+            logger.warning(
+                "[script-gen][verify_materials] doubter_verdict_parse_failed reason=%s", exc
+            )
             verdict = VerdictResult("pass", [])  # doubter 自身输出异常不阻塞主流程
         round_no = state.get("doubter_round", 0) + 1
         return {
@@ -238,6 +254,7 @@ class WorkflowNodes:
         ]
 
     async def design_one_character(self, payload: dict[str, Any]) -> dict[str, Any]:
+        await self._report("design_characters", f"正在设计人物：{payload['name']}")
         prompt = character_design.build_user_message(
             name=payload["name"],
             original_traits=payload.get("original_traits", ""),
@@ -281,6 +298,8 @@ class WorkflowNodes:
     # ===== 剧本书写（骨架：Stage1Generator 承担；#33 退役）=====
 
     async def write_script(self, state: WorkflowState) -> dict[str, Any]:
+        round_no = int(state.get("write_retries", 0)) + 1
+        await self._report("write_script", f"书写第 {round_no} 轮开始")
         analysis = state["analysis"]
         extra_context: list[str] = []
         dossier = state.get("dossier")
@@ -308,6 +327,7 @@ class WorkflowNodes:
             session_id=state.get("session_id", ""),
             extra_context=extra_context,
             purpose=UsagePurpose.SCRIPT_WRITING,
+            on_step=lambda text: self._report("write_script", text),
         )
         return {
             "package": outcome.script_package,
@@ -339,7 +359,7 @@ class WorkflowNodes:
         try:
             verdict = _parse_verdict(raw)
         except ValueError as exc:
-            logger.warning("final_audit_verdict_parse_failed reason=%s", exc)
+            logger.warning("[script-gen][final_audit] audit_verdict_parse_failed reason=%s", exc)
             verdict = VerdictResult("pass", [])
         retries = state.get("write_retries", 0) + (
             1 if verdict.verdict == "reject" else 0

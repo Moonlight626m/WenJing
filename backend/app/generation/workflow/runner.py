@@ -74,6 +74,7 @@ class WorkflowRunner:
         self._status = GenerationStatus.RUNNING
         self._dirty = False
         self._character_detail = ""
+        nodes.set_progress_hook(self._on_progress)
 
     def snapshot(self) -> GenerationProgress:
         return GenerationProgress(
@@ -101,6 +102,15 @@ class WorkflowRunner:
         keep = current.detail if current is not None else None
         self._nodes[node] = NodeProgress(node=node, status=status, detail=detail or keep)
         self._dirty = True
+
+    async def _on_progress(self, node_key: str, detail: str) -> None:
+        """节点内子进度（执行中推送）：更新 detail 并即时落库，前端轮询可见。"""
+        contract = _NODE_MAP.get(node_key)
+        if contract is None or self._sink is None:
+            return
+        self._set(contract, GenerationNodeStatus.RUNNING, detail=detail)
+        await self._sink(self.snapshot())
+        self._dirty = False
 
     async def _on_update(self, node_name: str, delta: dict[str, Any]) -> None:
         contract = _NODE_MAP.get(node_name)

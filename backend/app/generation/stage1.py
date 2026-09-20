@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from pydantic import ValidationError
@@ -129,6 +129,7 @@ class Stage1Generator:
         session_id: str = "",
         extra_context: list[str] | None = None,
         purpose: UsagePurpose = UsagePurpose.STAGE1,
+        on_step: Callable[[str], Awaitable[None]] | None = None,
     ) -> GenerationOutcome:
         reason = _insufficient_reason(analysis)
         if reason:
@@ -139,6 +140,8 @@ class Stage1Generator:
         feedback: str | None = None
         retries = 0
         while True:
+            if on_step is not None:
+                await on_step(f"起草第 {retries + 1} 轮")
             prompt = self._build_prompt(analysis, web, feedback, extra_context)
             raw = await self.llm.chat(
                 [{"role": "user", "content": prompt}],
@@ -151,6 +154,8 @@ class Stage1Generator:
                 package = ScriptPackage.model_validate_json(extract_json(raw))
             except (ValidationError, ValueError) as exc:
                 feedback = f"输出不符合 ScriptPackage schema：{exc}"
+                if on_step is not None:
+                    await on_step("输出格式不符合契约，重试中")
 
             if package is not None:
                 failed = {
@@ -173,6 +178,10 @@ class Stage1Generator:
                         ),
                     )
                 feedback = self._format_feedback(failed)
+                if on_step is not None:
+                    await on_step(
+                        f"剧本校验未通过（{len(failed)} 类问题），第 {retries + 1} 轮重写"
+                    )
 
             if retries >= MAX_RETRIES:
                 raise new(
