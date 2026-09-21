@@ -30,7 +30,12 @@
             "is_key_event": true,
             "key_event_order": 3
           }
-        ]
+        ],
+        "interaction_point": {
+          "player_role_hint": "我",
+          "what_player_can_do": "在回望此刻向母亲喊话或沉默接受",
+          "must_not_change": [3]
+        }
       }
     ]
   },
@@ -39,17 +44,30 @@
       "schema_version": "1.0.0",
       "name": "我",
       "public_background": "离家买药的青年",
-      "personality_traits": ["重情"],
+      "personality_traits": [
+        {"label": "重情", "evidence": "回头看见母亲在门口流泪", "behavior": "遇离别总要回头再看一眼"}
+      ],
       "speech_style": null,
-      "is_player_playable": true
+      "knowledge_boundary": {"knows": ["母亲病了要买药"], "not_knows": ["母亲在家哭泣的场面"]},
+      "is_player_playable": {"value": true, "reason": "戏份适中，动机清晰"}
     },
     {
       "schema_version": "1.0.0",
       "name": "母亲",
       "public_background": "病中的母亲",
-      "personality_traits": ["慈爱"],
-      "speech_style": "平实叮咛",
-      "is_player_playable": false
+      "personality_traits": [
+        {"label": "慈爱", "evidence": "叮嘱路上小心", "behavior": "病中仍先记挂孩子的安危"}
+      ],
+      "speech_style": {
+        "era_layer": "纯白话",
+        "sentence_rhythm": "平实叮咛，短句",
+        "address_terms": "称\"孩子\"",
+        "catchphrases": "路上小心",
+        "emotion_expression": "直露而温和",
+        "sample_lines": ["路上小心。", "早去早回。"]
+      },
+      "knowledge_boundary": {"knows": ["孩子要进城买药"], "not_knows": ["药铺的具体情形"]},
+      "is_player_playable": {"value": false, "reason": "病中人物行动受限，更适合 agent 扮演"}
     }
   ],
   "package": null

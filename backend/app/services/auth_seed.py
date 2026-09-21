@@ -69,7 +69,19 @@ async def seed(
 
 
 def main() -> None:
-    results = asyncio.run(seed())
+    from app.services.prompt_seed import seed_prompts
+
+    async def _run_all():
+        results = await seed()
+        try:
+            created = await seed_prompts(SessionLocal)
+        except Exception as exc:  # noqa: BLE001 - prompt 表缺失不阻塞账号 seed
+            print(f"[seed] prompt 覆盖行写入跳过：{exc}")
+        else:
+            print(f"[seed] prompt 覆盖行：新建 {created} 条")
+        return results
+
+    results = asyncio.run(_run_all())
     print(f"[seed] 默认组织：{DEFAULT_ORG_NAME}")
     password = seed_password()
     for account in results:

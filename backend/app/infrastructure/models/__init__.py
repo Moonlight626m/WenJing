@@ -13,6 +13,7 @@ from app.infrastructure.models.event_branch import EventBranchRecord
 from app.infrastructure.models.llm_usage import LlmUsage
 from app.infrastructure.models.material import Material
 from app.infrastructure.models.org import Org
+from app.infrastructure.models.prompt import PromptTemplate
 from app.infrastructure.models.script import Script
 from app.infrastructure.models.script_generation import ScriptGeneration
 from app.infrastructure.models.session import Session
@@ -34,6 +35,7 @@ __all__ = [
     "User",
     "AuthSession",
     "LlmUsage",
+    "PromptTemplate",
 ]
 
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
@@ -50,4 +52,5 @@ _ = (
     User,
     AuthSession,
     LlmUsage,
+    PromptTemplate,
 )

@@ -126,7 +126,7 @@
         },
         "personality_traits": {
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/CharacterTrait"
           },
           "title": "Personality Traits",
           "type": "array"
@@ -134,19 +134,19 @@
         "speech_style": {
           "anyOf": [
             {
-              "type": "string"
+              "$ref": "#/$defs/SpeechStyle"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Speech Style"
+          "default": null
+        },
+        "knowledge_boundary": {
+          "$ref": "#/$defs/KnowledgeBoundary"
         },
         "is_player_playable": {
-          "default": false,
-          "title": "Is Player Playable",
-          "type": "boolean"
+          "$ref": "#/$defs/Playability"
         }
       },
       "required": [
@@ -155,6 +155,102 @@
       ],
       "title": "CharacterProfile",
       "type": "object"
+    },
+    "CharacterTrait": {
+      "additionalProperties": false,
+      "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "evidence": {
+          "default": "",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "behavior": {
+          "default": "",
+          "title": "Behavior",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "CharacterTrait",
+      "type": "object"
+    },
+    "ClaimRef": {
+      "additionalProperties": false,
+      "description": "单条论断的溯源登记（素材集 claims 集中登记表，spec 裁决）。\n\n- target：论断在产物中的定位（字段路径或论断短语）；\n- source_type + confidence 是「来源 × 可信度」两维标注；\n- evidence_ref 指向支持该论断的原文区间或网络来源（推断类可为原文依据）。",
+      "properties": {
+        "target": {
+          "minLength": 1,
+          "title": "Target",
+          "type": "string"
+        },
+        "source_type": {
+          "$ref": "#/$defs/EvidenceSourceType"
+        },
+        "confidence": {
+          "$ref": "#/$defs/ConfidenceLevel"
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "original_text": "#/$defs/OriginalEvidence",
+                  "web": "#/$defs/WebEvidence"
+                },
+                "propertyName": "source_type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/OriginalEvidence"
+                },
+                {
+                  "$ref": "#/$defs/WebEvidence"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Ref"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target",
+        "source_type",
+        "confidence"
+      ],
+      "title": "ClaimRef",
+      "type": "object"
+    },
+    "ConfidenceLevel": {
+      "description": "论断可信度分级：素材考证与 doubter 审核共用（spec 裁决）。",
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "ConfidenceLevel",
+      "type": "string"
     },
     "EventDivisionDraft": {
       "additionalProperties": false,
@@ -174,6 +270,16 @@
       ],
       "title": "EventDivisionDraft",
       "type": "object"
+    },
+    "EvidenceSourceType": {
+      "description": "证据来源类型：原文 / 推断 / 网络补充。",
+      "enum": [
+        "original_text",
+        "inference",
+        "web"
+      ],
+      "title": "EvidenceSourceType",
+      "type": "string"
     },
     "GateEdits": {
       "additionalProperties": false,
@@ -236,9 +342,64 @@
       "title": "GateEdits",
       "type": "object"
     },
+    "InteractionPoint": {
+      "additionalProperties": false,
+      "description": "场景末尾的玩家介入点（drama manager 心智，spec 裁决）。\n\n为角色扮演运行时预留玩家介入空间：关键事件不可被介入改变，\n介入只发生在 must_not_change 之外的节拍间隙。",
+      "properties": {
+        "player_role_hint": {
+          "default": "",
+          "title": "Player Role Hint",
+          "type": "string"
+        },
+        "what_player_can_do": {
+          "minLength": 1,
+          "title": "What Player Can Do",
+          "type": "string"
+        },
+        "must_not_change": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Must Not Change",
+          "type": "array"
+        }
+      },
+      "required": [
+        "what_player_can_do"
+      ],
+      "title": "InteractionPoint",
+      "type": "object"
+    },
+    "KnowledgeBoundary": {
+      "additionalProperties": false,
+      "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "knows": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Knows",
+          "type": "array"
+        },
+        "not_knows": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Knows",
+          "type": "array"
+        }
+      },
+      "title": "KnowledgeBoundary",
+      "type": "object"
+    },
     "MaterialDossier": {
       "additionalProperties": false,
-      "description": "素材收集节点产物：考证过的背景/时代/人物/情节/教学结论。",
+      "description": "素材收集节点产物：考证过的背景/时代/人物/情节/教学结论。\n\n- 溯源不散落到每个字段：全部论断集中在 claims 登记表\n  （来源 original_text/inference/web × 可信度 high/medium/low，spec 裁决）；\n- conflicts 登记外部资料与课文的冲突（以原文为准）。",
       "properties": {
         "background": {
           "minLength": 1,
@@ -267,6 +428,20 @@
             "type": "string"
           },
           "title": "Teaching Analysis",
+          "type": "array"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/ClaimRef"
+          },
+          "title": "Claims",
+          "type": "array"
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/SourceConflict"
+          },
+          "title": "Conflicts",
           "type": "array"
         }
       },
@@ -344,6 +519,29 @@
       "title": "OriginalEvidence",
       "type": "object"
     },
+    "Playability": {
+      "additionalProperties": false,
+      "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "value": {
+          "default": false,
+          "title": "Value",
+          "type": "boolean"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "title": "Playability",
+      "type": "object"
+    },
     "Scene": {
       "additionalProperties": false,
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
@@ -385,7 +583,7 @@
     },
     "SceneDraft": {
       "additionalProperties": false,
-      "description": "划分草稿的单个场景。",
+      "description": "划分草稿的单个场景。interaction_point 可空（无玩家在场/纯过场）。",
       "properties": {
         "title": {
           "minLength": 1,
@@ -406,6 +604,17 @@
           "minItems": 1,
           "title": "Beats",
           "type": "array"
+        },
+        "interaction_point": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InteractionPoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -472,6 +681,85 @@
         "stage2_ending_beat_id"
       ],
       "title": "ScriptPackage",
+      "type": "object"
+    },
+    "SourceConflict": {
+      "additionalProperties": false,
+      "description": "外部资料与课文的冲突记录：素材收集时显式登记，以原文为准。",
+      "properties": {
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "original_evidence": {
+          "minLength": 1,
+          "title": "Original Evidence",
+          "type": "string"
+        },
+        "external_source": {
+          "minLength": 1,
+          "title": "External Source",
+          "type": "string"
+        },
+        "resolution": {
+          "minLength": 1,
+          "title": "Resolution",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claim",
+        "original_evidence",
+        "external_source",
+        "resolution"
+      ],
+      "title": "SourceConflict",
+      "type": "object"
+    },
+    "SpeechStyle": {
+      "additionalProperties": false,
+      "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "era_layer": {
+          "default": "",
+          "title": "Era Layer",
+          "type": "string"
+        },
+        "sentence_rhythm": {
+          "default": "",
+          "title": "Sentence Rhythm",
+          "type": "string"
+        },
+        "address_terms": {
+          "default": "",
+          "title": "Address Terms",
+          "type": "string"
+        },
+        "catchphrases": {
+          "default": "",
+          "title": "Catchphrases",
+          "type": "string"
+        },
+        "emotion_expression": {
+          "default": "",
+          "title": "Emotion Expression",
+          "type": "string"
+        },
+        "sample_lines": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sample Lines",
+          "type": "array"
+        }
+      },
+      "title": "SpeechStyle",
       "type": "object"
     },
     "WebEvidence": {

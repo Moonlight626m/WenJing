@@ -1,8 +1,9 @@
-"""运营后台 REST 路由（issue #22 / ADR-0002 §5）：仅 `super_admin` 只读。
+"""运营后台 REST 路由（issue #22 / ADR-0002 §5）：仅 `super_admin` 可访问。
 
 - `GET /api/admin/scripts`：跨 org 剧本库列表（可 org/status 过滤）。
 - `GET /api/admin/usage`：按 org/时间/用途聚合的 token 用量。
-教师/学生访问一律 `AUTH_FORBIDDEN`（403）；端点只读，不改变任何状态。
+- `GET/PUT /api/admin/prompts`：prompt 覆盖层管理（PromptMgr 组件），
+  更新即时生效。教师/学生访问一律 `AUTH_FORBIDDEN`（403）。
 """
 
 from __future__ import annotations
@@ -13,7 +14,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
-from app.contracts.admin import UsageAggregateResponse
+from app.contracts.admin import (
+    PromptEntry,
+    PromptListResponse,
+    PromptUpdateRequest,
+    UsageAggregateResponse,
+)
 from app.contracts.enums import ScriptStatus, UsagePurpose, UserRole
 from app.contracts.script_library import ScriptListResponse
 from app.controllers.auth_deps import Principal, require_role
@@ -63,6 +69,53 @@ async def admin_usage(
         org_id=org_id, since=since, until=until, purpose=purpose
     )
     return UsageAggregateResponse(items=items, since=since, until=until)
+
+
+def _prompt_entry(row) -> PromptEntry:  # noqa: ANN001 - ORM 行类型窄
+    return PromptEntry(
+        stage=row.stage,
+        node=row.node,
+        version=row.version,
+        section=row.section,
+        body=row.body,
+        description=row.description,
+        enabled=row.enabled,
+        updated_at=row.updated_at,
+    )
+
+
+@router.get("/prompts", response_model=PromptListResponse)
+async def admin_list_prompts(
+    principal: _Admin,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    stage: Annotated[str | None, Query()] = None,
+) -> PromptListResponse:
+    """prompt 覆盖层列表（PromptMgr，可按 stage 过滤）。"""
+    rows = await service.list_prompts(stage=stage)
+    return PromptListResponse(items=[_prompt_entry(r) for r in rows])
+
+
+@router.put("/prompts/{stage}/{node}/{version}/{section}", response_model=PromptEntry)
+async def admin_update_prompt(
+    principal: _Admin,
+    service: Annotated[AdminService, Depends(get_admin_service)],
+    stage: str,
+    node: str,
+    version: str,
+    section: str,
+    req: PromptUpdateRequest,
+) -> PromptEntry:
+    """更新 prompt 覆盖行：即时生效（下次生成调用读到新文案）。"""
+    row = await service.upsert_prompt(
+        stage=stage,
+        node=node,
+        version=version,
+        section=section,
+        body=req.body,
+        description=req.description,
+        enabled=req.enabled,
+    )
+    return _prompt_entry(row)
 
 
 __all__ = ["router", "get_admin_service"]

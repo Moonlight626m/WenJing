@@ -21,6 +21,7 @@ from pydantic import ValidationError
 
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
+from app.contracts.generation import DoubterIssue, DoubterVerdict
 from app.contracts.review import GateEdits
 from app.contracts.script import CharacterProfile
 from app.contracts.script_library import GenerationResumeRequest
@@ -33,6 +34,9 @@ from app.domain.generation.workflow.types import (
 )
 from app.domain.llm import LLMService
 from app.domain.prompts import character_design, collect_materials, divide_events, doubter
+from app.domain.prompts.bundle import PromptBundle
+from app.domain.prompts.defaults import STAGE as SCRIPT_GEN_STAGE
+from app.domain.prompts.manager import PromptManager
 from app.infrastructure.errx import codes, new
 
 logger = logging.getLogger("wenjing.generation.workflow")
@@ -51,25 +55,33 @@ PRE_WRITE_GATE_NODE = "pre_write_gate"
 FINAL_GATE_NODE = "final_gate"
 
 
-class VerdictResult:
-    """doubter 裁决解析后的载体（校验在 _parse_verdict 完成）。"""
+def _format_issue(issue: DoubterIssue) -> str:
+    """DoubterIssue → 教师可见的一行文本（进度/闸门投影用）。"""
+    parts = [f"[{issue.severity}] {issue.category} @{issue.field}"]
+    if issue.quote:
+        parts.append(f"「{issue.quote}」")
+    if issue.evidence:
+        parts.append(f"依据：{issue.evidence}")
+    if issue.suggestion:
+        parts.append(f"建议：{issue.suggestion}")
+    return "".join(parts)
 
-    __slots__ = ("verdict", "issues")
 
-    def __init__(self, verdict: str, issues: list[str]) -> None:
-        self.verdict = verdict
-        self.issues = issues
+def _feedback_text(issues: list[DoubterIssue]) -> str:
+    """结构化问题清单 → 打回意见文本（must-fix 置顶，逐条可执行）。"""
+    ordered = sorted(
+        issues, key=lambda i: 0 if i.severity == "must_fix" else 1
+    )
+    lines = [f"- {_format_issue(i)}" for i in ordered]
+    return "以下问题必须逐条修正：\n" + "\n".join(lines)
 
 
-def _parse_verdict(raw: str) -> VerdictResult:
+def _parse_verdict(raw: str) -> DoubterVerdict:
     data = json.loads(extract_json(raw))
-    verdict = str(data.get("verdict", "")).strip().lower()
-    if verdict not in ("pass", "reject"):
-        raise ValueError(f"invalid doubter verdict: {verdict!r}")
-    issues = [str(i) for i in data.get("issues", []) if str(i).strip()]
-    if verdict == "reject" and not issues:
+    verdict = DoubterVerdict.model_validate(data)
+    if verdict.verdict == "reject" and not verdict.issues:
         raise ValueError("reject verdict requires issues")
-    return VerdictResult(verdict, issues)
+    return verdict
 
 
 class WorkflowNodes:
@@ -81,10 +93,12 @@ class WorkflowNodes:
         *,
         model_name: str = "",
         teacher_gates: bool = False,
+        prompts: PromptManager | None = None,
     ) -> None:
         self._llm = llm
         self._model_name = model_name
         self._teacher_gates = teacher_gates
+        self._prompts = prompts or PromptManager()
         self._progress_hook: ProgressHook | None = None
 
     @property
@@ -97,6 +111,12 @@ class WorkflowNodes:
         self._progress_hook = hook
 
     # ===== 工具 =====
+
+    async def _bundle(self, node_module) -> PromptBundle:  # noqa: ANN001 - 模块常量载体
+        """取节点 prompt 段落集合（DB 覆盖优先，缺省回退 defaults）。"""
+        return await self._prompts.bundle(
+            SCRIPT_GEN_STAGE, node_module.NODE, node_module.VERSION
+        )
 
     async def _report(self, node: str, detail: str) -> None:
         """向进度 sink 推送节点内子进度（无 hook 时静默）。"""
@@ -180,6 +200,7 @@ class WorkflowNodes:
             analysis,
             state_web_evidence(state),
             feedback=state.get("doubter_feedback"),
+            bundle=await self._bundle(collect_materials),
         )
         dossier = await self._chat_parsed(
             state,
@@ -207,10 +228,11 @@ class WorkflowNodes:
             node_name="collect_materials",
             artifact_schema_hint=(
                 "MaterialDossier{background, era_setting, character_notes:[{name,note}],"
-                " plot_summary, teaching_analysis}"
+                " plot_summary, teaching_analysis, claims, conflicts}"
             ),
             artifact_json=dossier.model_dump_json(),
             source_digest=self._analysis_digest(state["analysis"]),
+            bundle=await self._bundle(doubter),
         )
         raw = await self._chat(prompt, state, UsagePurpose.DOUBTER)
         try:
@@ -219,14 +241,14 @@ class WorkflowNodes:
             logger.warning(
                 "[script-gen][verify_materials] doubter_verdict_parse_failed reason=%s", exc
             )
-            verdict = VerdictResult("pass", [])  # doubter 自身输出异常不阻塞主流程
+            verdict = DoubterVerdict(verdict="pass", issues=[])  # doubter 异常不阻塞主流程
         round_no = state.get("doubter_round", 0) + 1
         return {
             "doubter_verdict": verdict.verdict,
-            "doubter_issues": verdict.issues,
+            "doubter_issues": [_format_issue(i) for i in verdict.issues],
             "doubter_round": round_no,
             "doubter_feedback": (
-                "；".join(verdict.issues) if verdict.verdict == "reject" else None
+                _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
             ),
         }
 
@@ -407,6 +429,7 @@ class WorkflowNodes:
             analysis,
             dossier_json,
             directives=directives,
+            bundle=await self._bundle(divide_events),
         )
         division = await self._chat_parsed(
             state,
@@ -448,6 +471,19 @@ class WorkflowNodes:
                         extra={
                             "target": "EventDivisionDraft",
                             "reason": f"关键事件序号 {beat.key_event_order} 不存在",
+                        },
+                    )
+            ip = scene.interaction_point
+            if ip is not None:
+                ghost_orders = [o for o in ip.must_not_change if o not in known_orders]
+                if ghost_orders:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": (
+                                f"介入点 must_not_change 引用了不存在的关键事件 {ghost_orders}"
+                            ),
                         },
                     )
 
@@ -493,6 +529,7 @@ class WorkflowNodes:
             original_traits=payload.get("original_traits", ""),
             dossier_json=payload.get("dossier_json", "{}"),
             role_hint=payload.get("role_hint", ""),
+            bundle=await self._bundle(character_design),
         )
         raw = await self._llm.chat(
             [{"role": "user", "content": prompt}],
@@ -501,13 +538,8 @@ class WorkflowNodes:
         )
         try:
             data = json.loads(extract_json(raw))
-            profile = CharacterProfile(
-                name=payload["name"],
-                public_background=str(data.get("public_background", "")),
-                personality_traits=[str(t) for t in data.get("personality_traits", [])],
-                speech_style=data.get("speech_style"),
-                is_player_playable=bool(data.get("is_player_playable", False)),
-            )
+            data["name"] = payload["name"]
+            profile = CharacterProfile.model_validate(data)
         except Exception as exc:
             raise new(
                 codes.LLM_OUTPUT_PARSE_FAILED,
@@ -570,7 +602,11 @@ class WorkflowNodes:
             extra_context.append(
                 "【教师指导指令（必须遵守）】\n" + "\n".join(f"- {d}" for d in directives)
             )
-        outcome = await Stage1Generator(self._llm, model=self._model_name).generate(
+        outcome = await Stage1Generator(
+            self._llm,
+            model=self._model_name,
+            prompts=self._prompts,
+        ).generate(
             analysis,
             web_evidence=state_web_evidence(state),
             session_id=state.get("session_id", ""),
@@ -611,22 +647,23 @@ class WorkflowNodes:
             " playable_roles, stage2_ending_beat_id}",
             artifact_json=package.model_dump_json(),
             source_digest=self._source_digest(state),
+            bundle=await self._bundle(doubter),
         )
         raw = await self._chat(prompt, state, UsagePurpose.DOUBTER)
         try:
             verdict = _parse_verdict(raw)
         except ValueError as exc:
             logger.warning("[script-gen][final_audit] audit_verdict_parse_failed reason=%s", exc)
-            verdict = VerdictResult("pass", [])
+            verdict = DoubterVerdict(verdict="pass", issues=[])
         retries = state.get("write_retries", 0) + (
             1 if verdict.verdict == "reject" else 0
         )
         return {
             "audit_verdict": verdict.verdict,
-            "audit_issues": verdict.issues,
+            "audit_issues": [_format_issue(i) for i in verdict.issues],
             "write_retries": retries,
             "audit_feedback": (
-                "；".join(verdict.issues) if verdict.verdict == "reject" else None
+                _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
             ),
         }
 
@@ -654,4 +691,5 @@ __all__ = [
     "WorkflowNodes",
     "MAX_DOUBTER_ROUNDS",
     "MAX_WRITE_RETRIES",
+    "DoubterVerdict",
 ]

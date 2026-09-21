@@ -15,11 +15,17 @@ from app.domain.game.state_machine import GameStage, InteractionPhase
 
 @dataclass
 class CharacterSetting:
-    """单个角色的设定（角色 Agent 的 identity 来源）。"""
+    """单个角色的设定（角色 Agent 的 identity 来源）。
+
+    speech_style / knowledge_boundary 是设定卡结构化字段的 persona 文本投影
+    （由 script_adapter 生成）；运行时只消费文本，不感知契约结构。
+    """
 
     name: str
     public_background: str
     personality_traits: list[str] = field(default_factory=list)
+    speech_style: str = ""
+    knowledge_boundary: str = ""
     is_player_playable: bool = False
 
 

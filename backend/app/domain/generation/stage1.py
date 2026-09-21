@@ -20,14 +20,24 @@ from app.contracts.base import CONTRACTS_SCHEMA_VERSION
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
 from app.contracts.material import WebEvidence
-from app.contracts.script import Beat, CharacterProfile, Scene, ScriptPackage
+from app.contracts.script import (
+    Beat,
+    CharacterProfile,
+    CharacterTrait,
+    Scene,
+    ScriptPackage,
+)
 from app.domain.content.trust import mark_untrusted
 from app.domain.generation.json_text import extract_json
 from app.domain.generation.validators import validate_all
 from app.domain.llm import LLMService
+from app.domain.prompts import write_script
+from app.domain.prompts.bundle import default_bundle
+from app.domain.prompts.defaults import STAGE as SCRIPT_GEN_STAGE
+from app.domain.prompts.manager import PromptManager
 from app.infrastructure.errx import codes, new
 
-PROMPT_VERSION = "stage1.v1"
+PROMPT_VERSION = write_script.PROMPT_VERSION
 MAX_RETRIES = 2
 
 
@@ -72,9 +82,15 @@ def synthesize_script_package(analysis: TextAnalysis) -> ScriptPackage:
         CharacterProfile(
             name=c.name,
             public_background=c.role or f"{c.name}是文中人物",
-            personality_traits=[c.personality] if c.personality else ["忠实于原文"],
+            personality_traits=[
+                CharacterTrait(
+                    label=c.personality or "忠实于原文",
+                    evidence="原文线索",
+                    behavior="按原文行动",
+                )
+            ],
             speech_style=None,
-            is_player_playable=i < 2,
+            is_player_playable={"value": i < 2, "reason": "参考合成默认前两位可扮演"},
         )
         for i, c in enumerate(analysis.characters)
     ]
@@ -116,10 +132,12 @@ class Stage1Generator:
         *,
         model: str = "",
         token_counter: Callable[[str], int] | None = None,
+        prompts: PromptManager | None = None,
     ) -> None:
         self.llm = llm
         self.model = model
         self._token_counter = token_counter or _default_token_count
+        self._prompts = prompts or PromptManager()
 
     async def generate(
         self,
@@ -142,7 +160,10 @@ class Stage1Generator:
         while True:
             if on_step is not None:
                 await on_step(f"起草第 {retries + 1} 轮")
-            prompt = self._build_prompt(analysis, web, feedback, extra_context)
+            bundle = await self._prompts.bundle(
+                SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION
+            )
+            prompt = self._build_prompt(analysis, web, feedback, extra_context, bundle)
             raw = await self.llm.chat(
                 [{"role": "user", "content": prompt}],
                 session_id=session_id,
@@ -198,11 +219,22 @@ class Stage1Generator:
         web: list[WebEvidence],
         feedback: str | None,
         extra_context: list[str] | None = None,
+        bundle=None,  # noqa: ANN001 - PromptBundle（避免与 prompts 模块循环导入注解）
     ) -> str:
+        if bundle is None:
+            bundle = default_bundle(
+                SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION, write_script.DEFAULTS
+            )
         lines = [
             f"[prompt_version={PROMPT_VERSION}]",
-            "你是文境剧本编剧。根据课文原文分析结果，生成一个可直接进入游戏的剧本包。",
+            bundle.text("role"),
             "【输出要求】只输出一个 JSON 对象；不要 markdown 代码块，不要任何解释文字。",
+            "",
+            bundle.text("dialogue_rules"),
+            "",
+            bundle.text("scene_rules"),
+            "",
+            bundle.text("beat_rules"),
             "",
             "【字段类型契约（必须严格遵守）】",
             "{",
@@ -210,8 +242,13 @@ class Stage1Generator:
             '  "title": "字符串",',
             '  "characters": [',
             '    {"name": "字符串（只能取自人物列表）", "public_background": "字符串",',
-            '     "personality_traits": ["字符串"], "speech_style": "字符串或null",',
-            '     "is_player_playable": 布尔值}',
+            '     "personality_traits": [{"label": "标签", "evidence": "原文例证",',
+            '       "behavior": "行为化描述"}],',
+            '     "speech_style": {"era_layer": "语言时代层", "sentence_rhythm": "句长与节奏",',
+            '       "address_terms": "称谓习惯", "catchphrases": "口头禅与语气词",',
+            '       "emotion_expression": "情绪表达方式", "sample_lines": ["示例台词"]} 或 null,',
+            '     "knowledge_boundary": {"knows": ["知道的事"], "not_knows": ["不知道的事"]},',
+            '     "is_player_playable": {"value": 布尔值, "reason": "判断理由"}}',
             '  ],',
             '  "scenes": [',
             '    {"scene_id": 整数（从 1 递增）, "title": "字符串", "participants": ["人物名"],',

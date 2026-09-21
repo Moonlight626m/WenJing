@@ -11,6 +11,35 @@ from app.contracts.script import ScriptPackage
 from app.domain.game.types import Beat, CharacterSetting, Scene, Script
 
 
+def _speech_style_text(c) -> str:  # noqa: ANN001 - CharacterProfile
+    """SpeechStyle 五要素 → persona 文本（运行时 character identity 引用）。"""
+    s = c.speech_style
+    if s is None:
+        return ""
+    parts = [f"语言时代层：{s.era_layer}", f"句长与节奏：{s.sentence_rhythm}"]
+    if s.address_terms:
+        parts.append(f"称谓习惯：{s.address_terms}")
+    if s.catchphrases:
+        parts.append(f"口头禅：{s.catchphrases}")
+    parts.append(f"情绪表达：{s.emotion_expression}")
+    text = "；".join(p for p in parts if not p.endswith("："))
+    if s.sample_lines:
+        text += "。示例语气：" + " / ".join(s.sample_lines[:2])
+    return text
+
+
+def _knowledge_boundary_text(c) -> str:  # noqa: ANN001 - CharacterProfile
+    kb = c.knowledge_boundary
+    if not kb.knows and not kb.not_knows:
+        return ""
+    parts = []
+    if kb.knows:
+        parts.append("你知道：" + "；".join(kb.knows))
+    if kb.not_knows:
+        parts.append("你不知道：" + "；".join(kb.not_knows))
+    return "。".join(parts)
+
+
 def script_package_to_script(pkg: ScriptPackage) -> Script:
     """ScriptPackage → 引擎 Script。playable_roles 是可扮演的权威来源。"""
     playable = set(pkg.playable_roles)
@@ -18,8 +47,10 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
         CharacterSetting(
             name=c.name,
             public_background=c.public_background,
-            personality_traits=list(c.personality_traits),
-            is_player_playable=c.is_player_playable or c.name in playable,
+            personality_traits=[t.label for t in c.personality_traits],
+            speech_style=_speech_style_text(c),
+            knowledge_boundary=_knowledge_boundary_text(c),
+            is_player_playable=c.is_player_playable.value or c.name in playable,
         )
         for c in pkg.characters
     ]

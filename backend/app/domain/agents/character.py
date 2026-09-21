@@ -54,13 +54,22 @@ class CharacterIdentity:
         self.name = setting.name
         self.public_background = setting.public_background
         self.personality_traits = setting.personality_traits
+        self.speech_style = setting.speech_style
+        self.knowledge_boundary = setting.knowledge_boundary
         self.voice_style = ""
 
     def to_system_prompt(self) -> str:
-        return (
-            f"你是{self.name}。背景：{self.public_background}。"
-            f"性格：{'、'.join(self.personality_traits)}。"
-        )
+        parts = [
+            f"你是{self.name}。",
+            f"背景：{self.public_background}。",
+            f"性格：{'、'.join(self.personality_traits)}。",
+        ]
+        if self.speech_style:
+            parts.append(f"说话风格：{self.speech_style}。")
+        if self.knowledge_boundary:
+            parts.append(f"{self.knowledge_boundary}。超出边界的信息，"
+                         "以符合身份的方式回应（困惑、岔开或按你的立场表态）。")
+        return "".join(parts)
 
 
 class CharacterAgent:

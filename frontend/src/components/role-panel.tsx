@@ -18,12 +18,13 @@ export function RolePanel({
       : playableRoles.map((name) => ({
           name,
           public_background: "",
-          personality_traits: [] as string[],
+          personality_traits: [],
           speech_style: null,
-          is_player_playable: true,
+          knowledge_boundary: { knows: [], not_knows: [] },
+          is_player_playable: { value: true, reason: "" },
         }));
   const playableSet = new Set(
-    characters.filter((c) => c.is_player_playable).map((c) => c.name)
+    characters.filter((c) => c.is_player_playable.value).map((c) => c.name)
   );
   for (const name of playableRoles) playableSet.add(name);
 
@@ -62,10 +63,10 @@ export function RolePanel({
               <div className="mt-2 flex flex-wrap gap-1">
                 {c.personality_traits.slice(0, 4).map((t) => (
                   <span
-                    key={t}
+                    key={t.label}
                     className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
                   >
-                    {t}
+                    {t.label}
                   </span>
                 ))}
               </div>

@@ -41,6 +41,9 @@ from app.domain.generation.stage1 import (
     synthesize_script_package,
 )
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
+from app.domain.prompts import write_script
+from app.domain.prompts.manager import PromptManager
+from app.infrastructure.db.prompt_store import DbPromptStore
 from app.infrastructure.errx import codes, new
 from app.infrastructure.models.material import Material as MaterialRecord
 from app.infrastructure.models.script import Script as ScriptRecord
@@ -80,6 +83,7 @@ def _prompt_versions() -> dict[str, str]:
         "doubter": doubter.PROMPT_VERSION,
         "divide_events": divide_events.PROMPT_VERSION,
         "character_design": character_design.PROMPT_VERSION,
+        "write_script": write_script.PROMPT_VERSION,
     }
 
 
@@ -422,11 +426,12 @@ class ScriptLibrary:
         await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
 
     def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
-        """workflow 节点集合；有 checkpointer 才启用教师闸门（interrupt 依赖断点）。"""
+        """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
         return WorkflowNodes(
             self._stage1_llm(script),
             model_name=self._model_name,
             teacher_gates=self._workflow_checkpointer is not None,
+            prompts=PromptManager(DbPromptStore(self._factory)),
         )
 
     def _attempt_sink(self, attempt_id: int):

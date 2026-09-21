@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic import Field
 
 from app.contracts.base import ContractModel, VersionedContract
-from app.contracts.material import WebEvidence
+from app.contracts.material import ClaimRef, SourceConflict, WebEvidence
 from app.contracts.script import CharacterProfile, ScriptPackage
 
 # 闸门位置：materials=素材收集后；pre_write=人物+场景划分后（write_script 前）；
@@ -31,13 +31,32 @@ class CharacterNote(ContractModel):
 
 
 class MaterialDossier(ContractModel):
-    """素材收集节点产物：考证过的背景/时代/人物/情节/教学结论。"""
+    """素材收集节点产物：考证过的背景/时代/人物/情节/教学结论。
+
+    - 溯源不散落到每个字段：全部论断集中在 claims 登记表
+      （来源 original_text/inference/web × 可信度 high/medium/low，spec 裁决）；
+    - conflicts 登记外部资料与课文的冲突（以原文为准）。
+    """
 
     background: str = Field(min_length=1)
     era_setting: str = Field(min_length=1)
     character_notes: list[CharacterNote] = Field(default_factory=list)
     plot_summary: str = Field(min_length=1)
     teaching_analysis: list[str] = Field(default_factory=list)
+    claims: list[ClaimRef] = Field(default_factory=list)
+    conflicts: list[SourceConflict] = Field(default_factory=list)
+
+
+class InteractionPoint(ContractModel):
+    """场景末尾的玩家介入点（drama manager 心智，spec 裁决）。
+
+    为角色扮演运行时预留玩家介入空间：关键事件不可被介入改变，
+    介入只发生在 must_not_change 之外的节拍间隙。
+    """
+
+    player_role_hint: str = ""
+    what_player_can_do: str = Field(min_length=1)
+    must_not_change: list[int] = Field(default_factory=list)
 
 
 class BeatDraft(ContractModel):
@@ -49,11 +68,12 @@ class BeatDraft(ContractModel):
 
 
 class SceneDraft(ContractModel):
-    """划分草稿的单个场景。"""
+    """划分草稿的单个场景。interaction_point 可空（无玩家在场/纯过场）。"""
 
     title: str = Field(min_length=1)
     participants: list[str] = Field(default_factory=list)
     beats: list[BeatDraft] = Field(min_length=1)
+    interaction_point: InteractionPoint | None = None
 
 
 class EventDivisionDraft(ContractModel):
@@ -88,6 +108,7 @@ __all__ = [
     "GateEdits",
     "CharacterNote",
     "MaterialDossier",
+    "InteractionPoint",
     "BeatDraft",
     "SceneDraft",
     "EventDivisionDraft",

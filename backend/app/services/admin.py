@@ -1,7 +1,8 @@
 """运营后台应用服务（issue #22 / ADR-0002 §5）。
 
-**只读**：跨 org 剧本库列表 + 按 org/时间/用途聚合的 token 用量。
-访问控制由路由层的 `super_admin` 角色门负责；本层不改变任何状态。
+- 只读部分：跨 org 剧本库列表 + 按 org/时间/用途聚合的 token 用量；
+- prompt 管理（PromptMgr 组件）：覆盖层读写，更新即时生效（下次生成调用）。
+访问控制由路由层的 `super_admin` 角色门负责。
 """
 
 from __future__ import annotations
@@ -10,11 +11,13 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.admin import UsageAggregateRow
 from app.contracts.enums import ScriptStatus, UsagePurpose
 from app.infrastructure.models.llm_usage import LlmUsage
+from app.infrastructure.models.prompt import PromptTemplate
 from app.infrastructure.models.script import Script as ScriptRecord
 
 
@@ -83,6 +86,61 @@ class AdminService:
             )
             for row in rows
         ]
+
+
+    async def list_prompts(self, *, stage: str | None = None) -> list[PromptTemplate]:
+        """prompt 覆盖层列表：按 stage/节点/版本/段落排序。"""
+        stmt = select(PromptTemplate).order_by(
+            PromptTemplate.stage,
+            PromptTemplate.node,
+            PromptTemplate.version,
+            PromptTemplate.section,
+        )
+        if stage is not None:
+            stmt = stmt.where(PromptTemplate.stage == stage)
+        async with self._factory() as s:
+            rows = (await s.execute(stmt)).scalars().all()
+        return list(rows)
+
+    async def upsert_prompt(
+        self,
+        *,
+        stage: str,
+        node: str,
+        version: str,
+        section: str,
+        body: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+    ) -> PromptTemplate:
+        """更新或创建一条覆盖行；更新即时生效（下次生成调用读到）。"""
+        async with self._factory() as s:
+            values: dict[str, object] = {
+                "description": description,
+                "enabled": enabled if enabled is not None else True,
+            }
+            if body is not None:
+                values["body"] = body
+            stmt = (
+                pg_insert(PromptTemplate)
+                .values(
+                    stage=stage,
+                    node=node,
+                    version=version,
+                    section=section,
+                    body=body or "",
+                    description=description,
+                    enabled=enabled if enabled is not None else True,
+                )
+                .on_conflict_do_update(
+                    index_elements=["stage", "node", "version", "section"],
+                    set_=values,
+                )
+                .returning(PromptTemplate)
+            )
+            row = (await s.execute(stmt)).scalar_one()
+            await s.commit()
+            return row
 
 
 __all__ = ["AdminService"]

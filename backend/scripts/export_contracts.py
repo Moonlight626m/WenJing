@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.contracts.admin import UsageAggregateResponse, UsageAggregateRow
+from app.contracts.admin import (
+    PromptListResponse,
+    PromptUpdateRequest,
+    UsageAggregateResponse,
+    UsageAggregateRow,
+)
 from app.contracts.auth import (
     AuthSessionInfo,
     LoginRequest,
@@ -72,6 +77,8 @@ EXPORTS: dict[str, type] = {
     "script_list_response": ScriptListResponse,
     "usage_aggregate_row": UsageAggregateRow,
     "usage_aggregate_response": UsageAggregateResponse,
+    "admin_prompt_list": PromptListResponse,
+    "prompt_update_request": PromptUpdateRequest,
 }
 
 

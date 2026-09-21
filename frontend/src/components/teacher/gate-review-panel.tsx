@@ -221,11 +221,17 @@ export function GateReviewPanel({
                     <label className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
                       <input
                         type="checkbox"
-                        checked={profile.is_player_playable}
+                        checked={profile.is_player_playable.value}
                         onChange={(e) =>
                           setProfiles((prev) => {
                             const next = [...prev];
-                            next[i] = { ...profile, is_player_playable: e.target.checked };
+                            next[i] = {
+                              ...profile,
+                              is_player_playable: {
+                                ...profile.is_player_playable,
+                                value: e.target.checked,
+                              },
+                            };
                             return next;
                           })
                         }
@@ -247,16 +253,39 @@ export function GateReviewPanel({
                     placeholder="人物背景"
                   />
                   <input
-                    value={profile.speech_style ?? ""}
+                    value={
+                      profile.speech_style
+                        ? [
+                            profile.speech_style.era_layer,
+                            profile.speech_style.sentence_rhythm,
+                            profile.speech_style.address_terms,
+                            profile.speech_style.catchphrases,
+                            profile.speech_style.emotion_expression,
+                          ]
+                            .filter(Boolean)
+                            .join("；")
+                        : ""
+                    }
                     onChange={(e) =>
                       setProfiles((prev) => {
                         const next = [...prev];
-                        next[i] = { ...profile, speech_style: e.target.value || null };
+                        const style = profile.speech_style ?? {
+                          era_layer: "",
+                          sentence_rhythm: "",
+                          address_terms: "",
+                          catchphrases: "",
+                          emotion_expression: "",
+                          sample_lines: [],
+                        };
+                        next[i] = {
+                          ...profile,
+                          speech_style: { ...style, era_layer: e.target.value || "" },
+                        };
                         return next;
                       })
                     }
                     className={TEXT_FIELD}
-                    placeholder="语言风格（可选）"
+                    placeholder="语言时代层（可选；五要素在结构化编辑中维护）"
                   />
                 </div>
               ))}

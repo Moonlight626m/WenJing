@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "items": [
+    {
+      "schema_version": "1.0.0",
+      "stage": "script_gen",
+      "node": "divide_events",
+      "version": "v2",
+      "section": "system",
+      "body": "你是剧本结构设计师……",
+      "description": "角色定位与使命（system prompt 主体）",
+      "enabled": true,
+      "updated_at": "2026-09-21T08:00:00Z"
+    },
+    {
+      "schema_version": "1.0.0",
+      "stage": "script_gen",
+      "node": "divide_events",
+      "version": "v2",
+      "section": "beat_rules",
+      "body": "【节拍粒度判据】……",
+      "description": "节拍粒度判据（行为/反应交换）",
+      "enabled": false,
+      "updated_at": "2026-09-21T08:05:00Z"
+    }
+  ]
+}

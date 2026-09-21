@@ -373,12 +373,38 @@ export interface TextAnalysis {
 
 // ===== 剧本包 =====
 
+export interface CharacterTrait {
+  label: string;
+  evidence: string;
+  behavior: string;
+}
+
+export interface SpeechStyle {
+  era_layer: string;
+  sentence_rhythm: string;
+  address_terms: string;
+  catchphrases: string;
+  emotion_expression: string;
+  sample_lines: string[];
+}
+
+export interface KnowledgeBoundary {
+  knows: string[];
+  not_knows: string[];
+}
+
+export interface Playability {
+  value: boolean;
+  reason: string;
+}
+
 export interface CharacterProfile {
   name: string;
   public_background: string;
-  personality_traits: string[];
-  speech_style?: string | null;
-  is_player_playable: boolean;
+  personality_traits: CharacterTrait[];
+  speech_style?: SpeechStyle | null;
+  knowledge_boundary: KnowledgeBoundary;
+  is_player_playable: Playability;
 }
 
 export interface Beat {
@@ -414,12 +440,35 @@ export interface CharacterNote {
   note: string;
 }
 
+export interface ClaimRef {
+  target: string;
+  source_type: "original_text" | "inference" | "web";
+  confidence: "high" | "medium" | "low";
+  evidence_ref?: EvidenceRef | null;
+  note?: string;
+}
+
+export interface SourceConflict {
+  claim: string;
+  original_evidence: string;
+  external_source: string;
+  resolution: string;
+}
+
 export interface MaterialDossier {
   background: string;
   era_setting: string;
   character_notes: CharacterNote[];
   plot_summary: string;
   teaching_analysis: string[];
+  claims: ClaimRef[];
+  conflicts: SourceConflict[];
+}
+
+export interface InteractionPoint {
+  player_role_hint: string;
+  what_player_can_do: string;
+  must_not_change: number[];
 }
 
 export interface BeatDraft {
@@ -432,6 +481,7 @@ export interface SceneDraft {
   title: string;
   participants: string[];
   beats: BeatDraft[];
+  interaction_point?: InteractionPoint | null;
 }
 
 export interface EventDivisionDraft {
@@ -454,6 +504,32 @@ export interface GateEdits {
   division: EventDivisionDraft | null;
   profiles: CharacterProfile[] | null;
   package: ScriptPackage | null;
+}
+
+// ===== admin prompt 管理（PromptMgr 组件）=====
+
+export interface PromptEntry {
+  schema_version: string;
+  stage: string;
+  node: string;
+  version: string;
+  section: string;
+  body: string;
+  description?: string | null;
+  enabled: boolean;
+  updated_at?: string | null;
+}
+
+export interface PromptListResponse {
+  schema_version: string;
+  items: PromptEntry[];
+}
+
+export interface PromptUpdateRequest {
+  schema_version: string;
+  body?: string | null;
+  description?: string | null;
+  enabled?: boolean | null;
 }
 
 // ===== 玩家命令 =====

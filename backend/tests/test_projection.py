@@ -25,12 +25,12 @@ def test_script_package_to_script_maps_engine_fields():
             CharacterProfile(
                 name="父亲",
                 public_background="中年父亲",
-                is_player_playable=False,
+                is_player_playable={"value": False, "reason": ""},
             ),
             CharacterProfile(
                 name="儿子",
                 public_background="二十岁青年",
-                is_player_playable=True,
+                is_player_playable={"value": True, "reason": "戏份适中"},
             ),
         ],
         scenes=[

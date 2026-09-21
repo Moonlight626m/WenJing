@@ -13,11 +13,13 @@ import json
 import pytest
 
 from app.contracts.enums import UsagePurpose
+from app.contracts.generation import DoubterIssue
 from app.contracts.material import MaterialInput, MaterialSource
 from app.contracts.script import ScriptPackage
 from app.domain.content.pipeline import ContentPipeline
 from app.domain.generation.stage1 import synthesize_script_package
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
+from app.domain.generation.workflow.nodes import _format_issue
 from app.domain.prompts import character_design, collect_materials, divide_events
 from app.infrastructure.config import get_settings
 from app.infrastructure.errx import Error
@@ -73,18 +75,35 @@ _DIVISION_JSON = json.dumps(
 _PROFILE_JSON = json.dumps(
     {
         "public_background": "文中的儿子，为母买药",
-        "personality_traits": ["重情", "孝顺"],
+        "personality_traits": [
+            {"label": "重情", "evidence": "回头看见母亲在门口流泪", "behavior": "逢离别必回头"},
+            {"label": "孝顺", "evidence": "母亲病了立刻进城买药", "behavior": "嘱咐记在心上"},
+        ],
         "speech_style": None,
-        "is_player_playable": True,
+        "knowledge_boundary": {"knows": ["母亲病了"], "not_knows": ["母亲在家落泪"]},
+        "is_player_playable": {"value": True, "reason": "戏份适中，动机清晰"},
     },
     ensure_ascii=False,
 )
+
+_DOUBTER_ISSUE = {
+    "field": "era_setting",
+    "quote": "民国初年",
+    "category": "人物事实",
+    "evidence": "原文依据摘要未提及该时代结论",
+    "severity": "must_fix",
+    "suggestion": "补充原文依据或降为 nice_to_fix",
+}
 
 
 def make_analysis():
     return ContentPipeline().analyze(
         MaterialInput(source=MaterialSource.PASTE, raw_text=MATERIAL_TEXT)
     )
+
+
+def _verdict_issue() -> DoubterIssue:
+    return DoubterIssue.model_validate(_DOUBTER_ISSUE)
 
 
 class ScriptedWorkflowLLM:
@@ -105,7 +124,7 @@ class ScriptedWorkflowLLM:
             return _DOSSIER_JSON
         if name == UsagePurpose.DOUBTER.value:
             verdict = self._verdicts.pop(0) if self._verdicts else "pass"
-            issues = [] if verdict == "pass" else ["时代背景结论缺少原文依据"]
+            issues = [] if verdict == "pass" else [dict(_DOUBTER_ISSUE)]
             return json.dumps({"verdict": verdict, "issues": issues}, ensure_ascii=False)
         if name == UsagePurpose.DIVIDE_EVENTS.value:
             self.divide_prompts.append(messages[0]["content"])
@@ -300,7 +319,14 @@ async def test_pre_write_gate_resume_applies_edits() -> None:
     division_edit["scenes"][0]["title"] = "雪夜启程"
     profiles_edit = json.loads(_PROFILE_JSON)
     profiles_edit["name"] = "我"
-    profiles_edit["speech_style"] = "教师修订的语言风格"
+    profiles_edit["speech_style"] = {
+        "era_layer": "教师修订的时代层",
+        "sentence_rhythm": "短句",
+        "address_terms": "",
+        "catchphrases": "",
+        "emotion_expression": "",
+        "sample_lines": [],
+    }
 
     resumed = WorkflowRunner(
         WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
@@ -317,8 +343,8 @@ async def test_pre_write_gate_resume_applies_edits() -> None:
     )
 
     assert any("雪夜启程" in p for p in llm.writing_prompts)
-    assert any("教师修订的语言风格" in p for p in llm.writing_prompts)
-    assert final["merged_profiles"][0].speech_style == "教师修订的语言风格"
+    assert any("教师修订的时代层" in p for p in llm.writing_prompts)
+    assert final["merged_profiles"][0].speech_style.era_layer == "教师修订的时代层"
     # 编辑恢复后继续跑到终审闸门再停（链式）
     assert resumed.snapshot().status == "awaiting_review"
     assert resumed.review["gate"] == "final"
@@ -453,7 +479,7 @@ async def test_doubter_reject_then_pass_reruns_collection() -> None:
     events = runner.snapshot().doubter_events
     # verify 节点 reject→pass 各记一条；总审再记一条 pass
     assert [e.verdict for e in events] == ["reject", "pass", "pass"]
-    assert events[0].issues == ["时代背景结论缺少原文依据"]
+    assert events[0].issues == [_format_issue(_verdict_issue())]
     assert runner.snapshot().status == "succeeded"
 
 

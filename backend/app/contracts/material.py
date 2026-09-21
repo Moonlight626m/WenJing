@@ -13,7 +13,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, HttpUrl
 
-from app.contracts.base import VersionedContract
+from app.contracts.base import ContractModel, VersionedContract
 
 
 class MaterialSource(StrEnum):
@@ -41,10 +41,19 @@ class Material(VersionedContract):
 
 
 class EvidenceSourceType(StrEnum):
-    """证据来源类型：原文 vs 网络补充。"""
+    """证据来源类型：原文 / 推断 / 网络补充。"""
 
     ORIGINAL_TEXT = "original_text"
+    INFERENCE = "inference"
     WEB = "web"
+
+
+class ConfidenceLevel(StrEnum):
+    """论断可信度分级：素材考证与 doubter 审核共用（spec 裁决）。"""
+
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
 
 
 class OriginalEvidence(VersionedContract):
@@ -73,3 +82,27 @@ EvidenceRef = Annotated[
     OriginalEvidence | WebEvidence,
     Field(discriminator="source_type"),
 ]
+
+
+class ClaimRef(ContractModel):
+    """单条论断的溯源登记（素材集 claims 集中登记表，spec 裁决）。
+
+    - target：论断在产物中的定位（字段路径或论断短语）；
+    - source_type + confidence 是「来源 × 可信度」两维标注；
+    - evidence_ref 指向支持该论断的原文区间或网络来源（推断类可为原文依据）。
+    """
+
+    target: str = Field(min_length=1)
+    source_type: EvidenceSourceType
+    confidence: ConfidenceLevel
+    evidence_ref: EvidenceRef | None = None
+    note: str = ""
+
+
+class SourceConflict(ContractModel):
+    """外部资料与课文的冲突记录：素材收集时显式登记，以原文为准。"""
+
+    claim: str = Field(min_length=1)
+    original_evidence: str = Field(min_length=1)
+    external_source: str = Field(min_length=1)
+    resolution: str = Field(min_length=1)
