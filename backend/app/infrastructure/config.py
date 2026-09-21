@@ -1,12 +1,17 @@
 from functools import lru_cache
+from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.infrastructure.llm.factory import KNOWN_PROVIDERS, ModelConfig
 
+# 绝对锚定 backend/.env：不随启动 cwd 漂移（从仓库根/IDE 启动也能读到配置）
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="WENJING_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_prefix="WENJING_", extra="ignore")
 
     app_name: str = "文境 (Wenjing)"
     debug: bool = False
@@ -31,6 +36,11 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
 
     max_concurrent_llm: int = 5
+
+    # RAG 搜索 provider：null=不搜索（降级为纯原文）；ddgs=DuckDuckGo 网络搜索（无需 key）。
+    # Literal 校验：非法值启动即报错，不静默回落（避免复刻"持续静默降级"）。
+    rag_search_provider: Literal["null", "ddgs"] = "null"
+
     # 默认上限需覆盖 Stage1 全剧本生成（实测 DeepSeek 约 100s）；短调用仅受上界约束
     llm_timeout_seconds: int = 150
     player_timeout_seconds: int = 300

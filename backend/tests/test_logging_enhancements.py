@@ -182,6 +182,7 @@ def test_scripts_llm_fallback_logs_warning():
     class _StubSettings:
         llm_api_key = "sk-test"
         llm_model = ""
+        rag_search_provider = "null"
 
         @staticmethod
         def llm_model_config():
