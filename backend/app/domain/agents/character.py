@@ -106,7 +106,7 @@ class CharacterAgent:
         self.memory.working_memory.append({"role": self.identity.name, "content": text})
         logger.debug(
             "character_react",
-            extra={"name": self.identity.name, "text": text},
+            extra={"wj_extra": {"name": self.identity.name, "text": text}},
         )
         return text
 

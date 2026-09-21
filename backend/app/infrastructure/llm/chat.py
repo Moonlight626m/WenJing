@@ -42,6 +42,16 @@ class ChatLLMService:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._timeout = timeout_seconds
 
+    def _provider_headers(self, session_id: str) -> dict[str, str] | None:
+        """opencodego 要求每个会话带稳定 `x-opencode-session` 头（路由/缓存优化），
+        且客户端用自有 UA 标识（OpenCode Go 官方要求，泛 SDK 名会被视为可疑流量）。"""
+        if self.provider != "opencodego":
+            return None
+        return {
+            "User-Agent": "wenjing/0.1",
+            "x-opencode-session": session_id or "wenjing-anonymous",
+        }
+
     async def chat(
         self,
         messages: list[Message],
@@ -64,7 +74,11 @@ class ChatLLMService:
         """同 `chat`，额外返回 provider 回报的真实 token 用量（#22 计量采信）。"""
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            default_headers=self._provider_headers(session_id),
+        )
         async with self._semaphore:
             logger.info(
                 "llm_call_start",

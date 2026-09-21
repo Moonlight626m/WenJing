@@ -461,7 +461,8 @@ class GameRuntime:
         for name, res in zip(names, results):
             if isinstance(res, BaseException):
                 self._log.error(
-                    "propose_failed", extra={"name": name, "err": str(res)}
+                    "propose_failed",
+                    extra={"wj_extra": {"name": name, "err": str(res)}},
                 )
                 continue
             self._append(
@@ -519,7 +520,10 @@ class GameRuntime:
         )
         for name, res in zip(names, results):
             if isinstance(res, BaseException):
-                self._log.error("react_failed", extra={"name": name, "err": str(res)})
+                self._log.error(
+                    "react_failed",
+                    extra={"wj_extra": {"name": name, "err": str(res)}},
+                )
                 continue
             self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
 
