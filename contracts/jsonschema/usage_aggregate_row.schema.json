@@ -20,7 +20,7 @@
   "description": "单个 (org, purpose) 分组的 token 聚合行。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

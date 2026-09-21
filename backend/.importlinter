@@ -1,0 +1,62 @@
+# import-linter: backend 分层依赖方向守卫（`make lint-arch`）
+#
+# 布局（见 AGENTS.md「后端分层与依赖方向」）：
+#   controllers（HTTP/WS 适配）→ services（应用编排）→ domain（领域）
+#   infrastructure 为适配器层：实现 domain 端口，可依赖 domain，不得依赖 controllers/services
+#   contracts 为共享叶子层（零 app.* 依赖）
+#
+# 跨切白名单：仅 `app.infrastructure.errx`（错误框架）允许所有层引用；
+#   domain 的日志用标准库 logging（避免依赖 infra 门面）。
+[importlinter]
+root_package = app
+
+[importlinter:contract:domain_not_outer]
+name = Domain 不反向依赖 controllers / services
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    app.controllers
+    app.services
+    app.main
+
+[importlinter:contract:domain_imports_whitelisted_infra_only]
+name = Domain 仅允许引用审核过的 infrastructure（errx）
+type = forbidden
+source_modules =
+    app.domain
+forbidden_modules =
+    app.infrastructure
+ignore_imports =
+    app.domain.** -> app.infrastructure.errx
+    app.domain.** -> app.infrastructure.errx.**
+
+[importlinter:contract:infra_not_outer]
+name = Infrastructure 不反向依赖 services / controllers / main
+type = forbidden
+source_modules =
+    app.infrastructure
+forbidden_modules =
+    app.controllers
+    app.services
+    app.main
+
+[importlinter:contract:services_not_controllers]
+name = Services 不反向依赖 controllers
+type = forbidden
+source_modules =
+    app.services
+forbidden_modules =
+    app.controllers
+    app.main
+
+[importlinter:contract:contracts_is_leaf]
+name = Contracts 是零 app.* 依赖的共享叶子层
+type = forbidden
+source_modules =
+    app.contracts
+forbidden_modules =
+    app.controllers
+    app.services
+    app.domain
+    app.infrastructure

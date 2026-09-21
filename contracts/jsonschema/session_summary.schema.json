@@ -3,7 +3,7 @@
   "description": "「我的游戏」列表项：会话元数据 + 引用剧本名。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

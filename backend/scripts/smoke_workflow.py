@@ -12,8 +12,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from app.config import get_settings
 from app.contracts.material import MaterialInput, MaterialSource
+from app.infrastructure.config import get_settings
 
 DEFAULT_TEXT = (
     "那年冬天，母亲病了。我离开家，到城里去买药。"
@@ -22,7 +22,7 @@ DEFAULT_TEXT = (
 
 
 def _analyze(text: str):
-    from app.content.pipeline import ContentPipeline
+    from app.domain.content.pipeline import ContentPipeline
 
     return ContentPipeline().analyze(
         MaterialInput(source=MaterialSource.PASTE, raw_text=text)
@@ -35,12 +35,12 @@ async def main() -> int:
         print("smoke skipped: WENJING_LLM_API_KEY 未配置")
         return 1
 
-    from app.agents.model_config import ModelServiceFactory
-    from app.generation.workflow import (
+    from app.domain.generation.workflow import (
         WorkflowNodes,
         WorkflowRunner,
         initial_state,
     )
+    from app.infrastructure.llm.factory import ModelServiceFactory
 
     text = (
         Path(sys.argv[1]).read_text(encoding="utf-8")

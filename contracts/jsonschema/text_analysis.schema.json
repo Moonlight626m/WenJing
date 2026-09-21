@@ -5,7 +5,7 @@
       "description": "人物：姓名 + 角色/性格分析，附原文证据。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -57,7 +57,7 @@
       "description": "体裁判定结果：signals 记录判定依据，便于解释与回归。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -104,7 +104,7 @@
       "description": "关键事件：按原文出现顺序编号（order 1 起）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -151,7 +151,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -217,7 +217,7 @@
       "description": "人物关系边：两端为人物名（source/target 无向，去重按字典序）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -257,7 +257,7 @@
       "description": "场景：地点/参与者/核心事件/在全文中的作用。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -322,7 +322,7 @@
   "description": "原文分析结果（issue #9 验收标准 3）。\n\ncontent_hash 锚定规范化后的原文（与 Material.content_hash 一致）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

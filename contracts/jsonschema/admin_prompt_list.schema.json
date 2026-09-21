@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "PromptEntry": {
+      "additionalProperties": false,
+      "description": "单条 prompt 覆盖行（PromptMgr 组件；管理界面按 stage 分组）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage": {
+          "title": "Stage",
+          "type": "string"
+        },
+        "node": {
+          "title": "Node",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "string"
+        },
+        "section": {
+          "title": "Section",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "updated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Updated At"
+        }
+      },
+      "required": [
+        "stage",
+        "node",
+        "version",
+        "section",
+        "body"
+      ],
+      "title": "PromptEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "prompt 覆盖层列表（可按 stage 过滤）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/PromptEntry"
+      },
+      "title": "Items",
+      "type": "array"
+    }
+  },
+  "title": "PromptListResponse",
+  "type": "object"
+}

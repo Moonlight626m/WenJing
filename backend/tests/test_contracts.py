@@ -16,7 +16,12 @@ from pathlib import Path
 import pytest
 
 from app.contracts import CONTRACTS_SCHEMA_VERSION
-from app.contracts.admin import UsageAggregateResponse, UsageAggregateRow
+from app.contracts.admin import (
+    PromptListResponse,
+    PromptUpdateRequest,
+    UsageAggregateResponse,
+    UsageAggregateRow,
+)
 from app.contracts.auth import (
     AuthSessionInfo,
     LoginRequest,
@@ -39,8 +44,10 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState
 from app.contracts.script_library import (
+    GenerationResumeRequest,
     MaterialPublic,
     ScriptCreateRequest,
     ScriptDetail,
@@ -73,6 +80,7 @@ def _load(name: str) -> dict:
         ("material_public", MaterialPublic),
         ("script_create_request", ScriptCreateRequest),
         ("script_publish_request", ScriptPublishRequest),
+        ("generation_resume_request", GenerationResumeRequest),
         ("script_summary", ScriptSummary),
         ("script_detail", ScriptDetail),
         ("script_list_response", ScriptListResponse),
@@ -81,7 +89,10 @@ def _load(name: str) -> dict:
         ("session_list_response", SessionListResponse),
         ("usage_aggregate_row", UsageAggregateRow),
         ("usage_aggregate_response", UsageAggregateResponse),
+        ("admin_prompt_list", PromptListResponse),
+        ("prompt_update_request", PromptUpdateRequest),
         ("generation_progress", GenerationProgress),
+        ("gate_review", GateReview),
         ("text_analysis", TextAnalysis),
         ("player_command", PlayerCommand),
         ("domain_event", DomainEvent),

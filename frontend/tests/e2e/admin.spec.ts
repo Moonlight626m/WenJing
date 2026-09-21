@@ -3,7 +3,7 @@
  *
  * 覆盖验收：super_admin 查看剧本库与 token 聚合、org/status/purpose 筛选、
  * 非 super_admin 无法进入、看板无任何写操作入口。
- * 依赖后端 seed 账号 admin@wenjing.local（密码 wenjing123，可用
+ * 依赖后端 seed 账号 admin（密码 123456，可用
  * WENJING_SEED_PASSWORD 覆盖）；用量数据来自教师建本时的真实 Stage1 调用
  * （fake LLM 模式同样逐次入账 llm_usage）。
  *

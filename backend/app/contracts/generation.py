@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field
 
@@ -57,6 +58,29 @@ class NodeProgress(VersionedContract):
     detail: str | None = None
 
 
+class DoubterIssue(VersionedContract):
+    """doubter 单条问题：可定位、可执行（Self-Refine 心智，spec 裁决）。
+
+    - field：产物中的字段定位（如 scenes[2].beats[4].description）；
+    - severity：must-fix ≥1 条即 reject；nice-to-fix 不触发打回；
+    - evidence：判定依据（原文依据摘要中的对应条目/摘录）。
+    """
+
+    field: str = Field(min_length=1)
+    quote: str = ""
+    category: Literal["人物事实", "事件顺序", "编造情节", "篡改关键事实"]
+    evidence: str = ""
+    severity: Literal["must_fix", "nice_to_fix"]
+    suggestion: str = ""
+
+
+class DoubterVerdict(VersionedContract):
+    """doubter 产物契约（素材质检 / 终审两处复用）：裁决 + 结构化问题清单。"""
+
+    verdict: str = Field(pattern=r"^(pass|reject)$")
+    issues: list[DoubterIssue] = Field(default_factory=list)
+
+
 class DoubterEvent(VersionedContract):
     """doubter 裁决记录：打回时带逐条问题（教师端可见）。"""
 
@@ -81,6 +105,8 @@ __all__ = [
     "GenerationNode",
     "GenerationNodeStatus",
     "NodeProgress",
+    "DoubterIssue",
+    "DoubterVerdict",
     "DoubterEvent",
     "GenerationProgress",
 ]

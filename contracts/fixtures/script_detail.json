@@ -1,7 +1,7 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "script": {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "id": 7,
     "name": "背影·重构",
     "description": "以儿子视角重演浦口送别与买橘一段",
@@ -15,25 +15,52 @@
   },
   "package": null,
   "generation": {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "status": "running",
     "nodes": [
-      { "node": "collect_materials", "status": "succeeded", "detail": null },
-      { "node": "verify_materials", "status": "succeeded", "detail": null },
-      { "node": "divide_events", "status": "pending", "detail": null },
-      { "node": "design_characters", "status": "pending", "detail": null },
-      { "node": "write_script", "status": "running", "detail": null },
-      { "node": "final_audit", "status": "pending", "detail": null }
+      {
+        "node": "collect_materials",
+        "status": "succeeded",
+        "detail": null
+      },
+      {
+        "node": "verify_materials",
+        "status": "succeeded",
+        "detail": null
+      },
+      {
+        "node": "divide_events",
+        "status": "pending",
+        "detail": null
+      },
+      {
+        "node": "design_characters",
+        "status": "pending",
+        "detail": null
+      },
+      {
+        "node": "write_script",
+        "status": "running",
+        "detail": null
+      },
+      {
+        "node": "final_audit",
+        "status": "pending",
+        "detail": null
+      }
     ],
     "doubter_events": [
       {
         "node": "collect_materials",
         "verdict": "reject",
-        "issues": ["时代背景结论缺少原文依据"],
+        "issues": [
+          "时代背景结论缺少原文依据"
+        ],
         "round": 1
       }
     ],
     "error": null,
     "updated_at": "2026-09-15T08:32:00Z"
-  }
+  },
+  "review": null
 }

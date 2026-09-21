@@ -21,22 +21,22 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.auth.deps import Principal, require_role
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
-from app.errx import Error as WJError
-from app.errx import codes
+from app.controllers.auth_deps import Principal, require_role
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.errx import codes
+from app.infrastructure.models.auth_session import AuthSession
+from app.infrastructure.models.session import Session as SessionRecord
+from app.infrastructure.models.user import User
 from app.main import create_app
-from app.models.auth_session import AuthSession
-from app.models.session import Session as SessionRecord
-from app.models.user import User
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "phone": None,
     "password": "supersecret1",
 }
@@ -99,7 +99,7 @@ def _schema():
 
 @pytest.fixture(scope="module")
 def client(_schema):
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()

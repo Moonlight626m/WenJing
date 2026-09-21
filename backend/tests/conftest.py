@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.engine_config import EngineConfig
-from app.core.game_runtime import GameRuntime
-from app.core.types import Beat, CharacterSetting, Scene, Script
+from app.domain.game.engine_config import EngineConfig
+from app.domain.game.game_runtime import GameRuntime
+from app.domain.game.types import Beat, CharacterSetting, Scene, Script
 
 
 async def reset_baseline_schema(conn) -> None:
@@ -23,7 +23,7 @@ async def reset_baseline_schema(conn) -> None:
     """
     from sqlalchemy import text
 
-    from app.db.session import Base
+    from app.infrastructure.db.session import Base
 
     await conn.run_sync(Base.metadata.drop_all)
     await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
@@ -36,10 +36,10 @@ async def create_actor(
     """建一个 org + user 并返回其领域身份（#18 会话归属用）。"""
     import uuid as _uuid
 
-    from app.access import Actor
     from app.contracts.enums import UserRole
-    from app.models.org import Org
-    from app.models.user import User
+    from app.domain.access import Actor
+    from app.infrastructure.models.org import Org
+    from app.infrastructure.models.user import User
 
     async with factory() as s:
         org = Org(name=f"{name}-{_uuid.uuid4().hex[:8]}")
@@ -71,7 +71,7 @@ async def generate_script_id(
 ) -> int:
     """用 ScriptLibrary 导入素材并生成一个剧本，返回其 id（同步等待生成完成）。"""
     from app.contracts.material import MaterialInput, MaterialSource
-    from app.scripts.service import ScriptLibrary
+    from app.services.script_library import ScriptLibrary
 
     library = ScriptLibrary(session_factory=factory, script_llm=script_llm)
     material = await library.import_material(
@@ -87,8 +87,8 @@ async def generate_script_id(
 
 async def make_playable_session(factory, actor, *, script_llm=None):
     """建一个已初始化的可玩 session，返回 (SessionApplication, session_id)。"""
-    from app.agents.fake_llm import DeterministicAgentLLM
-    from app.session.application import SessionApplication
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
+    from app.services.session_runtime import SessionApplication
 
     script_id = await generate_script_id(factory, actor, script_llm=script_llm)
     app = SessionApplication(session_factory=factory, agent_llm=DeterministicAgentLLM())
@@ -105,7 +105,7 @@ async def drop_baseline_schema(conn) -> None:
     """测试后清场：连同 alembic_version 一起移除，交还干净库。"""
     from sqlalchemy import text
 
-    from app.db.session import Base
+    from app.infrastructure.db.session import Base
 
     await conn.run_sync(Base.metadata.drop_all)
     await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
@@ -192,7 +192,6 @@ def make_runtime(minimal_script, fake_llm, engine_config):
             script=minimal_script,
             llm=fake_llm,
             config=engine_config,
-            enable_logging=False,
         )
 
     return _make

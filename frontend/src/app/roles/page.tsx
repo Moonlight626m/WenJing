@@ -68,7 +68,8 @@ function RolesContent() {
           public_background: "（刷新后简介不可用，仅列角色名）",
           personality_traits: [],
           speech_style: null,
-          is_player_playable: true,
+          knowledge_boundary: { knows: [], not_knows: [] },
+          is_player_playable: { value: true, reason: "" },
         }));
 
   async function handleSelect(role: string) {
@@ -141,7 +142,7 @@ function RolesContent() {
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{c.name}</span>
-                  {c.is_player_playable && (
+                  {c.is_player_playable.value && (
                     <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700 dark:bg-blue-900/60 dark:text-blue-300">
                       可扮演
                     </span>
@@ -156,10 +157,10 @@ function RolesContent() {
                   <div className="mt-2 flex flex-wrap gap-1">
                     {c.personality_traits.map((t) => (
                       <span
-                        key={t}
+                        key={t.label}
                         className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
                       >
-                        {t}
+                        {t.label}
                       </span>
                     ))}
                   </div>

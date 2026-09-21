@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import type {
   AuthSessionInfo,
   ErrorEnvelope,
+  GenerationResumeRequest,
   LoginRequest,
   MaterialInput,
   MaterialPublic,
@@ -145,7 +146,7 @@ export interface RuntimeUpdateDto {
 export function openSession(scriptId: number): Promise<SessionStatus> {
   return request("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", script_id: scriptId }),
+    body: JSON.stringify({ schema_version: "2.0.0", script_id: scriptId }),
   });
 }
 
@@ -193,7 +194,7 @@ export function createScriptDraft(
 ): Promise<ScriptSummary> {
   return request("/api/scripts", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 
@@ -207,6 +208,20 @@ export function startScriptGeneration(
   return request(`/api/scripts/${scriptId}/generate`, { method: "POST" });
 }
 
+/** 教师闸门恢复（#34）：审阅后从断点继续，指令/编辑/终审动作注入 workflow。 */
+export function resumeScriptGeneration(
+  scriptId: number,
+  payload: Omit<GenerationResumeRequest, "schema_version">
+): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}/generation/resume`, {
+    method: "POST",
+    body: JSON.stringify({
+      schema_version: "2.0.0",
+      ...payload,
+    } satisfies GenerationResumeRequest),
+  });
+}
+
 export function regenerateScript(scriptId: number): Promise<ScriptDetail> {
   return request(`/api/scripts/${scriptId}/regenerate`, { method: "POST" });
 }
@@ -217,7 +232,7 @@ export function publishScript(
 ): Promise<ScriptSummary> {
   return request(`/api/scripts/${scriptId}/publish`, {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", visibility }),
+    body: JSON.stringify({ schema_version: "2.0.0", visibility }),
   });
 }
 
@@ -271,14 +286,14 @@ export function listAdminUsage(
 export function register(input: Omit<RegisterRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 
 export function login(input: Omit<LoginRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 

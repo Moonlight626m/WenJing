@@ -11,16 +11,16 @@ from __future__ import annotations
 
 import logging
 
-from app.diagnostics.context import (
+from app.infrastructure.diagnostics.context import (
     bind_command,
     bind_correlation,
     bind_request,
     bind_session,
     current_ids,
 )
-from app.diagnostics.logging import configure_logging, get_logger, sanitize_extra
-from app.errx import codes as err_codes
-from app.errx import new as err_new
+from app.infrastructure.diagnostics.logging import configure_logging, get_logger, sanitize_extra
+from app.infrastructure.errx import codes as err_codes
+from app.infrastructure.errx import new as err_new
 
 
 class Capture(logging.Handler):
@@ -135,7 +135,7 @@ def test_business_content_full_in_log_output():
 
 
 def test_envelope_maps_known_codes():
-    from app.diagnostics.errors import envelope_for
+    from app.infrastructure.diagnostics.errors import envelope_for
 
     env = envelope_for(err_new(err_codes.SESS_NOT_FOUND))
     assert env.code == "SESSION_NOT_FOUND"
@@ -149,7 +149,7 @@ def test_envelope_maps_known_codes():
 
 
 def test_unknown_code_falls_back_to_internal():
-    from app.diagnostics.errors import envelope_for
+    from app.infrastructure.diagnostics.errors import envelope_for
 
     env = envelope_for(err_new(999999))
     assert env.code == "INTERNAL_ERROR"
@@ -160,13 +160,13 @@ def test_error_id_locates_server_log():
     """用户报错凭 error_id；服务端同 error_id 记录 cause/stack。"""
     import uuid
 
-    from app.diagnostics.errors import envelope_for
+    from app.infrastructure.diagnostics.errors import envelope_for
 
     error_id = uuid.uuid4()
     env = envelope_for(err_new(err_codes.SESS_NOT_FOUND))
     _ = error_id
 
-    from app.diagnostics.errors import logger as err_logger
+    from app.infrastructure.diagnostics.errors import logger as err_logger
 
     cap = _capture_target("wenjing.diagnostics.errors")
     try:
@@ -209,7 +209,7 @@ def test_contextvar_ids_propagate_into_logs(caplog):
         args=("world",),
         exc_info=None,
     )
-    from app.diagnostics.context import CorrelationFilter
+    from app.infrastructure.diagnostics.context import CorrelationFilter
 
     f = CorrelationFilter()
     assert f.filter(record) is True

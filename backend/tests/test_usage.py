@@ -18,11 +18,11 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.access import Actor
-from app.admin.service import AdminService
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UsagePurpose
-from app.usage import UsageContext, UsageRecorder, UsageRecordingLLM, estimate_tokens
+from app.domain.access import Actor
+from app.infrastructure.usage import UsageContext, UsageRecorder, UsageRecordingLLM, estimate_tokens
+from app.services.admin import AdminService
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -88,7 +88,7 @@ class _EchoLLM:
 async def _usage_rows(factory, org_id, purpose: str | None = None):
     from sqlalchemy import select
 
-    from app.models.llm_usage import LlmUsage
+    from app.infrastructure.models.llm_usage import LlmUsage
 
     async with factory() as s:
         stmt = select(LlmUsage).where(LlmUsage.org_id == org_id)
@@ -131,7 +131,7 @@ async def test_recording_llm_writes_one_row_per_call(factory) -> None:
 
 async def test_provider_reported_usage_is_preferred(factory) -> None:
     """内层若回报真实 token，计量采信之（而非按文本估算）。"""
-    from app.agents.llm_service import TokenUsage
+    from app.domain.llm import TokenUsage
 
     actor = await _new_actor(factory)
 
@@ -181,10 +181,10 @@ async def test_record_failure_does_not_raise() -> None:
 async def test_stage1_generation_is_metered(factory) -> None:
     """Stage1 生成调用写入一条 purpose=stage1 的用量记录。"""
     actor = await _new_actor(factory)
-    from app.content.pipeline import ContentPipeline
     from app.contracts.material import MaterialInput, MaterialSource
-    from app.generation.stage1 import synthesize_script_package
-    from app.scripts.service import ScriptLibrary
+    from app.domain.content.pipeline import ContentPipeline
+    from app.domain.generation.stage1 import synthesize_script_package
+    from app.services.script_library import ScriptLibrary
 
     text_in = "那年冬天，母亲病了。我离开家，到城里去买药。母亲说：路上小心。"
     analysis = ContentPipeline().analyze(
@@ -227,7 +227,7 @@ async def test_no_key_synth_generation_still_metered(factory) -> None:
     """
     actor = await _new_actor(factory)
     from app.contracts.material import MaterialInput, MaterialSource
-    from app.scripts.service import ScriptLibrary
+    from app.services.script_library import ScriptLibrary
 
     text_in = "那年冬天，母亲病了。我离开家，到城里去买药。母亲说：路上小心。"
     recorder = UsageRecorder(session_factory=factory)
@@ -256,9 +256,9 @@ async def test_agent_and_verify_calls_are_metered(factory) -> None:
 
     from conftest import generate_script_id
 
-    from app.agents.fake_llm import DeterministicAgentLLM
     from app.contracts.commands import CommandKind, PlayerCommand
-    from app.session.application import SessionApplication
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
+    from app.services.session_runtime import SessionApplication
 
     recorder = UsageRecorder(session_factory=factory)
     script_id = await generate_script_id(factory, actor)

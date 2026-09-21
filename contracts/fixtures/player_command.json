@@ -1,8 +1,10 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "command_id": "6f96f8e0-1a2b-4c3d-9e4f-5a6b7c8d9012",
   "session_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
   "kind": "choose_option",
-  "payload": { "option_id": "opt_buy_oranges_reply" },
+  "payload": {
+    "option_id": "opt_buy_oranges_reply"
+  },
   "issued_at": "2026-08-27T08:05:00Z"
 }

@@ -11,8 +11,8 @@ import uuid
 
 import pytest
 
-from app.core.game_runtime import GameRuntime
-from app.errx import Error as WJError
+from app.domain.game.game_runtime import GameRuntime
+from app.infrastructure.errx import Error as WJError
 
 
 def _is_ending_confirm(ix: dict | None) -> bool:
@@ -220,7 +220,7 @@ async def test_engine_module_free_of_web_frameworks():
     """引擎模块源码不 import FastAPI/WebSocket/SQLAlchemy。"""
     import inspect
 
-    from app.core import game_runtime
+    from app.domain.game import game_runtime
 
     src = inspect.getsource(game_runtime)
     for banned in ("fastapi", "sqlalchemy", "websockets", "uvicorn"):

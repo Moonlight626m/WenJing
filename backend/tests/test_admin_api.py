@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
 from app.main import create_app
 
@@ -34,7 +34,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "phone": None,
     "password": "supersecret1",
 }
@@ -131,7 +131,7 @@ def client():
 
     # app 的 DB engine/连接池绑定事件循环：跨 TestClient 模块复用会触发
     # "attached to a different loop"。创建前释放前序遗留，销毁后释放自身。
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()
@@ -176,7 +176,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -187,7 +187,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material.json()["id"],
             "name": name,
             "description": None,
@@ -198,8 +198,8 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     script_id = script.json()["id"]
 
     async def _gen() -> None:
-        from app.access import Actor
-        from app.scripts.service import ScriptLibrary
+        from app.domain.access import Actor
+        from app.services.script_library import ScriptLibrary
 
         eng = _engine()
         factory = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
@@ -219,7 +219,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     if publish:
         resp = client.post(
             f"/api/scripts/{script_id}/publish",
-            json={"schema_version": "1.0.0", "visibility": "org"},
+            json={"schema_version": "2.0.0", "visibility": "org"},
             headers=_csrf(account),
         )
         assert resp.status_code == 200, resp.text
@@ -293,7 +293,7 @@ def test_teacher_cannot_see_others_data(client):
     _act_as(client, student)
     created = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": script_a},
+        json={"schema_version": "2.0.0", "script_id": script_a},
         headers=_csrf(student),
     )
     assert created.status_code == 201, created.text
@@ -360,3 +360,53 @@ def test_admin_usage_aggregation(client):
     # 时间窗之外为空
     future = client.get("/api/admin/usage?since=2999-01-01T00:00:00Z").json()["items"]
     assert future == []
+
+
+# ===== 验收：prompt 覆盖层管理（PromptMgr 组件）=====
+
+
+def test_admin_prompts_list_and_update(client):
+    admin = _register(client, "ppt.admin@wenjing.local", "prompt超管", role="super_admin")
+    teacher = _register(client, "ppt.t@wenjing.local", "prompt教师", role="teacher")
+
+    _act_as(client, teacher)
+    assert client.get("/api/admin/prompts").status_code == 403
+
+    _act_as(client, admin)
+    empty = client.get("/api/admin/prompts").json()
+    assert empty["items"] == []
+
+    # PUT 新建覆盖行（upsert 语义）
+    resp = client.put(
+        "/api/admin/prompts/script_gen/divide_events/v2/system",
+        json={"schema_version": "2.0.0", "body": "你是剧本结构设计师（覆盖版）。"},
+        headers=_csrf(admin),
+    )
+    assert resp.status_code == 200, resp.text
+    row = resp.json()
+    assert row["stage"] == "script_gen" and row["node"] == "divide_events"
+    assert row["body"] == "你是剧本结构设计师（覆盖版）。"
+    assert row["enabled"] is True
+
+    # 再读列表可取到；按 stage 过滤生效
+    items = client.get("/api/admin/prompts").json()["items"]
+    assert len(items) == 1
+    assert client.get("/api/admin/prompts?stage=runtime").json()["items"] == []
+
+    # 更新同一键：不新增行，改 body
+    resp = client.put(
+        "/api/admin/prompts/script_gen/divide_events/v2/system",
+        json={"schema_version": "2.0.0", "body": "你是剧本结构设计师（修订版）。",
+              "description": "修订说明"},
+        headers=_csrf(admin),
+    )
+    assert resp.status_code == 200
+    assert client.get("/api/admin/prompts").json()["items"][0]["body"].endswith("（修订版）。")
+
+    # 禁用覆盖行（下次解析回退 defaults）
+    resp = client.put(
+        "/api/admin/prompts/script_gen/divide_events/v2/system",
+        json={"schema_version": "2.0.0", "enabled": False},
+        headers=_csrf(admin),
+    )
+    assert resp.status_code == 200 and resp.json()["enabled"] is False

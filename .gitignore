@@ -43,3 +43,4 @@ playwright-report/
 # Local compose overrides (machine-specific)
 docker-compose.override.yml
 docker-compose.local.yml
+/etc/

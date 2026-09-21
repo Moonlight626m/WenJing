@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "org_id": "2f9c1a44-6b7d-4e21-9a03-1c5d8e2f4b60",
   "purpose": "stage1",
   "prompt_tokens": 4210,

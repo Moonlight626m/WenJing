@@ -2,7 +2,7 @@ PY := uv run
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install db-up db-down db-reset dev dev-stop dev-status dev-backend dev-frontend test lint build \
+.PHONY: help install db-up db-down db-reset dev dev-stop dev-status dev-backend dev-frontend test lint lint-arch build \
 	build-backend build-frontend up down logs migrate seed demo e2e
 
 help:
@@ -20,6 +20,7 @@ help:
 	@echo "  make dev-frontend   启动 frontend (next dev，前台)"
 	@echo "  make test           运行 backend 测试"
 	@echo "  make lint           backend ruff + frontend eslint"
+	@echo "  make lint-arch      import-linter 分层依赖守卫"
 	@echo "  make build          frontend 生产构建"
 	@echo "  make build-backend  构建 backend 生产镜像"
 	@echo "  make build-frontend 构建 frontend 生产镜像"
@@ -44,13 +45,13 @@ db-reset:
 	docker compose down -v
 	docker compose up -d --wait db
 	cd $(BACKEND) && $(PY) alembic upgrade head
-	cd $(BACKEND) && $(PY) python -m app.auth.seed
+	cd $(BACKEND) && $(PY) python -m app.services.auth_seed
 
 migrate:
 	cd $(BACKEND) && $(PY) alembic upgrade head
 
 seed:
-	cd $(BACKEND) && $(PY) python -m app.auth.seed
+	cd $(BACKEND) && $(PY) python -m app.services.auth_seed
 
 dev:
 	./scripts/dev.sh start
@@ -73,6 +74,9 @@ test:
 lint:
 	cd $(BACKEND) && $(PY) ruff check app tests
 	cd $(FRONTEND) && npm run lint
+
+lint-arch:
+	cd $(BACKEND) && $(PY) lint-imports
 
 build:
 	cd $(FRONTEND) && npm run build

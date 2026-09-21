@@ -75,8 +75,8 @@ make seed        # 写入默认 org「文境演示学校」与 super_admin/教�
 
 > 账号基线为破坏式重建（ADR-0002）：旧匿名数据不再兼容。若本地库是旧 schema，
 > 用 `make db-reset`（删卷 → 起库 → 迁移 → seed，**数据不可恢复**）。
-> seed 账号：`admin@wenjing.local` / `teacher@wenjing.local` / `student@wenjing.local`，
-> 密码默认 `wenjing123`（可用 `WENJING_SEED_PASSWORD` 覆盖）。
+> seed 账号：`admin` / `teacher` / `student`，
+> 密码默认 `123456`（可用 `WENJING_SEED_PASSWORD` 覆盖）。
 
 ## 运行
 
@@ -145,10 +145,10 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 - **seed 凭据**：生产栈首次部署后需手动执行 seed（幂等），写入默认 org
   「文境演示学校」与测试账号：
   ```bash
-  docker compose exec backend uv run python -m app.auth.seed
+  docker compose exec backend uv run python -m app.services.auth_seed
   ```
-  `admin@wenjing.local` / `teacher@wenjing.local` / `student@wenjing.local`，
-  密码默认 `wenjing123`（`WENJING_SEED_PASSWORD` 覆盖）。
+  `admin` / `teacher` / `student`，
+  密码默认 `123456`（`WENJING_SEED_PASSWORD` 覆盖）。
   **生产环境必须改掉默认密码或部署后立即修改**，测试账号仅用于验证。
 - **迁移**：入口脚本默认执行 `alembic upgrade head`（`WENJING_RUN_MIGRATIONS=0` 可关闭）。
 - **数据库**：仅绑定 `127.0.0.1:5432`，不直接暴露公网；生产请设置强密码。

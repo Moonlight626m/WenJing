@@ -3,7 +3,7 @@
   "description": "POST /api/sessions：从可见剧本开一局「剧情世界」。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

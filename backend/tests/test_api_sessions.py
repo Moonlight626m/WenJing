@@ -19,13 +19,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401  # 确保 ORM 元数据注册
-from app.access import Actor
-from app.agents.fake_llm import DeterministicAgentLLM
+import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.contracts.enums import UserRole
+from app.domain.access import Actor
+from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.main import create_app
-from app.scripts.service import ScriptLibrary
-from app.session.application import SessionApplication
+from app.services.script_library import ScriptLibrary
+from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -37,7 +37,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "email": "sessions.teacher@wenjing.local",
     "phone": None,
     "password": "supersecret1",
@@ -170,7 +170,7 @@ def _make_playable(client: TestClient) -> str:
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -182,7 +182,7 @@ def _make_playable(client: TestClient) -> str:
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material.json()["id"],
             "name": "会话测试剧本",
             "description": None,

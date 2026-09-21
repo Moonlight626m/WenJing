@@ -3,7 +3,7 @@
   "description": "服务端 WS 消息封套；seq 用于确认与重连补发。\n\n- `seq` 在会话内单调递增，客户端以 last_confirmed_seq 恢复。\n- `payload` 按 type 判别（见 ClientMessage 侧注释）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

@@ -34,4 +34,37 @@ class UsageAggregateResponse(VersionedContract):
     until: datetime | None = None
 
 
-__all__ = ["UsageAggregateRow", "UsageAggregateResponse"]
+class PromptEntry(VersionedContract):
+    """单条 prompt 覆盖行（PromptMgr 组件；管理界面按 stage 分组）。"""
+
+    stage: str
+    node: str
+    version: str
+    section: str
+    body: str
+    description: str | None = None
+    enabled: bool = True
+    updated_at: datetime | None = None
+
+
+class PromptListResponse(VersionedContract):
+    """prompt 覆盖层列表（可按 stage 过滤）。"""
+
+    items: list[PromptEntry] = Field(default_factory=list)
+
+
+class PromptUpdateRequest(VersionedContract):
+    """prompt 更新载荷：提供 body 即更新文案；enabled=false 关闭该段覆盖。"""
+
+    body: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    enabled: bool | None = None
+
+
+__all__ = [
+    "UsageAggregateRow",
+    "UsageAggregateResponse",
+    "PromptEntry",
+    "PromptListResponse",
+    "PromptUpdateRequest",
+]

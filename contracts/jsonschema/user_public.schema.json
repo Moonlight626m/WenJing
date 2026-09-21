@@ -15,7 +15,7 @@
   "description": "当前用户对外投影（绝不包含 password_hash）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

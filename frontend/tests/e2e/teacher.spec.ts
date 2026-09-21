@@ -3,8 +3,8 @@
  *
  * 覆盖验收：导入 → 生成 → 预览 → 发布全流程、可见性切换与下架、删除草稿、
  * 生成进度可见、非教师不可进入。
- * 依赖后端 seed 账号（teacher@wenjing.local / student@wenjing.local，密码
- * `wenjing123`，可用 WENJING_SEED_PASSWORD 覆盖）。
+ * 依赖后端 seed 账号（teacher / student，密码
+ * `123456`，可用 WENJING_SEED_PASSWORD 覆盖）。
  *
  * 生成走 STAGE1：确定性 fake 模式（未配置 WENJING_LLM_API_KEY）秒级完成；
  * 真实 LLM 模式约 100s，故放宽等待。

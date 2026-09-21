@@ -21,19 +21,19 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.access import Actor
+import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.material import MaterialInput, MaterialSource
-from app.db.event_store import PersistentEventStore
-from app.diagnostics.errors import envelope_for
-from app.errx import Error as WJError
-from app.errx import codes, new
-from app.models.command import CommandRecord
-from app.models.event import GameEventRecord
-from app.models.script import Script as ScriptRecord
-from app.models.snapshot import Snapshot as SnapshotRecord
-from app.session.application import SessionApplication
+from app.domain.access import Actor
+from app.infrastructure.db.event_store import PersistentEventStore
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.errx import codes, new
+from app.infrastructure.models.command import CommandRecord
+from app.infrastructure.models.event import GameEventRecord
+from app.infrastructure.models.script import Script as ScriptRecord
+from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
+from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -104,7 +104,7 @@ async def _generate_with(factory, actor, llm):
     """用指定 LLM 走剧本库生成一个剧本，返回 (library, script_id)。"""
     from conftest import MATERIAL_TEXT
 
-    from app.scripts.service import ScriptLibrary
+    from app.services.script_library import ScriptLibrary
 
     library = ScriptLibrary(session_factory=factory, script_llm=llm)
     material = await library.import_material(
@@ -268,7 +268,7 @@ async def test_incompatible_script_schema_returns_clear_error(factory, actor):
 
 
 async def _session_script_id(factory, sid: uuid.UUID) -> int:
-    from app.models.session import Session as SessionRecord
+    from app.infrastructure.models.session import Session as SessionRecord
 
     async with factory() as s:
         return int((await s.get(SessionRecord, sid)).script_id)
@@ -299,7 +299,7 @@ class _FailingSearch:
 
 
 async def test_search_failure_degrades_to_original_text():
-    from app.rag.service import RagService
+    from app.infrastructure.rag.service import RagService
 
     svc = RagService(search_provider=_FailingSearch())
     assert await svc.research("买药") == []

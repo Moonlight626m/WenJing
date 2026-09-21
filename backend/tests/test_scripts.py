@@ -24,11 +24,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-import app.models  # noqa: F401
-from app.access import Actor
+import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
+from app.contracts.script_library import GenerationResumeRequest
+from app.domain.access import Actor
 from app.main import create_app
-from app.scripts.service import ScriptLibrary
+from app.services.script_library import ScriptLibrary
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -39,7 +40,7 @@ _MATERIAL_TEXT = (
     "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
 )
 
-_REGISTER = {"schema_version": "1.0.0", "phone": None, "password": "supersecret1"}
+_REGISTER = {"schema_version": "2.0.0", "phone": None, "password": "supersecret1"}
 
 
 def _engine():
@@ -99,7 +100,7 @@ def _schema():
 
 @pytest.fixture(scope="module")
 def client(_schema):
-    from app.db import session as db_session
+    from app.infrastructure.db import session as db_session
 
     asyncio.run(db_session.engine.dispose())
     app = create_app()
@@ -158,7 +159,7 @@ def _import_material(client: TestClient) -> int:
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -173,7 +174,7 @@ def _create_script(client: TestClient, material_id: int, name: str = "剧本") -
         client,
         "/api/scripts",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material_id,
             "name": name,
             "description": None,
@@ -213,7 +214,7 @@ def _publish(client: TestClient, script_id: int, visibility: str = "org"):
     return _post(
         client,
         f"/api/scripts/{script_id}/publish",
-        {"schema_version": "1.0.0", "visibility": visibility},
+        {"schema_version": "2.0.0", "visibility": visibility},
     )
 
 
@@ -261,7 +262,7 @@ def _login_owner(client: TestClient, email: str) -> dict:
     resp = client.post(
         "/api/auth/login",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "identifier": email,
             "password": "supersecret1",
         },
@@ -370,7 +371,7 @@ def test_import_non_narrative_rejected(client):
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": "地球绕太阳公转。水由氢和氧组成。光速约为每秒三十万公里。",
@@ -437,7 +438,7 @@ def test_student_cannot_use_creation_endpoints(client):
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -450,7 +451,7 @@ def test_student_cannot_use_creation_endpoints(client):
         client,
         "/api/scripts",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material_id,
             "name": "x",
             "description": None,
@@ -460,3 +461,96 @@ def test_student_cannot_use_creation_endpoints(client):
     assert _post(client, f"/api/scripts/{script_id}/generate").status_code == 403
     assert _publish(client, script_id, "org").status_code == 403
     assert client.get("/api/scripts").status_code == 403
+
+
+def test_generation_materials_gate_resume_flow(client):
+    """#34 首个闸门服务级流程：生成停在 awaiting_review → 教师恢复 → 成功。
+
+    - 指导指令经闸门注入下游（剧本书写 prompt 可感知）；
+    - 恢复后的进度快照保留闸门前的 doubter 打回历史。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from test_workflow import ScriptedWorkflowLLM, make_analysis
+
+    from app.contracts.generation import GenerationStatus as GenerationStatusEnum
+    from app.contracts.material import MaterialInput, MaterialSource
+
+    account = _register(client, "gate-teacher@wenjing.local")
+    me = account["me"]
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            llm = ScriptedWorkflowLLM(make_analysis())
+            library = ScriptLibrary(
+                session_factory=factory,
+                script_llm=llm,
+                workflow_enabled=True,
+                workflow_checkpointer=MemorySaver(),
+            )
+            material = await library.import_material(
+                actor,
+                MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+            )
+            script = await library.create_script(
+                actor, material_id=material.id, name="闸门流程", description=None
+            )
+            await library.start_generation(script.id, actor)
+            await library.await_generation(script.id)
+
+            paused = await library.progress(script.id)
+            assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+            # #34：闸门审阅载荷随暂停落库，教师端经 detail.review 读取
+            review = await library.review(script.id)
+            assert review is not None and review.gate == "materials"
+            assert review.dossier is not None
+
+            directive = "母亲的背影要更突出"
+            # 链式闸门：素材 → 人物+场景 → 终审，逐闸恢复；恢复后停在下一闸
+            next_gate = {"materials": "pre_write", "pre_write": "final"}
+            for gate in ("materials", "pre_write"):
+                await library.resume_generation(
+                    script.id,
+                    actor,
+                    resume=GenerationResumeRequest(
+                        directives=[directive] if gate == "materials" else []
+                    ),
+                )
+                await library.await_generation(script.id)
+                paused = await library.progress(script.id)
+                assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+                review = await library.review(script.id)
+                assert review is not None and review.gate == next_gate[gate]
+                if review.gate == "pre_write":
+                    assert review.division is not None and review.profiles
+                elif review.gate == "final":
+                    assert review.package is not None
+
+            await library.resume_generation(
+                script.id, actor, resume=GenerationResumeRequest(action="approve")
+            )
+            await library.await_generation(script.id)
+
+            final = await library.progress(script.id)
+            assert final and final.status == GenerationStatusEnum.SUCCEEDED
+            # 指令到达剧本书写节点（#34 指导语义）
+            assert any(directive in p for p in llm.writing_prompts)
+            # 恢复后的进度保留闸门前的 doubter 事件（素材考证 pass）
+            assert any(
+                e.node.value == "verify_materials" and e.verdict == "pass"
+                for e in final.doubter_events
+            )
+            # 终态后审阅载荷已清空
+            assert await library.review(script.id) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())

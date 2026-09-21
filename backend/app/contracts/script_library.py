@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field, field_validator
 
 from app.contracts.base import VersionedContract
 from app.contracts.enums import ScriptStatus, ScriptVisibility
 from app.contracts.generation import GenerationProgress
+from app.contracts.review import GateEdits, GateReview
 from app.contracts.script import ScriptPackage
 
 
@@ -49,6 +51,19 @@ class ScriptPublishRequest(VersionedContract):
     visibility: ScriptVisibility = ScriptVisibility.ORG
 
 
+class GenerationResumeRequest(VersionedContract):
+    """教师闸门恢复（#34）：指导指令 + 结构化编辑随恢复注入 workflow。
+
+    - directives：自然语言指导，原样透传下游 agent（教学判断优先）。
+    - edits：教师直接编辑后的中间产物（覆盖对应 state 通道，不重新考证）。
+    - action：仅终审闸门有意义——approve=通过落库；reject=打回剧本书写重做。
+    """
+
+    directives: list[str] = Field(default_factory=list)
+    edits: GateEdits = Field(default_factory=GateEdits)
+    action: Literal["approve", "reject"] = "approve"
+
+
 class ScriptSummary(VersionedContract):
     """剧本列表项/发布结果的轻量投影。"""
 
@@ -65,11 +80,16 @@ class ScriptSummary(VersionedContract):
 
 
 class ScriptDetail(VersionedContract):
-    """剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。"""
+    """剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。
+
+    `review` 仅在 status=awaiting_review 且 attempt 暂停在闸门时非空：
+    教师审阅面板的中间产物快照（#34）。
+    """
 
     script: ScriptSummary
     package: ScriptPackage | None = None
     generation: GenerationProgress | None = None
+    review: GateReview | None = None
 
 
 class ScriptListResponse(VersionedContract):
@@ -82,6 +102,7 @@ __all__ = [
     "MaterialPublic",
     "ScriptCreateRequest",
     "ScriptPublishRequest",
+    "GenerationResumeRequest",
     "ScriptSummary",
     "ScriptDetail",
     "ScriptListResponse",

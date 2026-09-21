@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.llm_service import ChatLLMService
-from app.agents.model_config import (
+from app.infrastructure.config import Settings
+from app.infrastructure.errx import codes, match_code
+from app.infrastructure.llm.chat import ChatLLMService
+from app.infrastructure.llm.factory import (
     KNOWN_PROVIDERS,
     ModelConfig,
     ModelServiceFactory,
 )
-from app.config import Settings
-from app.errx import codes, match_code
 
 
 def test_openai_defaults_and_factory():
@@ -36,6 +36,17 @@ def test_deepseek_default_base_url_and_model():
     cfg = ModelConfig(provider="deepseek", api_key="k")
     assert cfg.base_url == KNOWN_PROVIDERS["deepseek"]["base_url"]
     assert cfg.model == KNOWN_PROVIDERS["deepseek"]["default_model"]
+
+
+def test_opencodego_default_base_url_and_model():
+    cfg = ModelConfig(provider="opencodego", api_key="k")
+    assert cfg.base_url == "https://opencode.ai/zen/go/v1"
+    assert cfg.model == "glm-5.3-flash"
+
+    service = ModelServiceFactory.build(cfg)
+    assert isinstance(service, ChatLLMService)
+    assert service.provider == "opencodego"
+    assert service.model == "glm-5.3-flash"
 
 
 def test_explicit_base_url_overrides_provider_default():
@@ -57,9 +68,29 @@ def test_temperature_and_max_tokens_pass_through():
 
 
 def test_settings_llm_model_config_deepseek():
-    settings = Settings(llm_provider="deepseek", llm_api_key="k", llm_model="")
+    settings = Settings(
+        llm_provider="deepseek", llm_api_key="k", llm_model="", llm_base_url=""
+    )
     cfg = settings.llm_model_config()
     assert cfg.provider == "deepseek"
     assert cfg.api_key == "k"
     assert cfg.base_url == KNOWN_PROVIDERS["deepseek"]["base_url"]
     assert cfg.model == KNOWN_PROVIDERS["deepseek"]["default_model"]
+
+
+def test_opencodego_sends_stable_session_header():
+    """OpenCode Go 要求每会话稳定 x-opencode-session 头 + 自有 UA（官方要求）。"""
+    from app.infrastructure.llm.chat import ChatLLMService
+
+    service = ChatLLMService(
+        model=KNOWN_PROVIDERS["opencodego"]["default_model"], api_key="k", provider="opencodego"
+    )
+    headers = service._provider_headers("sess-1")
+    assert headers is not None
+    assert headers["x-opencode-session"] == "sess-1"
+    assert headers["User-Agent"].startswith("wenjing/")
+    anonymous = service._provider_headers("")
+    assert anonymous["x-opencode-session"]  # 空会话回落稳定标识，不发空头
+
+    openai_like = ChatLLMService(model="m", api_key="k", provider="openai")
+    assert openai_like._provider_headers("sess-1") is None

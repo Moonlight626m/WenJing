@@ -42,7 +42,7 @@ export function ScriptPreview({ scriptPackage }: { scriptPackage: ScriptPackage 
             >
               <div className="flex items-center gap-2">
                 <span className="font-medium">{character.name}</span>
-                {character.is_player_playable && (
+                {character.is_player_playable.value && (
                   <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
                     可扮演
                   </span>
@@ -55,7 +55,7 @@ export function ScriptPreview({ scriptPackage }: { scriptPackage: ScriptPackage 
               )}
               {character.personality_traits.length > 0 && (
                 <p className="mt-1 text-xs text-zinc-400">
-                  性格：{character.personality_traits.join("、")}
+                  性格：{character.personality_traits.map((t) => t.label).join("、")}
                 </p>
               )}
             </li>
