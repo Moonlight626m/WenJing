@@ -103,7 +103,10 @@ _OUTPUT_CONTRACT = """\
     "not_knows": ["该角色不知道的事（字符串数组）"]
   },
   "is_player_playable": {"value": 布尔值, "reason": "判断理由（字符串）"}
-}"""
+}
+
+【JSON 纪律】字符串内部引用原文时，一律使用中文引号「」或''，\
+禁止在字符串内出现未转义的英文双引号；输出必须是可被 json.loads 解析的合法 JSON。"""
 
 
 def build_user_message(

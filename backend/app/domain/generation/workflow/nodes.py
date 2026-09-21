@@ -126,17 +126,17 @@ class WorkflowNodes:
         if self._progress_hook is not None:
             await self._progress_hook(node, detail)
 
-    async def _chat(self, prompt: str, state: WorkflowState, purpose: UsagePurpose) -> str:
+    async def _chat(self, prompt: str, session_id: str, purpose: UsagePurpose) -> str:
         return await self._llm.chat(
             [{"role": "user", "content": prompt}],
-            session_id=state.get("session_id", ""),
+            session_id=session_id,
             purpose=purpose,
         )
 
     async def _chat_parsed(
         self,
-        state: WorkflowState,
         prompt: str,
+        session_id: str,
         purpose: UsagePurpose,
         *,
         parse: Callable[[str], Any],
@@ -144,10 +144,11 @@ class WorkflowNodes:
     ) -> Any:
         """结构化输出调用：解析失败带纠正提示重试一次。
 
-        真实 LLM 偶发把 JSON 写坏（顶层提前闭合 / 兄弟片段拼接），一次
-        重试能兜住绝大多数；两次仍失败才判 LLM_OUTPUT_PARSE_FAILED。
+        真实 LLM 偶发把 JSON 写坏（顶层提前闭合 / 兄弟片段拼接 / 字符串内
+        未转义的英文双引号），一次重试能兜住绝大多数；两次仍失败才判
+        LLM_OUTPUT_PARSE_FAILED。
         """
-        raw = await self._chat(prompt, state, purpose)
+        raw = await self._chat(prompt, session_id, purpose)
         try:
             return parse(raw)
         except Exception as first:
@@ -157,8 +158,10 @@ class WorkflowNodes:
                 + "\n\n【重试：上次输出解析失败】"
                 + f"原因：{reason}。"
                 + "请重新输出：只输出一个完整合法的 JSON 对象，"
-                + "顶层花括号只有一对且在结尾闭合，JSON 之外不要有任何文字。",
-                state,
+                + "顶层花括号只有一对且在结尾闭合，JSON 之外不要有任何文字；"
+                + "字符串内部如需引用，一律改用中文引号「」或''，"
+                + "禁止出现未转义的英文双引号。",
+                session_id,
                 purpose,
             )
             try:
@@ -206,8 +209,8 @@ class WorkflowNodes:
             bundle=await self._bundle(collect_materials),
         )
         dossier = await self._chat_parsed(
-            state,
             prompt,
+            state.get("session_id", ""),
             UsagePurpose.COLLECT_MATERIALS,
             parse=lambda raw: MaterialDossier.model_validate_json(extract_json(raw)),
             target="MaterialDossier",
@@ -237,7 +240,7 @@ class WorkflowNodes:
             source_digest=self._analysis_digest(state["analysis"]),
             bundle=await self._bundle(doubter),
         )
-        raw = await self._chat(prompt, state, UsagePurpose.DOUBTER)
+        raw = await self._chat(prompt, state.get("session_id", ""), UsagePurpose.DOUBTER)
         try:
             verdict = _parse_verdict(raw)
         except ValueError as exc:
@@ -435,8 +438,8 @@ class WorkflowNodes:
             bundle=await self._bundle(divide_events),
         )
         division = await self._chat_parsed(
-            state,
             prompt,
+            state.get("session_id", ""),
             UsagePurpose.DIVIDE_EVENTS,
             parse=lambda raw: EventDivisionDraft.model_validate_json(extract_json(raw)),
             target="EventDivisionDraft",
@@ -534,20 +537,19 @@ class WorkflowNodes:
             role_hint=payload.get("role_hint", ""),
             bundle=await self._bundle(character_design),
         )
-        raw = await self._llm.chat(
-            [{"role": "user", "content": prompt}],
-            session_id=payload.get("session_id", ""),
-            purpose=UsagePurpose.CHARACTER_DESIGN,
-        )
-        try:
+
+        def _parse(raw: str) -> CharacterProfile:
             data = json.loads(extract_json(raw))
             data["name"] = payload["name"]
-            profile = CharacterProfile.model_validate(data)
-        except Exception as exc:
-            raise new(
-                codes.LLM_OUTPUT_PARSE_FAILED,
-                extra={"target": "CharacterProfile", "reason": str(exc)},
-            ) from exc
+            return CharacterProfile.model_validate(data)
+
+        profile = await self._chat_parsed(
+            prompt,
+            payload.get("session_id", ""),
+            UsagePurpose.CHARACTER_DESIGN,
+            parse=_parse,
+            target="CharacterProfile",
+        )
         return {"character_profiles": [profile]}
 
     async def merge_characters(self, state: WorkflowState) -> dict[str, Any]:
@@ -652,7 +654,7 @@ class WorkflowNodes:
             source_digest=self._source_digest(state),
             bundle=await self._bundle(doubter),
         )
-        raw = await self._chat(prompt, state, UsagePurpose.DOUBTER)
+        raw = await self._chat(prompt, state.get("session_id", ""), UsagePurpose.DOUBTER)
         try:
             verdict = _parse_verdict(raw)
         except ValueError as exc:

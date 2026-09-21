@@ -72,12 +72,19 @@ def _logged(node_name: str) -> Callable[[Callable], Callable]:
                 )
                 raise
             except BaseException as exc:  # noqa: BLE001 - 记录后原样重抛
+                info: dict[str, Any] = {"error_type": type(exc).__name__}
+                code = getattr(exc, "code", None)
+                if code is not None:
+                    info["error_code"] = code
+                # errx.Error 的 str() 含调用栈：取 msg 属性避免日志爆炸
+                msg = getattr(exc, "msg", None)
+                info["reason"] = str(msg if msg is not None else exc)[:300]
                 _L.error(
                     f"[script-gen][{node_name}] failed",
                     extra={
                         "session_id": sid,
                         "duration_ms": int((time.monotonic() - started) * 1000),
-                        "wj_extra": {"error_type": type(exc).__name__},
+                        "wj_extra": info,
                     },
                 )
                 raise

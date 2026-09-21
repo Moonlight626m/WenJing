@@ -11,12 +11,21 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
 from app.infrastructure.diagnostics.logging import get_logger, redact_credentials
 
 logger = get_logger("api.access")
+
+# 前端高频轮询端点：日志降级为 debug（成功时），且不落 req/resp body。
+# 命中规则：method 为 GET 且 path 匹配正则；失败（>=400）仍按常规分级记录。
+_POLLING_PATH_RES = re.compile(r"^/api/scripts/[^/]+$")
+
+
+def _is_polling(method: str, path: str) -> bool:
+    return method == "GET" and _POLLING_PATH_RES.match(path) is not None
 
 
 def _safe_body(chunks: list[bytes]) -> str | None:
@@ -99,7 +108,8 @@ class AccessLogMiddleware:
         }
         if query:
             extra["query"] = query
-        if self._log_body:
+        polling = _is_polling(method, path)
+        if self._log_body and not polling:
             # 注意：响应体整段缓冲（当前端点均为一次性 JSON，无流式端点）
             request_body = _safe_body(req_chunks)
             response_body = _safe_body(resp_chunks)
@@ -110,5 +120,8 @@ class AccessLogMiddleware:
 
         if status >= 400:
             logger.error("api_request_failed", extra={"wj_extra": extra})
+        elif polling:
+            # 轮询期间每秒一次的成功请求：降级 debug，避免刷屏；需排查时开 debug 级别看。
+            logger.debug("api_request_poll", extra={"wj_extra": extra})
         else:
             logger.info("api_request", extra={"wj_extra": extra})
