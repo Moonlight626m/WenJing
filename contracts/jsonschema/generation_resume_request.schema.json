@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "教师闸门恢复（#34）：指导指令随恢复注入下游节点（原样透传）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "directives": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Directives",
+      "type": "array"
+    }
+  },
+  "title": "GenerationResumeRequest",
+  "type": "object"
+}

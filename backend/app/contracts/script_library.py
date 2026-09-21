@@ -49,6 +49,12 @@ class ScriptPublishRequest(VersionedContract):
     visibility: ScriptVisibility = ScriptVisibility.ORG
 
 
+class GenerationResumeRequest(VersionedContract):
+    """教师闸门恢复（#34）：指导指令随恢复注入下游节点（原样透传）。"""
+
+    directives: list[str] = Field(default_factory=list)
+
+
 class ScriptSummary(VersionedContract):
     """剧本列表项/发布结果的轻量投影。"""
 
@@ -82,6 +88,7 @@ __all__ = [
     "MaterialPublic",
     "ScriptCreateRequest",
     "ScriptPublishRequest",
+    "GenerationResumeRequest",
     "ScriptSummary",
     "ScriptDetail",
     "ScriptListResponse",

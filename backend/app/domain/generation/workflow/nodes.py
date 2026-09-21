@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langgraph.types import Send
+from langgraph.types import Send, interrupt
 
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
@@ -40,6 +40,9 @@ MAX_MAIN_CHARACTERS = 4  # 复现层主要人物数（骨架上限；#32 深化�
 
 # 节点内子进度回调：(workflow 节点键, detail 文本)；由 runner 注入，转发给进度 sink
 ProgressHook = Callable[[str, str], Awaitable[None]]
+
+# 教师闸门节点名（#34 首个闸门：素材收集考证通过后暂停，教师审阅后恢复）
+MATERIALS_GATE_NODE = "materials_gate"
 
 
 class VerdictResult:
@@ -71,10 +74,17 @@ class WorkflowNodes:
         llm: LLMService,
         *,
         model_name: str = "",
+        materials_gate: bool = False,
     ) -> None:
         self._llm = llm
         self._model_name = model_name
+        self._materials_gate = materials_gate
         self._progress_hook: ProgressHook | None = None
+
+    @property
+    def gate_enabled(self) -> bool:
+        """是否启用素材闸门（graph 装配按此决定拓扑）。"""
+        return self._materials_gate
 
     def set_progress_hook(self, hook: ProgressHook | None) -> None:
         """注入节点内子进度回调（runner 在建图后调用）。"""
@@ -133,6 +143,13 @@ class WorkflowNodes:
                 codes.LLM_OUTPUT_PARSE_FAILED,
                 extra={"target": "MaterialDossier", "reason": str(exc)},
             ) from exc
+        evidence = state.get("web_evidence") or []
+        logger.info(
+            "[script-gen][collect_materials] 素材收集完成 evidence=%d 人物笔记=%d 教学要点=%d",
+            len(evidence),
+            len(dossier.character_notes),
+            len(dossier.teaching_analysis),
+        )
         return {"dossier": dossier, "doubter_feedback": None}
 
     async def verify_materials(self, state: WorkflowState) -> dict[str, Any]:
@@ -170,10 +187,30 @@ class WorkflowNodes:
     def route_after_verify(self, state: WorkflowState) -> str:
         verdict = state.get("doubter_verdict", "pass")
         if verdict == "pass":
-            return "divide_events"
+            return MATERIALS_GATE_NODE if self._materials_gate else "divide_events"
         if state.get("doubter_round", 0) <= MAX_DOUBTER_ROUNDS:
             return "collect_materials"
         return "fail"
+
+    # ===== 教师闸门（#34 首个闸门：素材收集后）=====
+
+    async def materials_gate(self, state: WorkflowState) -> dict[str, Any]:
+        """素材闸门：暂停等教师审阅，恢复时把指导指令并入下游输入。
+
+        - 仅在 materials_gate=True 时被装配进图（gate_enabled 控制拓扑）。
+        - 首次执行在此 `interrupt()` 暂停；教师恢复时 LangGraph 以
+          `Command(resume=directives)` 重放本节点，interrupt 返回恢复载荷。
+        - 指令语义（#34 裁决）：自然语言指导原样传给下游 agent（教学判断优先）。
+        """
+        directives = interrupt(MATERIALS_GATE_NODE)
+        directives = list(directives) if isinstance(directives, list) else []
+        merged = list(state.get("directives") or []) + [
+            str(d) for d in directives if str(d).strip()
+        ]
+        logger.info(
+            "[script-gen][materials_gate] 教师恢复 directives=%d", len(directives)
+        )
+        return {"directives": merged}
 
     # ===== 事件/情景划分 =====
 
@@ -195,6 +232,17 @@ class WorkflowNodes:
                 extra={"target": "EventDivisionDraft", "reason": str(exc)},
             ) from exc
         self._validate_division(analysis, division)
+        scenes = len(division.scenes)
+        beats = sum(len(s.beats) for s in division.scenes)
+        key_beats = sum(
+            1 for s in division.scenes for b in s.beats if b.is_key_event
+        )
+        logger.info(
+            "[script-gen][divide_events] 划分完毕 scenes=%d beats=%d key_beats=%d",
+            scenes,
+            beats,
+            key_beats,
+        )
         return {"division": division}
 
     @staticmethod
@@ -321,6 +369,12 @@ class WorkflowNodes:
         audit_feedback = state.get("audit_feedback")
         if audit_feedback:
             extra_context.append(f"【doubter 总审打回意见（必须逐条修正）】\n{audit_feedback}")
+        directives = state.get("directives") or []
+        if directives:
+            # #34 指导语义：教师指令原样作为额外约束传给下游生成 agent
+            extra_context.append(
+                "【教师指导指令（必须遵守）】\n" + "\n".join(f"- {d}" for d in directives)
+            )
         outcome = await Stage1Generator(self._llm, model=self._model_name).generate(
             analysis,
             web_evidence=state.get("web_evidence") or [],
@@ -329,8 +383,15 @@ class WorkflowNodes:
             purpose=UsagePurpose.SCRIPT_WRITING,
             on_step=lambda text: self._report("write_script", text),
         )
+        package = outcome.script_package
+        logger.info(
+            "[script-gen][write_script] 剧本完成 scenes=%d beats=%d characters=%d",
+            len(package.scenes),
+            sum(len(s.beats) for s in package.scenes),
+            len(package.characters),
+        )
         return {
-            "package": outcome.script_package,
+            "package": package,
             "write_telemetry": {
                 "model": outcome.telemetry.model,
                 "prompt_version": outcome.telemetry.prompt_version,
@@ -390,4 +451,4 @@ class WorkflowNodes:
         raise new(codes.CNT_GENERATION_FAILED, extra={"reason": reason})
 
 
-__all__ = ["WorkflowNodes", "MAX_DOUBTER_ROUNDS", "MAX_WRITE_RETRIES"]
+__all__ = ["MATERIALS_GATE_NODE", "WorkflowNodes", "MAX_DOUBTER_ROUNDS", "MAX_WRITE_RETRIES"]

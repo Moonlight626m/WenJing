@@ -30,6 +30,7 @@ from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
 from app.contracts.runtime import GameSnapshot, RuntimeState, RuntimeUpdate
 from app.contracts.script_library import (
+    GenerationResumeRequest,
     MaterialPublic,
     ScriptCreateRequest,
     ScriptDetail,
@@ -63,6 +64,7 @@ EXPORTS: dict[str, type] = {
     "generation_progress": GenerationProgress,
     "script_create_request": ScriptCreateRequest,
     "script_publish_request": ScriptPublishRequest,
+    "generation_resume_request": GenerationResumeRequest,
     "script_summary": ScriptSummary,
     "script_detail": ScriptDetail,
     "script_list_response": ScriptListResponse,

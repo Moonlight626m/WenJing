@@ -179,6 +179,11 @@ export interface ScriptPublishRequest {
   visibility: ScriptVisibility;
 }
 
+export interface GenerationResumeRequest {
+  schema_version: string;
+  directives: string[];
+}
+
 export interface ScriptSummary {
   schema_version: string;
   id: number;

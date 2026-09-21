@@ -95,6 +95,8 @@ class ScriptedWorkflowLLM:
         self._verdicts = list(doubter_verdicts)
         self._division_json = division_json or _DIVISION_JSON
         self._package_json = synthesize_script_package(analysis).model_dump_json()
+        self.divide_prompts: list[str] = []
+        self.writing_prompts: list[str] = []
 
     async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
         name = getattr(purpose, "value", purpose)
@@ -106,19 +108,23 @@ class ScriptedWorkflowLLM:
             issues = [] if verdict == "pass" else ["时代背景结论缺少原文依据"]
             return json.dumps({"verdict": verdict, "issues": issues}, ensure_ascii=False)
         if name == UsagePurpose.DIVIDE_EVENTS.value:
+            self.divide_prompts.append(messages[0]["content"])
             return self._division_json
         if name == UsagePurpose.CHARACTER_DESIGN.value:
             return _PROFILE_JSON
         if name in (UsagePurpose.STAGE1.value, UsagePurpose.SCRIPT_WRITING.value):
+            self.writing_prompts.append(messages[0]["content"])
             return self._package_json
         raise AssertionError(f"unexpected purpose: {name}")
 
 
-def _make_runner(analysis, llm, *, sink=None):
+def _make_runner(analysis, llm, *, sink=None, gate=False, checkpointer=None):
     from langgraph.checkpoint.memory import MemorySaver
 
-    nodes = WorkflowNodes(llm)
-    runner = WorkflowRunner(nodes, checkpointer=MemorySaver(), progress_sink=sink)
+    nodes = WorkflowNodes(llm, materials_gate=gate)
+    runner = WorkflowRunner(
+        nodes, checkpointer=checkpointer or MemorySaver(), progress_sink=sink
+    )
     state = initial_state(
         script_id=1,
         session_id="test-workflow",
@@ -126,6 +132,64 @@ def _make_runner(analysis, llm, *, sink=None):
         web_evidence=[],
     )
     return runner, state
+
+
+async def test_materials_gate_pauses_before_divide() -> None:
+    """教师闸门（#34）：素材考证通过后暂停在 awaiting_review，划分未开始。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    runner, state = _make_runner(analysis, llm, gate=True)
+    final = await runner.run(state, thread_id="t-gate")
+
+    assert final.get("package") is None
+    assert runner.snapshot().status == "awaiting_review"
+    assert UsagePurpose.DIVIDE_EVENTS.value not in llm.calls
+    statuses = {n.node.value: n.status for n in runner.snapshot().nodes}
+    assert statuses["collect_materials"] == "succeeded"
+    assert statuses["verify_materials"] == "succeeded"
+    assert statuses["divide_events"] == "pending"
+
+
+async def test_materials_gate_resume_carries_directives() -> None:
+    """教师恢复：指令经闸门并入 state，下游划分 prompt 可感知（#34 指导语义）。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner, state = _make_runner(analysis, llm, gate=True, checkpointer=checkpointer)
+    await runner.run(state, thread_id="t-resume")
+
+    directives = ["母亲的背影要更突出"]
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, materials_gate=True), checkpointer=checkpointer
+    )
+    final = await resumed.resume(thread_id="t-resume", directives=directives)
+
+    assert final["package"] is not None
+    assert final["directives"] == directives
+    assert any(directives[0] in p for p in llm.divide_prompts)
+    # #34 指导语义：指令同样到达剧本书写节点（下游 agent 可感知）
+    assert any(directives[0] in p for p in llm.writing_prompts)
+    assert resumed.snapshot().status == "succeeded"
+
+
+async def test_materials_gate_resume_without_directives_proceeds() -> None:
+    """教师不带指令直接恢复：闸门直通，正常产出剧本。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner, state = _make_runner(analysis, llm, gate=True, checkpointer=checkpointer)
+    await runner.run(state, thread_id="t-resume-empty")
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, materials_gate=True), checkpointer=checkpointer
+    )
+    final = await resumed.resume(thread_id="t-resume-empty", directives=[])
+    assert final["package"] is not None
+    assert resumed.snapshot().status == "succeeded"
 
 
 async def test_workflow_end_to_end_with_scripted_llm() -> None:

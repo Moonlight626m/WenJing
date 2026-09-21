@@ -16,6 +16,7 @@ from app.contracts.enums import UserRole
 from app.contracts.material import MaterialInput
 from app.contracts.script import ScriptPackage
 from app.contracts.script_library import (
+    GenerationResumeRequest,
     MaterialPublic,
     ScriptCreateRequest,
     ScriptDetail,
@@ -177,6 +178,24 @@ async def generate_script(
 ) -> ScriptDetail:
     """启动异步生成（进程内任务 + 内存进度）；前端轮询详情。"""
     row = await library.start_generation(script_id, principal.actor)
+    return await _detail(library, row, principal.actor)
+
+
+@router.post(
+    "/scripts/{script_id}/generation/resume",
+    status_code=202,
+    response_model=ScriptDetail,
+)
+async def resume_script_generation(
+    script_id: int,
+    body: GenerationResumeRequest,
+    principal: _Teacher,
+    library: Annotated[ScriptLibrary, Depends(get_script_library)],
+) -> ScriptDetail:
+    """教师闸门恢复（#34）：审阅通过后从断点继续，指导指令注入下游节点。"""
+    row = await library.resume_generation(
+        script_id, principal.actor, directives=body.directives
+    )
     return await _detail(library, row, principal.actor)
 
 

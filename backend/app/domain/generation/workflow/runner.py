@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.types import Command
 
 from app.contracts.generation import (
     DoubterEvent,
@@ -25,7 +26,7 @@ from app.contracts.generation import (
     NodeProgress,
 )
 from app.domain.generation.workflow.graph import build_workflow
-from app.domain.generation.workflow.nodes import WorkflowNodes
+from app.domain.generation.workflow.nodes import MATERIALS_GATE_NODE, WorkflowNodes
 from app.domain.generation.workflow.state import WorkflowState
 
 ProgressSink = Callable[[GenerationProgress], Awaitable[None]]
@@ -34,6 +35,8 @@ ProgressSink = Callable[[GenerationProgress], Awaitable[None]]
 _NODE_MAP: dict[str, GenerationNode] = {
     "collect_materials": GenerationNode.COLLECT_MATERIALS,
     "verify_materials": GenerationNode.VERIFY_MATERIALS,
+    # 闸门节点的恢复 delta（directives）归入素材考证节点（进度语义）
+    MATERIALS_GATE_NODE: GenerationNode.VERIFY_MATERIALS,
     "divide_events": GenerationNode.DIVIDE_EVENTS,
     "design_characters": GenerationNode.DESIGN_CHARACTERS,
     "design_one_character": GenerationNode.DESIGN_CHARACTERS,
@@ -57,7 +60,8 @@ class WorkflowRunner:
 
     进度状态机：初始除 collect_materials 外全部 pending；线性节点完成时
     置 succeeded 并把下一节点置 running；doubter reject 记 DoubterEvent
-    并把上游节点置 rejected（重跑时再转 running→succeeded）。
+    并把上游节点置 rejected（重跑时再转 running→succeeded）；教师闸门
+    （materials_gate）触发时整体置 awaiting_review（#34）。
     """
 
     def __init__(
@@ -66,13 +70,15 @@ class WorkflowRunner:
         *,
         checkpointer: BaseCheckpointSaver | None = None,
         progress_sink: ProgressSink | None = None,
+        doubter_events: list[DoubterEvent] | None = None,
     ) -> None:
         self._graph = build_workflow(nodes, checkpointer=checkpointer)
         self._sink = progress_sink
         self._nodes: dict[GenerationNode, NodeProgress] = {}
-        self._doubter_events: list[DoubterEvent] = []
+        self._doubter_events: list[DoubterEvent] = list(doubter_events or [])
         self._status = GenerationStatus.RUNNING
         self._dirty = False
+        self._interrupted = False
         self._character_detail = ""
         nodes.set_progress_hook(self._on_progress)
 
@@ -188,16 +194,40 @@ class WorkflowRunner:
         self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.RUNNING)
         if self._sink is not None:
             await self._sink(self.snapshot())
+        return await self._consume(state, thread_id)
 
+    async def resume(self, *, thread_id: str, directives: list[str]) -> dict[str, Any]:
+        """教师闸门恢复（#34）：从 checkpointer 断点继续，指令并入下游输入。"""
+        # 恢复时进度从闸门前状态接续：素材/考证已完成，划分即将开始
+        self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.SUCCEEDED)
+        self._set(GenerationNode.VERIFY_MATERIALS, GenerationNodeStatus.SUCCEEDED)
+        self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.RUNNING)
+        if self._sink is not None:
+            await self._sink(self.snapshot())
+        return await self._consume(Command(resume=directives), thread_id)
+
+    async def _consume(self, graph_input: Any, thread_id: str) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
         final: dict[str, Any] = {}
         async for part in self._graph.astream(
-            state, config, stream_mode="updates", version="v2"
+            graph_input, config, stream_mode="updates", version="v2"
         ):
             data = part.get("data") if isinstance(part, dict) else None
             if not data:
                 continue
             for node_name, delta in data.items():
+                if node_name == "__interrupt__":
+                    # 教师闸门触发：图停在闸门节点，本次流结束
+                    self._interrupted = True
+                    self._status = GenerationStatus.AWAITING_REVIEW
+                    self._set(
+                        GenerationNode.DIVIDE_EVENTS,
+                        GenerationNodeStatus.PENDING,
+                        detail="等待教师审阅",
+                    )
+                    if self._sink is not None:
+                        await self._sink(self.snapshot())
+                    continue
                 if not isinstance(delta, dict):
                     continue
                 final.update(delta)
@@ -205,10 +235,13 @@ class WorkflowRunner:
                 if self._dirty and self._sink is not None:
                     self._dirty = False
                     await self._sink(self.snapshot())
-        self._status = (
-            GenerationStatus.SUCCEEDED if final.get("package") is not None
-            else GenerationStatus.FAILED
-        )
+        if self._interrupted:
+            self._status = GenerationStatus.AWAITING_REVIEW
+        else:
+            self._status = (
+                GenerationStatus.SUCCEEDED if final.get("package") is not None
+                else GenerationStatus.FAILED
+            )
         if self._sink is not None:
             await self._sink(self.snapshot())
         return final

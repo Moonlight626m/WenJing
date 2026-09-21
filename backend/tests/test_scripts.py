@@ -460,3 +460,68 @@ def test_student_cannot_use_creation_endpoints(client):
     assert _post(client, f"/api/scripts/{script_id}/generate").status_code == 403
     assert _publish(client, script_id, "org").status_code == 403
     assert client.get("/api/scripts").status_code == 403
+
+
+def test_generation_materials_gate_resume_flow(client):
+    """#34 首个闸门服务级流程：生成停在 awaiting_review → 教师恢复 → 成功。
+
+    - 指导指令经闸门注入下游（剧本书写 prompt 可感知）；
+    - 恢复后的进度快照保留闸门前的 doubter 打回历史。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from test_workflow import ScriptedWorkflowLLM, make_analysis
+
+    from app.contracts.generation import GenerationStatus as GenerationStatusEnum
+    from app.contracts.material import MaterialInput, MaterialSource
+
+    account = _register(client, "gate-teacher@wenjing.local")
+    me = account["me"]
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            llm = ScriptedWorkflowLLM(make_analysis())
+            library = ScriptLibrary(
+                session_factory=factory,
+                script_llm=llm,
+                workflow_enabled=True,
+                workflow_checkpointer=MemorySaver(),
+            )
+            material = await library.import_material(
+                actor,
+                MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+            )
+            script = await library.create_script(
+                actor, material_id=material.id, name="闸门流程", description=None
+            )
+            await library.start_generation(script.id, actor)
+            await library.await_generation(script.id)
+
+            paused = await library.progress(script.id)
+            assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+
+            directive = "母亲的背影要更突出"
+            await library.resume_generation(script.id, actor, directives=[directive])
+            await library.await_generation(script.id)
+
+            final = await library.progress(script.id)
+            assert final and final.status == GenerationStatusEnum.SUCCEEDED
+            # 指令到达剧本书写节点（#34 指导语义）
+            assert any(directive in p for p in llm.writing_prompts)
+            # 恢复后的进度保留闸门前的 doubter 事件（素材考证 pass）
+            assert any(
+                e.node.value == "verify_materials" and e.verdict == "pass"
+                for e in final.doubter_events
+            )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())

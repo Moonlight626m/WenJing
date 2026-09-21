@@ -21,6 +21,7 @@ from sqlalchemy import or_, select
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import ScriptStatus, ScriptVisibility, UsagePurpose
 from app.contracts.generation import (
+    DoubterEvent,
     GenerationNode,
     GenerationNodeStatus,
     GenerationProgress,
@@ -369,18 +370,10 @@ class ScriptLibrary:
     ) -> None:
         """LangGraph workflow：节点进度逐事件落库，终态写 scripts.script_data。"""
         web, _research_state = await self._research(analysis)
-        nodes = WorkflowNodes(
-            self._stage1_llm(script),
-            model_name=self._model_name,
-        )
-
-        async def sink(snapshot: GenerationProgress) -> None:
-            await self._save_progress(attempt_id, progress=snapshot)
-
         runner = WorkflowRunner(
-            nodes,
+            self._build_nodes(script),
             checkpointer=self._workflow_checkpointer,
-            progress_sink=sink,
+            progress_sink=self._attempt_sink(attempt_id),
         )
         final = await runner.run(
             initial_state(
@@ -391,11 +384,118 @@ class ScriptLibrary:
             ),
             thread_id=thread_id,
         )
+        await self._finalize_workflow(script, final, runner)
+
+    def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
+        """workflow 节点集合；有 checkpointer 才启用教师闸门（interrupt 依赖断点）。"""
+        return WorkflowNodes(
+            self._stage1_llm(script),
+            model_name=self._model_name,
+            materials_gate=self._workflow_checkpointer is not None,
+        )
+
+    def _attempt_sink(self, attempt_id: int):
+        async def sink(snapshot: GenerationProgress) -> None:
+            await self._save_progress(attempt_id, progress=snapshot)
+
+        return sink
+
+    async def _finalize_workflow(
+        self, script: ScriptRecord, final: dict, runner: WorkflowRunner
+    ) -> None:
+        """workflow 终态处理：闸门暂停只记录，完成才写剧本与 telemetry。"""
+        if runner.snapshot().status == GenerationStatus.AWAITING_REVIEW:
+            # 教师闸门暂停（#34）：终态待恢复后落库，不视为完成/失败
+            logger.info("script_generation_awaiting_review script_id=%s", script.id)
+            return
         package = final.get("package")
         telemetry = dict(final.get("write_telemetry") or {})
         telemetry["doubter_rounds"] = len(runner.snapshot().doubter_events)
         telemetry["prompt_versions"] = _prompt_versions()
         await self._persist_package(script.id, package, telemetry)
+
+    async def resume_generation(
+        self, script_id: int, actor: Actor, *, directives: list[str]
+    ) -> ScriptRecord:
+        """教师闸门恢复（#34）：审阅通过后从 checkpointer 断点继续生成。"""
+        script = await self._load_owned(script_id, actor)
+        if not (self._workflow_enabled and self._script_llm is not None):
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "workflow disabled"},
+            )
+        if self._is_running(script_id):
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "generation running"},
+            )
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None or row.status != GenerationStatus.AWAITING_REVIEW.value:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "status": getattr(row, "status", None)},
+            )
+        await self._save_progress(row.id, status=GenerationStatus.RUNNING.value)
+        previous = (
+            GenerationProgress.model_validate(row.progress)
+            if row.progress is not None
+            else None
+        )
+        task = asyncio.create_task(
+            self._resume_attempt(
+                script,
+                attempt_id=row.id,
+                thread_id=row.thread_id,
+                directives=directives,
+                doubter_events=previous.doubter_events if previous else [],
+            )
+        )
+        self._tasks[script.id] = task
+        task.add_done_callback(
+            lambda t, sid=script.id, aid=row.id: self._on_task_done(sid, t, aid)
+        )
+        return script
+
+    async def _resume_attempt(
+        self,
+        script: ScriptRecord,
+        *,
+        attempt_id: int,
+        thread_id: str,
+        directives: list[str],
+        doubter_events: list[DoubterEvent],
+    ) -> None:
+        """闸门恢复执行：断点续跑，终态与首次生成同一落库面。"""
+        try:
+            runner = WorkflowRunner(
+                self._build_nodes(script),
+                checkpointer=self._workflow_checkpointer,
+                progress_sink=self._attempt_sink(attempt_id),
+                doubter_events=doubter_events,
+            )
+            final = await runner.resume(
+                thread_id=thread_id, directives=directives
+            )
+            await self._finalize_workflow(script, final, runner)
+        except Exception as exc:
+            logger.warning(
+                "script_generation_failed script_id=%s reason=%s",
+                script.id,
+                getattr(exc, "code", exc),
+            )
+            await self._save_progress(
+                attempt_id,
+                status=GenerationStatus.FAILED.value,
+                error=str(getattr(exc, "code", exc)),
+            )
 
     async def _run_legacy_stage1(
         self, script: ScriptRecord, analysis: TextAnalysis, *, attempt_id: int
@@ -495,6 +595,11 @@ class ScriptLibrary:
             return [], "degraded"
         query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
         web = await self._rag.research(query or analysis.genre.genre.value)
+        logger.info(
+            "[script-gen][collect_materials] research query=%r evidence=%d",
+            query,
+            len(web),
+        )
         return web, ("succeeded" if web else "degraded")
 
     # ===== 发布 / 下架 / 删除 =====

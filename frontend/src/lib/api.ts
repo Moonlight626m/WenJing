@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import type {
   AuthSessionInfo,
   ErrorEnvelope,
+  GenerationResumeRequest,
   LoginRequest,
   MaterialInput,
   MaterialPublic,
@@ -205,6 +206,22 @@ export function startScriptGeneration(
   scriptId: number
 ): Promise<ScriptDetail> {
   return request(`/api/scripts/${scriptId}/generate`, { method: "POST" });
+}
+
+/** 教师闸门恢复（#34）：审阅后从断点继续，指导指令注入下游节点。 */
+export function resumeScriptGeneration(
+  scriptId: number,
+  directives: string[]
+): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}/generation/resume`, {
+    method: "POST",
+    body: JSON.stringify({
+      schema_version: "1.0.0",
+      directives,
+    } satisfies Omit<GenerationResumeRequest, "schema_version"> & {
+      schema_version: string;
+    }),
+  });
 }
 
 export function regenerateScript(scriptId: number): Promise<ScriptDetail> {
