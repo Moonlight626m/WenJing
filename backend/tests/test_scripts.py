@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
+from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor
 from app.main import create_app
 from app.services.script_library import ScriptLibrary
@@ -507,9 +508,35 @@ def test_generation_materials_gate_resume_flow(client):
 
             paused = await library.progress(script.id)
             assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+            # #34：闸门审阅载荷随暂停落库，教师端经 detail.review 读取
+            review = await library.review(script.id)
+            assert review is not None and review.gate == "materials"
+            assert review.dossier is not None
 
             directive = "母亲的背影要更突出"
-            await library.resume_generation(script.id, actor, directives=[directive])
+            # 链式闸门：素材 → 人物+场景 → 终审，逐闸恢复；恢复后停在下一闸
+            next_gate = {"materials": "pre_write", "pre_write": "final"}
+            for gate in ("materials", "pre_write"):
+                await library.resume_generation(
+                    script.id,
+                    actor,
+                    resume=GenerationResumeRequest(
+                        directives=[directive] if gate == "materials" else []
+                    ),
+                )
+                await library.await_generation(script.id)
+                paused = await library.progress(script.id)
+                assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+                review = await library.review(script.id)
+                assert review is not None and review.gate == next_gate[gate]
+                if review.gate == "pre_write":
+                    assert review.division is not None and review.profiles
+                elif review.gate == "final":
+                    assert review.package is not None
+
+            await library.resume_generation(
+                script.id, actor, resume=GenerationResumeRequest(action="approve")
+            )
             await library.await_generation(script.id)
 
             final = await library.progress(script.id)
@@ -521,6 +548,8 @@ def test_generation_materials_gate_resume_flow(client):
                 e.node.value == "verify_materials" and e.verdict == "pass"
                 for e in final.doubter_events
             )
+            # 终态后审阅载荷已清空
+            assert await library.review(script.id) is None
         finally:
             await engine.dispose()
 

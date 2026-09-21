@@ -1,4 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "directives": ["孔乙己的迂腐要更突出"]
+  "directives": ["孔乙己的迂腐要更突出"],
+  "edits": { "schema_version": "1.0.0" },
+  "action": "approve"
 }

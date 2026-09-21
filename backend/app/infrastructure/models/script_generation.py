@@ -43,6 +43,8 @@ class ScriptGeneration(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     # NodeProgress/DoubterEvent 快照（GenerationProgress.nodes + doubter_events 的落库形态）
     progress: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # 闸门暂停时的审阅载荷（GateReview JSON；None=不在闸门，恢复后清空）
+    review: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow

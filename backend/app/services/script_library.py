@@ -16,6 +16,7 @@ import asyncio
 import logging
 import uuid
 
+from pydantic import ValidationError
 from sqlalchemy import or_, select
 
 from app.contracts.content import TextAnalysis
@@ -29,6 +30,8 @@ from app.contracts.generation import (
     NodeProgress,
 )
 from app.contracts.material import MaterialInput
+from app.contracts.review import GateReview
+from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor, script_visible_to
 from app.domain.content.pipeline import ContentPipeline
 from app.domain.generation.stage1 import (
@@ -312,6 +315,38 @@ class ScriptLibrary:
             snapshot.error = row.error
         return snapshot
 
+    async def review(self, script_id: int) -> GateReview | None:
+        """最近一次生成尝试的闸门审阅载荷（#34）：未暂停在闸门时为 None。"""
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None or row.review is None:
+            return None
+        try:
+            return GateReview.model_validate(row.review)
+        except ValidationError as exc:
+            logger.warning(
+                "script_gate_review_invalid script_id=%s reason=%s",
+                script_id,
+                str(exc).replace("\n", " ")[:200],
+            )
+            return None
+
+    async def _save_review(self, attempt_id: int, review: dict | None) -> None:
+        """闸门审阅载荷落库（None=清空，恢复后不再展示）。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptGenerationRecord, attempt_id)
+            if row is None:
+                return
+            row.review = review
+            await s.commit()
+
     # ===== 生成任务（workflow 主路径 / 旧合成路径）=====
 
     async def _run_generation(
@@ -384,14 +419,14 @@ class ScriptLibrary:
             ),
             thread_id=thread_id,
         )
-        await self._finalize_workflow(script, final, runner)
+        await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
 
     def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
         """workflow 节点集合；有 checkpointer 才启用教师闸门（interrupt 依赖断点）。"""
         return WorkflowNodes(
             self._stage1_llm(script),
             model_name=self._model_name,
-            materials_gate=self._workflow_checkpointer is not None,
+            teacher_gates=self._workflow_checkpointer is not None,
         )
 
     def _attempt_sink(self, attempt_id: int):
@@ -401,12 +436,17 @@ class ScriptLibrary:
         return sink
 
     async def _finalize_workflow(
-        self, script: ScriptRecord, final: dict, runner: WorkflowRunner
+        self, script: ScriptRecord, final: dict, runner: WorkflowRunner, *, attempt_id: int
     ) -> None:
-        """workflow 终态处理：闸门暂停只记录，完成才写剧本与 telemetry。"""
+        """workflow 终态处理：闸门暂停记录审阅载荷，完成才写剧本与 telemetry。"""
         if runner.snapshot().status == GenerationStatus.AWAITING_REVIEW:
-            # 教师闸门暂停（#34）：终态待恢复后落库，不视为完成/失败
-            logger.info("script_generation_awaiting_review script_id=%s", script.id)
+            # 教师闸门暂停（#34）：审阅载荷落库供教师端读取，终态待恢复后落库
+            await self._save_review(attempt_id, runner.review)
+            logger.info(
+                "script_generation_awaiting_review script_id=%s gate=%s",
+                script.id,
+                (runner.review or {}).get("gate"),
+            )
             return
         package = final.get("package")
         telemetry = dict(final.get("write_telemetry") or {})
@@ -415,9 +455,12 @@ class ScriptLibrary:
         await self._persist_package(script.id, package, telemetry)
 
     async def resume_generation(
-        self, script_id: int, actor: Actor, *, directives: list[str]
+        self, script_id: int, actor: Actor, *, resume: GenerationResumeRequest
     ) -> ScriptRecord:
-        """教师闸门恢复（#34）：审阅通过后从 checkpointer 断点继续生成。"""
+        """教师闸门恢复（#34）：审阅后从 checkpointer 断点继续生成。
+
+        `resume` 携带指导指令、教师编辑（GateEdits）与终审 action（approve/reject）。
+        """
         script = await self._load_owned(script_id, actor)
         if not (self._workflow_enabled and self._script_llm is not None):
             raise new(
@@ -444,6 +487,8 @@ class ScriptLibrary:
                 extra={"id": script_id, "status": getattr(row, "status", None)},
             )
         await self._save_progress(row.id, status=GenerationStatus.RUNNING.value)
+        paused_gate = str((row.review or {}).get("gate", "materials"))
+        await self._save_review(row.id, None)  # 恢复后不再展示旧审阅载荷
         previous = (
             GenerationProgress.model_validate(row.progress)
             if row.progress is not None
@@ -454,7 +499,8 @@ class ScriptLibrary:
                 script,
                 attempt_id=row.id,
                 thread_id=row.thread_id,
-                directives=directives,
+                resume=resume,
+                gate=paused_gate,
                 doubter_events=previous.doubter_events if previous else [],
             )
         )
@@ -470,7 +516,8 @@ class ScriptLibrary:
         *,
         attempt_id: int,
         thread_id: str,
-        directives: list[str],
+        resume: GenerationResumeRequest,
+        gate: str,
         doubter_events: list[DoubterEvent],
     ) -> None:
         """闸门恢复执行：断点续跑，终态与首次生成同一落库面。"""
@@ -482,9 +529,13 @@ class ScriptLibrary:
                 doubter_events=doubter_events,
             )
             final = await runner.resume(
-                thread_id=thread_id, directives=directives
+                thread_id=thread_id,
+                resume_payload=resume.model_dump(mode="json"),
+                gate=gate,
             )
-            await self._finalize_workflow(script, final, runner)
+            await self._finalize_workflow(
+                script, final, runner, attempt_id=attempt_id
+            )
         except Exception as exc:
             logger.warning(
                 "script_generation_failed script_id=%s reason=%s",
@@ -595,12 +646,14 @@ class ScriptLibrary:
             return [], "degraded"
         query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
         web = await self._rag.research(query or analysis.genre.genre.value)
+        state = "succeeded" if web else "degraded"
         logger.info(
-            "[script-gen][collect_materials] research query=%r evidence=%d",
+            "[script-gen][collect_materials] research query=%r evidence=%d state=%s",
             query,
             len(web),
+            state,
         )
-        return web, ("succeeded" if web else "degraded")
+        return web, state
 
     # ===== 发布 / 下架 / 删除 =====
 

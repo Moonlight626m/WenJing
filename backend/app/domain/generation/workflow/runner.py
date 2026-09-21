@@ -26,7 +26,12 @@ from app.contracts.generation import (
     NodeProgress,
 )
 from app.domain.generation.workflow.graph import build_workflow
-from app.domain.generation.workflow.nodes import MATERIALS_GATE_NODE, WorkflowNodes
+from app.domain.generation.workflow.nodes import (
+    FINAL_GATE_NODE,
+    MATERIALS_GATE_NODE,
+    PRE_WRITE_GATE_NODE,
+    WorkflowNodes,
+)
 from app.domain.generation.workflow.state import WorkflowState
 
 ProgressSink = Callable[[GenerationProgress], Awaitable[None]]
@@ -35,14 +40,16 @@ ProgressSink = Callable[[GenerationProgress], Awaitable[None]]
 _NODE_MAP: dict[str, GenerationNode] = {
     "collect_materials": GenerationNode.COLLECT_MATERIALS,
     "verify_materials": GenerationNode.VERIFY_MATERIALS,
-    # 闸门节点的恢复 delta（directives）归入素材考证节点（进度语义）
+    # 闸门节点的恢复 delta（directives）归入上游节点（进度语义）
     MATERIALS_GATE_NODE: GenerationNode.VERIFY_MATERIALS,
+    PRE_WRITE_GATE_NODE: GenerationNode.DESIGN_CHARACTERS,
     "divide_events": GenerationNode.DIVIDE_EVENTS,
     "design_characters": GenerationNode.DESIGN_CHARACTERS,
     "design_one_character": GenerationNode.DESIGN_CHARACTERS,
     "merge_characters": GenerationNode.DESIGN_CHARACTERS,
     "write_script": GenerationNode.WRITE_SCRIPT,
     "final_audit": GenerationNode.FINAL_AUDIT,
+    FINAL_GATE_NODE: GenerationNode.FINAL_AUDIT,
 }
 
 _NODE_ORDER: list[GenerationNode] = [
@@ -53,6 +60,18 @@ _NODE_ORDER: list[GenerationNode] = [
     GenerationNode.WRITE_SCRIPT,
     GenerationNode.FINAL_AUDIT,
 ]
+
+
+def _interrupt_value(delta: Any) -> dict[str, Any] | None:
+    """updates 流里 `__interrupt__` 的载荷：tuple[Interrupt] → Interrupt.value。"""
+    if isinstance(delta, (list, tuple)) and delta:
+        value = getattr(delta[0], "value", delta[0])
+        return value if isinstance(value, dict) else None
+    return None
+
+# DoubterEvent 契约轮次上限（contracts.generation.DoubterEvent.round le=3）：
+# 终审打回会计入 write_retries，教师可多次打回，轮次投影在此收口。
+MAX_DOUBTER_EVENT_ROUND = 3
 
 
 class WorkflowRunner:
@@ -74,13 +93,20 @@ class WorkflowRunner:
     ) -> None:
         self._graph = build_workflow(nodes, checkpointer=checkpointer)
         self._sink = progress_sink
+        self._teacher_gates = nodes.gate_enabled
         self._nodes: dict[GenerationNode, NodeProgress] = {}
         self._doubter_events: list[DoubterEvent] = list(doubter_events or [])
         self._status = GenerationStatus.RUNNING
         self._dirty = False
         self._interrupted = False
+        self._review: dict[str, Any] | None = None
         self._character_detail = ""
         nodes.set_progress_hook(self._on_progress)
+
+    @property
+    def review(self) -> dict[str, Any] | None:
+        """闸门暂停时给教师的审阅载荷（interrupt 值，JSON-safe dict）。"""
+        return self._review
 
     def snapshot(self) -> GenerationProgress:
         return GenerationProgress(
@@ -141,7 +167,11 @@ class WorkflowRunner:
                 GenerationNodeStatus.SUCCEEDED,
                 detail=f"共 {len(merged)} 位主要人物",
             )
-            self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.RUNNING)
+            self._set(
+                GenerationNode.WRITE_SCRIPT,
+                GenerationNodeStatus.RUNNING if not self._teacher_gates
+                else GenerationNodeStatus.PENDING,
+            )
             return
 
         # 线性节点：本节点自身完成；doubter 裁决决定是否打回上游
@@ -155,10 +185,12 @@ class WorkflowRunner:
             detail="doubter 打回" if reject else None,
         )
         if verdict:
-            # verify 事件用 doubter_round；audit 事件用 write_retries（= 书写轮次）
+            # verify 事件用 doubter_round；audit 事件用 write_retries（= 书写轮次，
+            # 含教师终审打回轮，min(3) 收口防超出契约 le=3 上限）
             round_no = int(delta.get("doubter_round") or 0)
             if not round_no:
                 round_no = max(1, int(delta.get("write_retries") or 0))
+            round_no = min(round_no, MAX_DOUBTER_EVENT_ROUND)
             self._doubter_events.append(
                 DoubterEvent(
                     node=contract,
@@ -196,15 +228,51 @@ class WorkflowRunner:
             await self._sink(self.snapshot())
         return await self._consume(state, thread_id)
 
-    async def resume(self, *, thread_id: str, directives: list[str]) -> dict[str, Any]:
-        """教师闸门恢复（#34）：从 checkpointer 断点继续，指令并入下游输入。"""
-        # 恢复时进度从闸门前状态接续：素材/考证已完成，划分即将开始
-        self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.SUCCEEDED)
-        self._set(GenerationNode.VERIFY_MATERIALS, GenerationNodeStatus.SUCCEEDED)
-        self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.RUNNING)
+    async def resume(
+        self, *, thread_id: str, resume_payload: Any, gate: str = "materials"
+    ) -> dict[str, Any]:
+        """教师闸门恢复（#34）：从 checkpointer 断点继续。
+
+        `resume_payload` 是闸门恢复载荷（GenerationResumeRequest 形状的 dict；
+        兼容旧列表指令）。`gate` 是暂停位置（materials/pre_write/final，
+        调用方从 attempt 落库的审阅载荷读取），决定进度接续投影。
+        """
+        if gate == "pre_write":
+            self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.SUCCEEDED)
+            self._set(GenerationNode.DESIGN_CHARACTERS, GenerationNodeStatus.SUCCEEDED)
+            self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.RUNNING)
+        elif gate == "final":
+            self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.SUCCEEDED)
+            self._set(GenerationNode.FINAL_AUDIT, GenerationNodeStatus.SUCCEEDED)
+        else:
+            self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.SUCCEEDED)
+            self._set(GenerationNode.VERIFY_MATERIALS, GenerationNodeStatus.SUCCEEDED)
+            self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.RUNNING)
         if self._sink is not None:
             await self._sink(self.snapshot())
-        return await self._consume(Command(resume=directives), thread_id)
+        return await self._consume(Command(resume=resume_payload), thread_id)
+
+    def _awaiting_node(self, review: dict[str, Any] | None) -> None:
+        """闸门暂停时的进度投影：按闸门位置把「下一步」节点置等待态。"""
+        gate = str((review or {}).get("gate", "materials"))
+        if gate == "pre_write":
+            self._set(
+                GenerationNode.WRITE_SCRIPT,
+                GenerationNodeStatus.PENDING,
+                detail="等待教师审阅",
+            )
+        elif gate == "final":
+            self._set(
+                GenerationNode.FINAL_AUDIT,
+                GenerationNodeStatus.SUCCEEDED,
+                detail="等待教师终审",
+            )
+        else:
+            self._set(
+                GenerationNode.DIVIDE_EVENTS,
+                GenerationNodeStatus.PENDING,
+                detail="等待教师审阅",
+            )
 
     async def _consume(self, graph_input: Any, thread_id: str) -> dict[str, Any]:
         config = {"configurable": {"thread_id": thread_id}}
@@ -220,11 +288,8 @@ class WorkflowRunner:
                     # 教师闸门触发：图停在闸门节点，本次流结束
                     self._interrupted = True
                     self._status = GenerationStatus.AWAITING_REVIEW
-                    self._set(
-                        GenerationNode.DIVIDE_EVENTS,
-                        GenerationNodeStatus.PENDING,
-                        detail="等待教师审阅",
-                    )
+                    self._review = _interrupt_value(delta)
+                    self._awaiting_node(self._review)
                     if self._sink is not None:
                         await self._sink(self.snapshot())
                     continue
@@ -238,6 +303,13 @@ class WorkflowRunner:
         if self._interrupted:
             self._status = GenerationStatus.AWAITING_REVIEW
         else:
+            # 恢复路径：终态产物可能在上次断点前已写入 checkpoint
+            # （如终审通过恢复只重放闸门节点），delta 累积器拿不到，
+            # 需回读图状态补齐缺失通道。
+            state_values = await self._graph.aget_state(config)
+            if state_values is not None:
+                for key, value in (state_values.values or {}).items():
+                    final.setdefault(key, value)
             self._status = (
                 GenerationStatus.SUCCEEDED if final.get("package") is not None
                 else GenerationStatus.FAILED

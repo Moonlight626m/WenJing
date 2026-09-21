@@ -208,19 +208,17 @@ export function startScriptGeneration(
   return request(`/api/scripts/${scriptId}/generate`, { method: "POST" });
 }
 
-/** 教师闸门恢复（#34）：审阅后从断点继续，指导指令注入下游节点。 */
+/** 教师闸门恢复（#34）：审阅后从断点继续，指令/编辑/终审动作注入 workflow。 */
 export function resumeScriptGeneration(
   scriptId: number,
-  directives: string[]
+  payload: Omit<GenerationResumeRequest, "schema_version">
 ): Promise<ScriptDetail> {
   return request(`/api/scripts/${scriptId}/generation/resume`, {
     method: "POST",
     body: JSON.stringify({
       schema_version: "1.0.0",
-      directives,
-    } satisfies Omit<GenerationResumeRequest, "schema_version"> & {
-      schema_version: string;
-    }),
+      ...payload,
+    } satisfies GenerationResumeRequest),
   });
 }
 

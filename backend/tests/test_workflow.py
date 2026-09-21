@@ -121,7 +121,7 @@ class ScriptedWorkflowLLM:
 def _make_runner(analysis, llm, *, sink=None, gate=False, checkpointer=None):
     from langgraph.checkpoint.memory import MemorySaver
 
-    nodes = WorkflowNodes(llm, materials_gate=gate)
+    nodes = WorkflowNodes(llm, teacher_gates=gate)
     runner = WorkflowRunner(
         nodes, checkpointer=checkpointer or MemorySaver(), progress_sink=sink
     )
@@ -132,6 +132,23 @@ def _make_runner(analysis, llm, *, sink=None, gate=False, checkpointer=None):
         web_evidence=[],
     )
     return runner, state
+
+
+_GATE_SEQUENCE = ("materials", "pre_write", "final")
+
+
+async def _pause_at(
+    analysis, llm, checkpointer, thread_id: str, target: str
+):
+    """跑到指定闸门：初始 run 停在 materials，再逐闸空恢复到 target。"""
+    runner, state = _make_runner(analysis, llm, gate=True, checkpointer=checkpointer)
+    await runner.run(state, thread_id=thread_id)
+    for gate in _GATE_SEQUENCE[: _GATE_SEQUENCE.index(target)]:
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+        )
+        await runner.resume(thread_id=thread_id, resume_payload={"directives": []}, gate=gate)
+    return runner
 
 
 async def test_materials_gate_pauses_before_divide() -> None:
@@ -151,7 +168,10 @@ async def test_materials_gate_pauses_before_divide() -> None:
 
 
 async def test_materials_gate_resume_carries_directives() -> None:
-    """教师恢复：指令经闸门并入 state，下游划分 prompt 可感知（#34 指导语义）。"""
+    """教师恢复：指令经闸门并入 state，下游划分 prompt 可感知（#34 指导语义）。
+
+    闸门是链式的：素材闸恢复后继续跑到中段闸（人物+场景审定）再停。
+    """
     analysis = make_analysis()
     llm = ScriptedWorkflowLLM(analysis)
     from langgraph.checkpoint.memory import MemorySaver
@@ -162,20 +182,72 @@ async def test_materials_gate_resume_carries_directives() -> None:
 
     directives = ["母亲的背影要更突出"]
     resumed = WorkflowRunner(
-        WorkflowNodes(llm, materials_gate=True), checkpointer=checkpointer
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
     )
-    final = await resumed.resume(thread_id="t-resume", directives=directives)
+    final = await resumed.resume(
+        thread_id="t-resume",
+        resume_payload={"directives": directives},
+        gate="materials",
+    )
 
-    assert final["package"] is not None
+    assert final.get("package") is None  # 链式闸门：停在 pre_write 等下一轮审阅
     assert final["directives"] == directives
     assert any(directives[0] in p for p in llm.divide_prompts)
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "pre_write"
+
+    approved = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    final = await approved.resume(
+        thread_id="t-resume", resume_payload={"directives": []}, gate="pre_write"
+    )
+    assert final["package"] is not None
     # #34 指导语义：指令同样到达剧本书写节点（下游 agent 可感知）
     assert any(directives[0] in p for p in llm.writing_prompts)
-    assert resumed.snapshot().status == "succeeded"
+    assert approved.snapshot().status == "awaiting_review"  # 终审闸门再停
+    assert approved.review["gate"] == "final"
+
+
+async def test_materials_gate_resume_with_dossier_edit() -> None:
+    """#34 编辑语义：教师改后的 dossier 覆盖通道，下游书写以编辑稿为准。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner, state = _make_runner(analysis, llm, gate=True, checkpointer=checkpointer)
+    await runner.run(state, thread_id="t-edit")
+
+    # 闸门审阅载荷：素材快照可展示（materials gate）
+    assert runner.review is not None
+    assert runner.review["gate"] == "materials"
+    assert runner.review["dossier"]["background"].startswith("朱自清")
+
+    edited_background = "教师修订后的背景结论"
+    dossier_edit = json.loads(_DOSSIER_JSON)
+    dossier_edit["background"] = edited_background
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    await resumed.resume(
+        thread_id="t-edit",
+        resume_payload={"edits": {"dossier": dossier_edit}},
+        gate="materials",
+    )
+    # 逐闸空恢复直到书写（编辑稿沿通道传给下游）
+    for gate in ("pre_write", "final"):
+        resumed = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+        )
+        await resumed.resume(thread_id="t-edit", resume_payload={"directives": []}, gate=gate)
+
+    # 编辑稿进入剧本书写节点的上下文（写作 prompt 含教师修订文本）
+    assert any(edited_background in p for p in llm.writing_prompts)
 
 
 async def test_materials_gate_resume_without_directives_proceeds() -> None:
-    """教师不带指令直接恢复：闸门直通，正常产出剧本。"""
+    """教师逐闸直接恢复：三道闸全空载荷，最终正常产出剧本。"""
     analysis = make_analysis()
     llm = ScriptedWorkflowLLM(analysis)
     from langgraph.checkpoint.memory import MemorySaver
@@ -184,12 +256,171 @@ async def test_materials_gate_resume_without_directives_proceeds() -> None:
     runner, state = _make_runner(analysis, llm, gate=True, checkpointer=checkpointer)
     await runner.run(state, thread_id="t-resume-empty")
 
-    resumed = WorkflowRunner(
-        WorkflowNodes(llm, materials_gate=True), checkpointer=checkpointer
-    )
-    final = await resumed.resume(thread_id="t-resume-empty", directives=[])
+    for gate in _GATE_SEQUENCE:
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+        )
+        final = await runner.resume(
+            thread_id="t-resume-empty", resume_payload={"directives": []}, gate=gate
+        )
     assert final["package"] is not None
+    assert runner.snapshot().status == "succeeded"
+
+
+async def test_pre_write_gate_pauses_and_review_carries_artifacts() -> None:
+    """#34 中段闸门：逐闸恢复到中段后停，审阅载荷带 division+profiles。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner = await _pause_at(analysis, llm, checkpointer, "t-pre-write", "pre_write")
+
+    assert UsagePurpose.SCRIPT_WRITING.value not in llm.calls
+    assert runner.review is not None
+    assert runner.review["gate"] == "pre_write"
+    assert runner.review["division"]["scenes"][0]["title"] == "冬日启程"
+    assert sorted(p["name"] for p in runner.review["profiles"]) == ["我", "母亲"]
+    statuses = {n.node.value: n.status for n in runner.snapshot().nodes}
+    assert statuses["divide_events"] == "succeeded"
+    assert statuses["design_characters"] == "succeeded"
+    assert statuses["write_script"] == "pending"
+
+
+async def test_pre_write_gate_resume_applies_edits() -> None:
+    """#34 中段闸门恢复：教师编辑人物形象/场景名覆盖通道并进入书写。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    await _pause_at(analysis, llm, checkpointer, "t-pre-write-edit", "pre_write")
+
+    division_edit = json.loads(_DIVISION_JSON)
+    division_edit["scenes"][0]["title"] = "雪夜启程"
+    profiles_edit = json.loads(_PROFILE_JSON)
+    profiles_edit["name"] = "我"
+    profiles_edit["speech_style"] = "教师修订的语言风格"
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    final = await resumed.resume(
+        thread_id="t-pre-write-edit",
+        resume_payload={
+            "edits": {
+                "division": division_edit,
+                "profiles": [profiles_edit],
+            }
+        },
+        gate="pre_write",
+    )
+
+    assert any("雪夜启程" in p for p in llm.writing_prompts)
+    assert any("教师修订的语言风格" in p for p in llm.writing_prompts)
+    assert final["merged_profiles"][0].speech_style == "教师修订的语言风格"
+    # 编辑恢复后继续跑到终审闸门再停（链式）
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "final"
+
+
+async def test_final_gate_approve_with_package_edit() -> None:
+    """#34 终审闸门：逐闸恢复到终审；教师编辑剧本标题后通过 → 编辑稿生效。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner = await _pause_at(analysis, llm, checkpointer, "t-final", "final")
+
+    assert runner.review is not None
+    assert runner.review["gate"] == "final"
+    assert runner.review["package"] is not None
+
+    package_edit = json.loads(json.dumps(runner.review["package"]))
+    package_edit["title"] = "教师修订的标题"
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    final = await resumed.resume(
+        thread_id="t-final",
+        resume_payload={"edits": {"package": package_edit}, "action": "approve"},
+        gate="final",
+    )
+
+    assert final["package"].title == "教师修订的标题"
+    assert final["gate_action"] == "approve"
     assert resumed.snapshot().status == "succeeded"
+
+
+async def test_final_gate_reject_with_package_edit_keeps_edits() -> None:
+    """#34 终审打回 + 编辑：教师编辑稿作为重写基线进入书写上下文。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("pass", "pass", "pass"))
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    runner = await _pause_at(analysis, llm, checkpointer, "t-final-edit-reject", "final")
+
+    package_edit = json.loads(json.dumps(runner.review["package"]))
+    package_edit["title"] = "打回前教师修订的标题"
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    await resumed.resume(
+        thread_id="t-final-edit-reject",
+        resume_payload={
+            "directives": ["结尾要落在母亲转身之后"],
+            "edits": {"package": package_edit},
+            "action": "reject",
+        },
+        gate="final",
+    )
+
+    # 重写以教师编辑稿为基线：编辑文本进入书写 prompt，不被静默丢弃
+    assert any("打回前教师修订的标题" in p for p in llm.writing_prompts)
+    assert any("结尾要落在母亲转身之后" in p for p in llm.writing_prompts)
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "final"
+
+
+async def test_final_gate_reject_reruns_writing_then_approves() -> None:
+    """#34 终审打回：指导作为打回意见回到书写重做一轮，再次终审通过。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("pass", "pass", "pass"))
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    await _pause_at(analysis, llm, checkpointer, "t-final-reject", "final")
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    directive = "结尾要落在母亲转身之后"
+    await resumed.resume(
+        thread_id="t-final-reject",
+        resume_payload={"directives": [directive], "action": "reject"},
+        gate="final",
+    )
+
+    # 打回后重写一轮，再次停在终审闸门
+    assert llm.calls.count(UsagePurpose.SCRIPT_WRITING.value) == 2
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "final"
+    assert any(directive in p for p in llm.writing_prompts)
+
+    approved = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    final = await approved.resume(
+        thread_id="t-final-reject",
+        resume_payload={"action": "approve"},
+        gate="final",
+    )
+    assert final["package"] is not None
+    assert approved.snapshot().status == "succeeded"
 
 
 async def test_workflow_end_to_end_with_scripted_llm() -> None:

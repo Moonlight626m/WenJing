@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0.0",
+  "gate": "pre_write",
+  "dossier": null,
+  "evidence": [],
+  "division": {
+    "scenes": [
+      {
+        "title": "冬日启程",
+        "participants": ["我", "母亲"],
+        "beats": [
+          {
+            "description": "母亲病了，我出门买药",
+            "is_key_event": true,
+            "key_event_order": 1
+          },
+          {
+            "description": "母亲叮嘱路上小心",
+            "is_key_event": true,
+            "key_event_order": 2
+          }
+        ]
+      },
+      {
+        "title": "归途回望",
+        "participants": ["我"],
+        "beats": [
+          {
+            "description": "我回头看见母亲在门口流泪",
+            "is_key_event": true,
+            "key_event_order": 3
+          }
+        ]
+      }
+    ]
+  },
+  "profiles": [
+    {
+      "schema_version": "1.0.0",
+      "name": "我",
+      "public_background": "离家买药的青年",
+      "personality_traits": ["重情"],
+      "speech_style": null,
+      "is_player_playable": true
+    },
+    {
+      "schema_version": "1.0.0",
+      "name": "母亲",
+      "public_background": "病中的母亲",
+      "personality_traits": ["慈爱"],
+      "speech_style": "平实叮咛",
+      "is_player_playable": false
+    }
+  ],
+  "package": null
+}

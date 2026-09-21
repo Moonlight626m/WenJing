@@ -51,7 +51,7 @@ def get_script_library() -> ScriptLibrary:
     if _library is None:
         from app.infrastructure.db.session import SessionLocal
         from app.infrastructure.llm.factory import ModelServiceFactory
-        from app.infrastructure.rag.service import RagService
+        from app.infrastructure.rag.service import RagService, build_search_provider
         from app.infrastructure.usage import UsageRecorder
 
         settings = get_settings()
@@ -69,7 +69,7 @@ def get_script_library() -> ScriptLibrary:
         _library = ScriptLibrary(
             session_factory=SessionLocal,
             script_llm=script_llm,
-            rag=RagService(),
+            rag=RagService(search_provider=build_search_provider(settings.rag_search_provider)),
             model_name=settings.llm_model,
             usage_recorder=UsageRecorder(session_factory=SessionLocal),
             workflow_checkpointer=_checkpointer,
@@ -88,13 +88,14 @@ _Viewer = Annotated[
 async def _detail(library: ScriptLibrary, row: ScriptRecord, actor) -> ScriptDetail:
     package = ScriptPackage.model_validate(row.script_data) if row.script_data else None
     # 生成进度仅对 owner 可见（含失败详情）；他人读取已发布剧本时不暴露
-    generation = (
-        await library.progress(row.id) if row.owner_user_id == actor.user_id else None
-    )
+    is_owner = row.owner_user_id == actor.user_id
+    generation = await library.progress(row.id) if is_owner else None
+    review = await library.review(row.id) if is_owner else None
     return ScriptDetail(
         script=script_summary(row),
         package=package,
         generation=generation,
+        review=review,
     )
 
 
@@ -192,10 +193,8 @@ async def resume_script_generation(
     principal: _Teacher,
     library: Annotated[ScriptLibrary, Depends(get_script_library)],
 ) -> ScriptDetail:
-    """教师闸门恢复（#34）：审阅通过后从断点继续，指导指令注入下游节点。"""
-    row = await library.resume_generation(
-        script_id, principal.actor, directives=body.directives
-    )
+    """教师闸门恢复（#34）：审阅后从断点继续，指令/编辑/终审动作注入 workflow。"""
+    row = await library.resume_generation(script_id, principal.actor, resume=body)
     return await _detail(library, row, principal.actor)
 
 

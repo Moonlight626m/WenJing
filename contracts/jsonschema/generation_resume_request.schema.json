@@ -1,6 +1,532 @@
 {
+  "$defs": {
+    "Beat": {
+      "additionalProperties": false,
+      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "beat_id": {
+          "title": "Beat Id",
+          "type": "integer"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "is_key_event": {
+          "default": false,
+          "title": "Is Key Event",
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "original_text": "#/$defs/OriginalEvidence",
+                "web": "#/$defs/WebEvidence"
+              },
+              "propertyName": "source_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/OriginalEvidence"
+              },
+              {
+                "$ref": "#/$defs/WebEvidence"
+              }
+            ]
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "beat_id",
+        "description"
+      ],
+      "title": "Beat",
+      "type": "object"
+    },
+    "BeatDraft": {
+      "additionalProperties": false,
+      "description": "划分草稿的单个节拍：key_event_order 指向原文关键事件序号。",
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "is_key_event": {
+          "default": false,
+          "title": "Is Key Event",
+          "type": "boolean"
+        },
+        "key_event_order": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key Event Order"
+        }
+      },
+      "required": [
+        "description"
+      ],
+      "title": "BeatDraft",
+      "type": "object"
+    },
+    "CharacterNote": {
+      "additionalProperties": false,
+      "description": "素材集里对单个人物的结论。",
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "note"
+      ],
+      "title": "CharacterNote",
+      "type": "object"
+    },
+    "CharacterProfile": {
+      "additionalProperties": false,
+      "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "public_background": {
+          "title": "Public Background",
+          "type": "string"
+        },
+        "personality_traits": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Personality Traits",
+          "type": "array"
+        },
+        "speech_style": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Speech Style"
+        },
+        "is_player_playable": {
+          "default": false,
+          "title": "Is Player Playable",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "public_background"
+      ],
+      "title": "CharacterProfile",
+      "type": "object"
+    },
+    "EventDivisionDraft": {
+      "additionalProperties": false,
+      "description": "事件/情景划分草稿：beats 结构先于剧本书写（#31 深化）。",
+      "properties": {
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/SceneDraft"
+          },
+          "minItems": 1,
+          "title": "Scenes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scenes"
+      ],
+      "title": "EventDivisionDraft",
+      "type": "object"
+    },
+    "GateEdits": {
+      "additionalProperties": false,
+      "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "dossier": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaterialDossier"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "division": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EventDivisionDraft"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "profiles": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CharacterProfile"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Profiles"
+        },
+        "package": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptPackage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "GateEdits",
+      "type": "object"
+    },
+    "MaterialDossier": {
+      "additionalProperties": false,
+      "description": "素材收集节点产物：考证过的背景/时代/人物/情节/教学结论。",
+      "properties": {
+        "background": {
+          "minLength": 1,
+          "title": "Background",
+          "type": "string"
+        },
+        "era_setting": {
+          "minLength": 1,
+          "title": "Era Setting",
+          "type": "string"
+        },
+        "character_notes": {
+          "items": {
+            "$ref": "#/$defs/CharacterNote"
+          },
+          "title": "Character Notes",
+          "type": "array"
+        },
+        "plot_summary": {
+          "minLength": 1,
+          "title": "Plot Summary",
+          "type": "string"
+        },
+        "teaching_analysis": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Teaching Analysis",
+          "type": "array"
+        }
+      },
+      "required": [
+        "background",
+        "era_setting",
+        "plot_summary"
+      ],
+      "title": "MaterialDossier",
+      "type": "object"
+    },
+    "OriginalEvidence": {
+      "additionalProperties": false,
+      "description": "原文证据：以原文字符区间或段落标识定位。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "const": "original_text",
+          "default": "original_text",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "excerpt": {
+          "minLength": 1,
+          "title": "Excerpt",
+          "type": "string"
+        },
+        "paragraph_index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paragraph Index"
+        },
+        "char_start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char Start"
+        },
+        "char_end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Char End"
+        }
+      },
+      "required": [
+        "excerpt"
+      ],
+      "title": "OriginalEvidence",
+      "type": "object"
+    },
+    "Scene": {
+      "additionalProperties": false,
+      "description": "剧本中的一个场景：参与者 + 有序 beats。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scene_id": {
+          "title": "Scene Id",
+          "type": "integer"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/Beat"
+          },
+          "title": "Beats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scene_id",
+        "title"
+      ],
+      "title": "Scene",
+      "type": "object"
+    },
+    "SceneDraft": {
+      "additionalProperties": false,
+      "description": "划分草稿的单个场景。",
+      "properties": {
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/BeatDraft"
+          },
+          "minItems": 1,
+          "title": "Beats",
+          "type": "array"
+        }
+      },
+      "required": [
+        "title",
+        "beats"
+      ],
+      "title": "SceneDraft",
+      "type": "object"
+    },
+    "ScriptPackage": {
+      "additionalProperties": false,
+      "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "characters": {
+          "items": {
+            "$ref": "#/$defs/CharacterProfile"
+          },
+          "minItems": 1,
+          "title": "Characters",
+          "type": "array"
+        },
+        "scenes": {
+          "items": {
+            "$ref": "#/$defs/Scene"
+          },
+          "minItems": 1,
+          "title": "Scenes",
+          "type": "array"
+        },
+        "teaching_focus": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Teaching Focus",
+          "type": "array"
+        },
+        "playable_roles": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Playable Roles",
+          "type": "array"
+        },
+        "stage2_ending_beat_id": {
+          "title": "Stage2 Ending Beat Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "title",
+        "characters",
+        "scenes",
+        "playable_roles",
+        "stage2_ending_beat_id"
+      ],
+      "title": "ScriptPackage",
+      "type": "object"
+    },
+    "WebEvidence": {
+      "additionalProperties": false,
+      "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_type": {
+          "const": "web",
+          "default": "web",
+          "title": "Source Type",
+          "type": "string"
+        },
+        "url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Url",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "fetched_at": {
+          "format": "date-time",
+          "title": "Fetched At",
+          "type": "string"
+        },
+        "content_hash": {
+          "title": "Content Hash",
+          "type": "string"
+        },
+        "excerpt": {
+          "title": "Excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "fetched_at",
+        "content_hash",
+        "excerpt"
+      ],
+      "title": "WebEvidence",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
-  "description": "教师闸门恢复（#34）：指导指令随恢复注入下游节点（原样透传）。",
+  "description": "教师闸门恢复（#34）：指导指令 + 结构化编辑随恢复注入 workflow。\n\n- directives：自然语言指导，原样透传下游 agent（教学判断优先）。\n- edits：教师直接编辑后的中间产物（覆盖对应 state 通道，不重新考证）。\n- action：仅终审闸门有意义——approve=通过落库；reject=打回剧本书写重做。",
   "properties": {
     "schema_version": {
       "default": "1.0.0",
@@ -13,6 +539,18 @@
       },
       "title": "Directives",
       "type": "array"
+    },
+    "edits": {
+      "$ref": "#/$defs/GateEdits"
+    },
+    "action": {
+      "default": "approve",
+      "enum": [
+        "approve",
+        "reject"
+      ],
+      "title": "Action",
+      "type": "string"
     }
   },
   "title": "GenerationResumeRequest",

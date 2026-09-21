@@ -31,7 +31,12 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 
-from app.domain.generation.workflow.nodes import MATERIALS_GATE_NODE, WorkflowNodes
+from app.domain.generation.workflow.nodes import (
+    FINAL_GATE_NODE,
+    MATERIALS_GATE_NODE,
+    PRE_WRITE_GATE_NODE,
+    WorkflowNodes,
+)
 from app.domain.generation.workflow.state import WorkflowState
 
 _L = logging.getLogger("wenjing.generation.workflow")
@@ -167,8 +172,14 @@ def build_workflow(
         _logged("design_one_character")(nodes.design_one_character),
     )
     graph.add_node("merge_characters", _logged("merge_characters")(nodes.merge_characters))
+    if gate_on:
+        # #34 中段闸门：人物+场景划分完成后，教师审定/编辑再进入书写
+        graph.add_node(PRE_WRITE_GATE_NODE, _logged(PRE_WRITE_GATE_NODE)(nodes.pre_write_gate))
     graph.add_node("write_script", _logged("write_script")(nodes.write_script))
     graph.add_node("final_audit", _logged("final_audit")(nodes.final_audit))
+    if gate_on:
+        # #34 终审闸门：总审通过后教师终审（通过落库 / 打回重写）
+        graph.add_node(FINAL_GATE_NODE, _logged(FINAL_GATE_NODE)(nodes.final_gate))
     graph.add_node("fail", _logged("fail")(nodes.fail))
 
     graph.add_edge(START, "collect_materials")
@@ -188,12 +199,27 @@ def build_workflow(
     # 人物并行：divide_events 后经条件边 Send 出 N 个分支（join 靠 reducer + 边汇聚）
     graph.add_conditional_edges("divide_events", _logged_send(nodes.design_characters))
     graph.add_edge("design_one_character", "merge_characters")
-    graph.add_edge("merge_characters", "write_script")
+    if gate_on:
+        graph.add_edge("merge_characters", PRE_WRITE_GATE_NODE)
+        graph.add_edge(PRE_WRITE_GATE_NODE, "write_script")
+    else:
+        graph.add_edge("merge_characters", "write_script")
     graph.add_edge("write_script", "final_audit")
+    audit_targets: dict[str, Any] = {"write_script": "write_script", "fail": "fail"}
+    if gate_on:
+        audit_targets[FINAL_GATE_NODE] = FINAL_GATE_NODE
+    else:
+        audit_targets["END"] = END
     graph.add_conditional_edges(
         "final_audit",
         _logged_route("final_audit")(nodes.route_after_audit),
-        {"write_script": "write_script", "fail": "fail", "END": END},
+        audit_targets,
     )
+    if gate_on:
+        graph.add_conditional_edges(
+            FINAL_GATE_NODE,
+            _logged_route(FINAL_GATE_NODE)(nodes.route_after_final_gate),
+            {"write_script": "write_script", "END": END},
+        )
     graph.add_edge("fail", END)
     return graph.compile(checkpointer=checkpointer)

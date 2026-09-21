@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from app.contracts.content import TextAnalysis
 from app.contracts.material import WebEvidence
@@ -25,9 +25,14 @@ class WorkflowState(TypedDict, total=False):
     script_id: int
     session_id: str
     analysis: TextAnalysis
-    web_evidence: list[WebEvidence]
+    # JSON-safe dict（WebEvidence.model_dump(mode="json")）：HttpUrl 无法被
+    # langgraph checkpointer 的 msgpack 序列化，模型入 state 会炸闸门 interrupt。
+    # 读取用 `state_web_evidence()` 还原成契约模型。
+    web_evidence: list[dict[str, Any]]
     # 教师指导指令（#34 闸门注入；骨架恒空）
     directives: list[str]
+    # 终审闸门恢复后的路由标记（final_gate → route_after_final_gate）
+    gate_action: str
 
     # ===== 节点产物 =====
     dossier: MaterialDossier | None
@@ -63,9 +68,17 @@ def initial_state(
         script_id=script_id,
         session_id=session_id,
         analysis=analysis,
-        web_evidence=list(web_evidence),
+        web_evidence=[e.model_dump(mode="json") for e in web_evidence],
         directives=list(directives or []),
         character_profiles=[],
         doubter_round=0,
         write_retries=0,
     )
+
+
+def state_web_evidence(state: WorkflowState) -> list[WebEvidence]:
+    """从 state 通道还原 `WebEvidence`（通道内是 JSON-safe dict，见类型注释）。"""
+    return [
+        e if isinstance(e, WebEvidence) else WebEvidence.model_validate(e)
+        for e in state.get("web_evidence") or []
+    ]

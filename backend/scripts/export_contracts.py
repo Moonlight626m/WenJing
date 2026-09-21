@@ -28,6 +28,7 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState, RuntimeUpdate
 from app.contracts.script_library import (
     GenerationResumeRequest,
@@ -62,6 +63,7 @@ EXPORTS: dict[str, type] = {
     "error_envelope": ErrorEnvelope,
     "server_message": ServerMessage,
     "generation_progress": GenerationProgress,
+    "gate_review": GateReview,
     "script_create_request": ScriptCreateRequest,
     "script_publish_request": ScriptPublishRequest,
     "generation_resume_request": GenerationResumeRequest,

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { FormError } from "@/components/auth/form-error";
+import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
 import { GenerationProgress } from "@/components/teacher/generation-progress";
 import { ScriptPreview } from "@/components/teacher/script-preview";
 import {
@@ -26,6 +27,7 @@ import type {
   ScriptDetail,
   ScriptVisibility,
 } from "@/lib/contracts/types";
+import type { GateResumePayload } from "@/components/teacher/gate-review-panel";
 
 const ACTION_CLASS =
   "rounded-lg border border-zinc-300 px-3 py-1.5 text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
@@ -50,7 +52,6 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
   );
   const [busy, setBusy] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
-  const [directivesDraft, setDirectivesDraft] = useState("");
 
   const running = detail?.generation?.status === "running";
   const awaitingReview = detail?.generation?.status === "awaiting_review";
@@ -113,14 +114,9 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     });
   }
 
-  async function handleResume() {
-    const directives = directivesDraft
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+  async function handleResume(payload: GateResumePayload) {
     await run("resume", async () => {
-      await resumeScriptGeneration(scriptId, directives);
-      setDirectivesDraft("");
+      await resumeScriptGeneration(scriptId, payload);
     });
   }
 
@@ -198,35 +194,12 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
       )}
 
       {awaitingReview && (
-        <section className="flex flex-col gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
-          <h2 className="text-sm font-medium text-amber-700 dark:text-amber-300">
-            教师闸门 · 素材审阅
-          </h2>
-          <p className="text-xs text-amber-700/80 dark:text-amber-300/80">
-            素材收集与考证已通过。可填写指导指令（自然语言，如“孔乙己的迂腐要更突出”），
-            恢复后作为下游节点的额外约束；也可以不填直接恢复。
-          </p>
-          <textarea
-            value={directivesDraft}
-            onChange={(e) => setDirectivesDraft(e.target.value)}
-            rows={3}
-            placeholder={"每行一条指导指令，例如：\n孔乙己的迂腐要更突出"}
-            className="rounded-lg border border-amber-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-amber-500 dark:border-amber-800"
-          />
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => void handleResume()}
-              disabled={busy !== null}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
-            >
-              {busy === "resume" ? "恢复中…" : "恢复生成"}
-            </button>
-            <span className="text-xs text-amber-700/70 dark:text-amber-300/70">
-              恢复后流水线从事件划分继续。
-            </span>
-          </div>
-        </section>
+        <GateReviewPanel
+          key={detail.review ? detail.review.gate : "legacy"}
+          review={detail.review}
+          busy={busy}
+          onResume={(payload) => void handleResume(payload)}
+        />
       )}
 
       {scriptPackage && <ScriptPreview scriptPackage={scriptPackage} />}

@@ -182,6 +182,8 @@ export interface ScriptPublishRequest {
 export interface GenerationResumeRequest {
   schema_version: string;
   directives: string[];
+  edits: GateEdits;
+  action: "approve" | "reject";
 }
 
 export interface ScriptSummary {
@@ -203,6 +205,7 @@ export interface ScriptDetail {
   script: ScriptSummary;
   package: ScriptPackage | null;
   generation: GenerationProgress | null;
+  review: GateReview | null;
 }
 
 export interface ScriptListResponse {
@@ -400,6 +403,57 @@ export interface ScriptPackage {
   teaching_focus: string[];
   playable_roles: string[];
   stage2_ending_beat_id: number;
+}
+
+// ===== 教师闸门审阅（issue #34）=====
+
+export type GateKind = "materials" | "pre_write" | "final";
+
+export interface CharacterNote {
+  name: string;
+  note: string;
+}
+
+export interface MaterialDossier {
+  background: string;
+  era_setting: string;
+  character_notes: CharacterNote[];
+  plot_summary: string;
+  teaching_analysis: string[];
+}
+
+export interface BeatDraft {
+  description: string;
+  is_key_event: boolean;
+  key_event_order: number | null;
+}
+
+export interface SceneDraft {
+  title: string;
+  participants: string[];
+  beats: BeatDraft[];
+}
+
+export interface EventDivisionDraft {
+  scenes: SceneDraft[];
+}
+
+export interface GateReview {
+  schema_version: string;
+  gate: GateKind;
+  dossier: MaterialDossier | null;
+  evidence: WebEvidenceRef[];
+  division: EventDivisionDraft | null;
+  profiles: CharacterProfile[];
+  package: ScriptPackage | null;
+}
+
+export interface GateEdits {
+  schema_version: string;
+  dossier: MaterialDossier | null;
+  division: EventDivisionDraft | null;
+  profiles: CharacterProfile[] | null;
+  package: ScriptPackage | null;
 }
 
 // ===== 玩家命令 =====

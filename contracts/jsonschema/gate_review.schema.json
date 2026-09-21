@@ -156,45 +156,6 @@
       "title": "CharacterProfile",
       "type": "object"
     },
-    "DoubterEvent": {
-      "additionalProperties": false,
-      "description": "doubter 裁决记录：打回时带逐条问题（教师端可见）。",
-      "properties": {
-        "schema_version": {
-          "default": "1.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "node": {
-          "$ref": "#/$defs/GenerationNode"
-        },
-        "verdict": {
-          "pattern": "^(pass|reject)$",
-          "title": "Verdict",
-          "type": "string"
-        },
-        "issues": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Issues",
-          "type": "array"
-        },
-        "round": {
-          "default": 1,
-          "maximum": 3,
-          "minimum": 1,
-          "title": "Round",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "node",
-        "verdict"
-      ],
-      "title": "DoubterEvent",
-      "type": "object"
-    },
     "EventDivisionDraft": {
       "additionalProperties": false,
       "description": "事件/情景划分草稿：beats 结构先于剧本书写（#31 深化）。",
@@ -213,173 +174,6 @@
       ],
       "title": "EventDivisionDraft",
       "type": "object"
-    },
-    "GateReview": {
-      "additionalProperties": false,
-      "description": "闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。",
-      "properties": {
-        "schema_version": {
-          "default": "1.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "gate": {
-          "enum": [
-            "materials",
-            "pre_write",
-            "final"
-          ],
-          "title": "Gate",
-          "type": "string"
-        },
-        "dossier": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MaterialDossier"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "evidence": {
-          "items": {
-            "$ref": "#/$defs/WebEvidence"
-          },
-          "title": "Evidence",
-          "type": "array"
-        },
-        "division": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/EventDivisionDraft"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "profiles": {
-          "items": {
-            "$ref": "#/$defs/CharacterProfile"
-          },
-          "title": "Profiles",
-          "type": "array"
-        },
-        "package": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ScriptPackage"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        }
-      },
-      "required": [
-        "gate"
-      ],
-      "title": "GateReview",
-      "type": "object"
-    },
-    "GenerationNode": {
-      "description": "workflow 节点（与 generation/workflow/graph.py 的图拓扑对齐）。",
-      "enum": [
-        "collect_materials",
-        "verify_materials",
-        "divide_events",
-        "design_characters",
-        "write_script",
-        "final_audit"
-      ],
-      "title": "GenerationNode",
-      "type": "string"
-    },
-    "GenerationNodeStatus": {
-      "description": "节点级状态：rejected 表示被 doubter 打回（上游会重做）。",
-      "enum": [
-        "pending",
-        "running",
-        "succeeded",
-        "rejected",
-        "failed"
-      ],
-      "title": "GenerationNodeStatus",
-      "type": "string"
-    },
-    "GenerationProgress": {
-      "additionalProperties": false,
-      "description": "生成进度：长时间生成过程不是黑盒（进度由 script_generations 落库）。",
-      "properties": {
-        "schema_version": {
-          "default": "1.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "status": {
-          "$ref": "#/$defs/GenerationStatus"
-        },
-        "nodes": {
-          "items": {
-            "$ref": "#/$defs/NodeProgress"
-          },
-          "title": "Nodes",
-          "type": "array"
-        },
-        "doubter_events": {
-          "items": {
-            "$ref": "#/$defs/DoubterEvent"
-          },
-          "title": "Doubter Events",
-          "type": "array"
-        },
-        "error": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Error"
-        },
-        "updated_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Updated At"
-        }
-      },
-      "required": [
-        "status"
-      ],
-      "title": "GenerationProgress",
-      "type": "object"
-    },
-    "GenerationStatus": {
-      "description": "一次生成尝试的总体状态。\n\nawaiting_review 为教师闸门预留（#34）：流水线停在闸门等审阅。",
-      "enum": [
-        "idle",
-        "running",
-        "awaiting_review",
-        "succeeded",
-        "failed"
-      ],
-      "title": "GenerationStatus",
-      "type": "string"
     },
     "MaterialDossier": {
       "additionalProperties": false,
@@ -421,41 +215,6 @@
         "plot_summary"
       ],
       "title": "MaterialDossier",
-      "type": "object"
-    },
-    "NodeProgress": {
-      "additionalProperties": false,
-      "description": "单个 workflow 节点的进度投影。",
-      "properties": {
-        "schema_version": {
-          "default": "1.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "node": {
-          "$ref": "#/$defs/GenerationNode"
-        },
-        "status": {
-          "$ref": "#/$defs/GenerationNodeStatus"
-        },
-        "detail": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Detail"
-        }
-      },
-      "required": [
-        "node",
-        "status"
-      ],
-      "title": "NodeProgress",
       "type": "object"
     },
     "OriginalEvidence": {
@@ -654,120 +413,6 @@
       "title": "ScriptPackage",
       "type": "object"
     },
-    "ScriptStatus": {
-      "description": "可复用剧本实体的生命周期（ADR-0002 §3）：草稿→发布→下架。",
-      "enum": [
-        "draft",
-        "published",
-        "unpublished"
-      ],
-      "title": "ScriptStatus",
-      "type": "string"
-    },
-    "ScriptSummary": {
-      "additionalProperties": false,
-      "description": "剧本列表项/发布结果的轻量投影。",
-      "properties": {
-        "schema_version": {
-          "default": "1.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "id": {
-          "title": "Id",
-          "type": "integer"
-        },
-        "name": {
-          "title": "Name",
-          "type": "string"
-        },
-        "description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Description"
-        },
-        "status": {
-          "$ref": "#/$defs/ScriptStatus"
-        },
-        "visibility": {
-          "$ref": "#/$defs/ScriptVisibility"
-        },
-        "material_id": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Material Id"
-        },
-        "owner_user_id": {
-          "format": "uuid",
-          "title": "Owner User Id",
-          "type": "string"
-        },
-        "org_id": {
-          "format": "uuid",
-          "title": "Org Id",
-          "type": "string"
-        },
-        "created_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Created At"
-        },
-        "updated_at": {
-          "anyOf": [
-            {
-              "format": "date-time",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Updated At"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "status",
-        "visibility",
-        "owner_user_id",
-        "org_id"
-      ],
-      "title": "ScriptSummary",
-      "type": "object"
-    },
-    "ScriptVisibility": {
-      "description": "已发布剧本的可见性：同 org / 公开（跨 org）。",
-      "enum": [
-        "org",
-        "public"
-      ],
-      "title": "ScriptVisibility",
-      "type": "string"
-    },
     "WebEvidence": {
       "additionalProperties": false,
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
@@ -820,15 +465,57 @@
     }
   },
   "additionalProperties": false,
-  "description": "剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。\n\n`review` 仅在 status=awaiting_review 且 attempt 暂停在闸门时非空：\n教师审阅面板的中间产物快照（#34）。",
+  "description": "闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。",
   "properties": {
     "schema_version": {
       "default": "1.0.0",
       "title": "Schema Version",
       "type": "string"
     },
-    "script": {
-      "$ref": "#/$defs/ScriptSummary"
+    "gate": {
+      "enum": [
+        "materials",
+        "pre_write",
+        "final"
+      ],
+      "title": "Gate",
+      "type": "string"
+    },
+    "dossier": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MaterialDossier"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/WebEvidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "division": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EventDivisionDraft"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "profiles": {
+      "items": {
+        "$ref": "#/$defs/CharacterProfile"
+      },
+      "title": "Profiles",
+      "type": "array"
     },
     "package": {
       "anyOf": [
@@ -840,33 +527,11 @@
         }
       ],
       "default": null
-    },
-    "generation": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/GenerationProgress"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "review": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/GateReview"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
     }
   },
   "required": [
-    "script"
+    "gate"
   ],
-  "title": "ScriptDetail",
+  "title": "GateReview",
   "type": "object"
 }
