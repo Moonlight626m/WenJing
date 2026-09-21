@@ -3,7 +3,7 @@
   "description": "prompt 更新载荷：提供 body 即更新文案；enabled=false 关闭该段覆盖。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

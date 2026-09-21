@@ -36,7 +36,7 @@ _DB_URL = os.environ.get(
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "phone": None,
     "password": "supersecret1",
 }

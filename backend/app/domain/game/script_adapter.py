@@ -7,11 +7,11 @@
 
 from __future__ import annotations
 
-from app.contracts.script import ScriptPackage
+from app.contracts.script import CharacterProfile, ScriptPackage
 from app.domain.game.types import Beat, CharacterSetting, Scene, Script
 
 
-def _speech_style_text(c) -> str:  # noqa: ANN001 - CharacterProfile
+def _speech_style_text(c: CharacterProfile) -> str:
     """SpeechStyle 五要素 → persona 文本（运行时 character identity 引用）。"""
     s = c.speech_style
     if s is None:
@@ -28,7 +28,7 @@ def _speech_style_text(c) -> str:  # noqa: ANN001 - CharacterProfile
     return text
 
 
-def _knowledge_boundary_text(c) -> str:  # noqa: ANN001 - CharacterProfile
+def _knowledge_boundary_text(c: CharacterProfile) -> str:
     kb = c.knowledge_boundary
     if not kb.knows and not kb.not_knows:
         return ""

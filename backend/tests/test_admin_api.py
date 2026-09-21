@@ -34,7 +34,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "phone": None,
     "password": "supersecret1",
 }
@@ -176,7 +176,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -187,7 +187,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material.json()["id"],
             "name": name,
             "description": None,
@@ -219,7 +219,7 @@ def _make_script(client: TestClient, account: dict, *, name: str, publish: bool 
     if publish:
         resp = client.post(
             f"/api/scripts/{script_id}/publish",
-            json={"schema_version": "1.0.0", "visibility": "org"},
+            json={"schema_version": "2.0.0", "visibility": "org"},
             headers=_csrf(account),
         )
         assert resp.status_code == 200, resp.text
@@ -293,7 +293,7 @@ def test_teacher_cannot_see_others_data(client):
     _act_as(client, student)
     created = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": script_a},
+        json={"schema_version": "2.0.0", "script_id": script_a},
         headers=_csrf(student),
     )
     assert created.status_code == 201, created.text
@@ -379,7 +379,7 @@ def test_admin_prompts_list_and_update(client):
     # PUT 新建覆盖行（upsert 语义）
     resp = client.put(
         "/api/admin/prompts/script_gen/divide_events/v2/system",
-        json={"schema_version": "1.0.0", "body": "你是剧本结构设计师（覆盖版）。"},
+        json={"schema_version": "2.0.0", "body": "你是剧本结构设计师（覆盖版）。"},
         headers=_csrf(admin),
     )
     assert resp.status_code == 200, resp.text
@@ -396,7 +396,7 @@ def test_admin_prompts_list_and_update(client):
     # 更新同一键：不新增行，改 body
     resp = client.put(
         "/api/admin/prompts/script_gen/divide_events/v2/system",
-        json={"schema_version": "1.0.0", "body": "你是剧本结构设计师（修订版）。",
+        json={"schema_version": "2.0.0", "body": "你是剧本结构设计师（修订版）。",
               "description": "修订说明"},
         headers=_csrf(admin),
     )
@@ -406,7 +406,7 @@ def test_admin_prompts_list_and_update(client):
     # 禁用覆盖行（下次解析回退 defaults）
     resp = client.put(
         "/api/admin/prompts/script_gen/divide_events/v2/system",
-        json={"schema_version": "1.0.0", "enabled": False},
+        json={"schema_version": "2.0.0", "enabled": False},
         headers=_csrf(admin),
     )
     assert resp.status_code == 200 and resp.json()["enabled"] is False

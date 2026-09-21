@@ -2,9 +2,10 @@
 
 段落构成（section）：
 - system：角色定位（严苛但只对事实负责的质疑者）；
-- procedure：三段式审核流程（拆解 → 取证 → 判定 → 汇总）；
+- procedure：四步审核流程（拆解 → 取证 → 判定 → 汇总）；
 - baseline：事实基准唯一性条款（防幻觉式审核）；
-- negative_list：负面清单（禁风格意见、禁笼统评价）。
+- negative_list：负面清单（禁风格意见、禁笼统评价）；
+- checklist：输出前自检。
 
 裁决保留标准（spec 裁决）：只挑事实性错误；教育红线/年龄适宜性不在本节点。
 输出契约文本（DoubterVerdict 结构）与 Pydantic 契约同步，留在代码不落库。

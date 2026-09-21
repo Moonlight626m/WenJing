@@ -146,7 +146,7 @@ export interface RuntimeUpdateDto {
 export function openSession(scriptId: number): Promise<SessionStatus> {
   return request("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", script_id: scriptId }),
+    body: JSON.stringify({ schema_version: "2.0.0", script_id: scriptId }),
   });
 }
 
@@ -194,7 +194,7 @@ export function createScriptDraft(
 ): Promise<ScriptSummary> {
   return request("/api/scripts", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 
@@ -216,7 +216,7 @@ export function resumeScriptGeneration(
   return request(`/api/scripts/${scriptId}/generation/resume`, {
     method: "POST",
     body: JSON.stringify({
-      schema_version: "1.0.0",
+      schema_version: "2.0.0",
       ...payload,
     } satisfies GenerationResumeRequest),
   });
@@ -232,7 +232,7 @@ export function publishScript(
 ): Promise<ScriptSummary> {
   return request(`/api/scripts/${scriptId}/publish`, {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", visibility }),
+    body: JSON.stringify({ schema_version: "2.0.0", visibility }),
   });
 }
 
@@ -286,14 +286,14 @@ export function listAdminUsage(
 export function register(input: Omit<RegisterRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 
 export function login(input: Omit<LoginRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "1.0.0", ...input }),
+    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
   });
 }
 

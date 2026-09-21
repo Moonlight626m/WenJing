@@ -24,6 +24,7 @@ from app.contracts.enums import ScriptStatus, UsagePurpose, UserRole
 from app.contracts.script_library import ScriptListResponse
 from app.controllers.auth_deps import Principal, require_role
 from app.infrastructure.db.session import SessionLocal
+from app.infrastructure.models.prompt import PromptTemplate
 from app.services.admin import AdminService
 from app.services.script_projection import script_summary
 
@@ -71,7 +72,7 @@ async def admin_usage(
     return UsageAggregateResponse(items=items, since=since, until=until)
 
 
-def _prompt_entry(row) -> PromptEntry:  # noqa: ANN001 - ORM 行类型窄
+def _prompt_entry(row: PromptTemplate) -> PromptEntry:
     return PromptEntry(
         stage=row.stage,
         node=row.node,

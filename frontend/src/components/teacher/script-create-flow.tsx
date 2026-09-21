@@ -43,7 +43,7 @@ export function ScriptCreateFlow() {
     setError(null);
     try {
       const result = await importSourceMaterial({
-        schema_version: "1.0.0",
+        schema_version: "2.0.0",
         source: filename ? "upload" : "paste",
         filename,
         raw_text: rawText,

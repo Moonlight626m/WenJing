@@ -19,7 +19,7 @@
   "description": "玩家命令：唯一游戏输入入口；command_id 幂等键。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

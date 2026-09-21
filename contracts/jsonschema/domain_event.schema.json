@@ -24,7 +24,7 @@
   "description": "已发生的游戏事实；只追加，不可变。\n\nsequence 在 (session_id, branch_id) 内单调递增；\ncausation_id 指向引发本事件的命令/事件 ID，correlation_id 串联同一命令的因果链。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

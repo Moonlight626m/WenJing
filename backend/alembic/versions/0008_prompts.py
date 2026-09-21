@@ -11,7 +11,6 @@ Create Date: 2026-09-21
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB  # noqa: F401  (与相邻迁移风格一致)
 
 from alembic import op
 

@@ -25,7 +25,7 @@ _DB_URL = os.environ.get(
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "email": "alice@wenjing.local",
     "phone": None,
     "password": "supersecret1",
@@ -135,7 +135,7 @@ def _login(client: TestClient, identifier: str, password: str):
     return client.post(
         "/api/auth/login",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "identifier": identifier,
             "password": password,
         },

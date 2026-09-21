@@ -1,11 +1,13 @@
-"""剧本书写节点 prompt v2（stage1 生成链路；段落落库，输出契约留 stage1 代码）。
+"""剧本书写节点 prompt v2（stage1 生成链路；段落落库，输出契约与代码同步）。
 
 段落构成（section）：
 - role：教学场景定位与忠实性总纲；
 - dialogue_rules：对白写作准则（意图/潜台词/show-don't-tell/口吻区分）；
 - scene_rules：场景开场四要素 + 舞台指示写法；
-- beat_rules：beat 留白与戏剧目标（为角色扮演运行时服务）。
+- beat_rules：beat 留白与戏剧目标（为角色扮演运行时服务）；
+- checklist：输出前自检（收束段）。
 
+输出契约常量（OUTPUT_CONTRACT）必须与 contracts.script 同步，按裁决留在代码。
 本节点不给 few-shot 范例（spec 裁决）：以判据与负面清单引导。
 """
 
@@ -15,6 +17,36 @@ NODE = "write_script"
 STAGE = "script_gen"
 VERSION = "v2"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
+
+OUTPUT_CONTRACT = """\
+【字段类型契约（必须严格遵守）】
+{
+  "schema_version": "2.0.0",
+  "title": "字符串",
+  "characters": [
+    {"name": "字符串（只能取自人物列表）", "public_background": "字符串",
+     "personality_traits": [{"label": "标签", "evidence": "原文例证",
+       "behavior": "行为化描述"}],
+     "speech_style": {"era_layer": "语言时代层", "sentence_rhythm": "句长与节奏",
+       "address_terms": "称谓习惯", "catchphrases": "口头禅与语气词",
+       "emotion_expression": "情绪表达方式", "sample_lines": ["示例台词"]} 或 null,
+     "knowledge_boundary": {"knows": ["知道的事"], "not_knows": ["不知道的事"]},
+     "is_player_playable": {"value": 布尔值, "reason": "判断理由"}}
+  ],
+  "scenes": [
+    {"scene_id": 整数（从 1 递增）, "title": "字符串", "participants": ["人物名"],
+     "beats": [
+       {"beat_id": 整数（从 1 全局递增）, "description": "字符串",
+        "is_key_event": 布尔值,
+        "evidence_refs": [{"source_type": "original_text", "excerpt": "原文摘录",
+          "paragraph_index": 整数, "char_start": 整数, "char_end": 整数}]}
+     ]}
+  ],
+  "teaching_focus": ["字符串"],
+  "playable_roles": ["人物名（characters 子集，非空）"],
+  "stage2_ending_beat_id": 整数（必须存在于某个 beat 的 beat_id 中）
+}
+"""
 
 ROLE = """\
 你是"文境"的剧本编剧。根据课文原文分析结果，生成一个可直接进入\
@@ -56,9 +88,18 @@ BEAT_RULES = """\
 - 若输入包含事件划分草稿，其场景/节拍结构与介入点必须遵守。
 """
 
+SELF_CHECK = """\
+【输出前自检】
+- 关键 beat 的顺序是否与【关键事件】一致、evidence_refs 是否齐备？
+- 每个角色的对白是否符合其设定卡的说话风格、口吻能否区分？
+- 有没有预写结局性台词锁死角色 agent 的即兴空间？
+- scene_id/beat_id/各整数是否为 JSON 整数而非字符串？
+"""
+
 DEFAULTS: dict[str, str] = {
     "role": ROLE,
     "dialogue_rules": DIALOGUE_RULES,
     "scene_rules": SCENE_RULES,
     "beat_rules": BEAT_RULES,
+    "checklist": SELF_CHECK,
 }

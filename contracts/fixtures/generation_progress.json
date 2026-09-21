@@ -1,19 +1,46 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "status": "running",
   "nodes": [
-    { "node": "collect_materials", "status": "succeeded", "detail": "3 轮收集，12 条素材" },
-    { "node": "verify_materials", "status": "rejected", "detail": "第 1 轮被打回" },
-    { "node": "divide_events", "status": "pending", "detail": null },
-    { "node": "design_characters", "status": "pending", "detail": null },
-    { "node": "write_script", "status": "pending", "detail": null },
-    { "node": "final_audit", "status": "pending", "detail": null }
+    {
+      "node": "collect_materials",
+      "status": "succeeded",
+      "detail": "3 轮收集，12 条素材"
+    },
+    {
+      "node": "verify_materials",
+      "status": "rejected",
+      "detail": "第 1 轮被打回"
+    },
+    {
+      "node": "divide_events",
+      "status": "pending",
+      "detail": null
+    },
+    {
+      "node": "design_characters",
+      "status": "pending",
+      "detail": null
+    },
+    {
+      "node": "write_script",
+      "status": "pending",
+      "detail": null
+    },
+    {
+      "node": "final_audit",
+      "status": "pending",
+      "detail": null
+    }
   ],
   "doubter_events": [
     {
       "node": "collect_materials",
       "verdict": "reject",
-      "issues": ["时代背景结论缺少原文依据", "人物动机概括与原文顺序冲突"],
+      "issues": [
+        "时代背景结论缺少原文依据",
+        "人物动机概括与原文顺序冲突"
+      ],
       "round": 1
     },
     {

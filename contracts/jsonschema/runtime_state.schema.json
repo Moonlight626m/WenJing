@@ -5,7 +5,7 @@
       "description": "当前等待玩家响应的交互点（稳定交互点语义）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -57,7 +57,7 @@
       "description": "交互点的单个选项。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -82,7 +82,7 @@
       "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -126,7 +126,7 @@
   "description": "显式、可序列化的运行时状态；恢复/回放的重建目标。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

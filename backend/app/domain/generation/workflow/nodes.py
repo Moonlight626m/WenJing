@@ -79,8 +79,11 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
 def _parse_verdict(raw: str) -> DoubterVerdict:
     data = json.loads(extract_json(raw))
     verdict = DoubterVerdict.model_validate(data)
-    if verdict.verdict == "reject" and not verdict.issues:
-        raise ValueError("reject verdict requires issues")
+    must_fix = any(i.severity == "must_fix" for i in verdict.issues)
+    if verdict.verdict == "reject" and not must_fix:
+        raise ValueError("reject verdict requires at least one must_fix issue")
+    if verdict.verdict == "pass" and must_fix:
+        raise ValueError("must_fix issue present but verdict is pass")
     return verdict
 
 

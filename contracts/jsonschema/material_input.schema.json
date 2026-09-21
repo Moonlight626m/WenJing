@@ -14,7 +14,7 @@
   "description": "用户提交的课文原文输入（未经规范化）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

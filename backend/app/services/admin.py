@@ -11,11 +11,11 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.admin import UsageAggregateRow
 from app.contracts.enums import ScriptStatus, UsagePurpose
+from app.infrastructure.errx import codes, new
 from app.infrastructure.models.llm_usage import LlmUsage
 from app.infrastructure.models.prompt import PromptTemplate
 from app.infrastructure.models.script import Script as ScriptRecord
@@ -113,34 +113,53 @@ class AdminService:
         description: str | None = None,
         enabled: bool | None = None,
     ) -> PromptTemplate:
-        """更新或创建一条覆盖行；更新即时生效（下次生成调用读到）。"""
+        """更新或创建一条覆盖行；更新即时生效（下次生成调用读到）。
+
+        PATCH 语义：只写入请求中显式提供的字段——未提供的字段（含
+        description/enabled）保持原值，不做静默重置。新建行必须携带 body。
+        """
         async with self._factory() as s:
-            values: dict[str, object] = {
-                "description": description,
-                "enabled": enabled if enabled is not None else True,
-            }
-            if body is not None:
-                values["body"] = body
-            stmt = (
-                pg_insert(PromptTemplate)
-                .values(
+            existing = (
+                await s.execute(
+                    select(PromptTemplate).where(
+                        PromptTemplate.stage == stage,
+                        PromptTemplate.node == node,
+                        PromptTemplate.version == version,
+                        PromptTemplate.section == section,
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing is None:
+                if body is None:
+                    raise new(
+                        codes.PRT_MALFORMED_MESSAGE,
+                        extra={
+                            "reason": "prompt row not found; body is required to create",
+                            "key": f"{stage}/{node}/{version}/{section}",
+                        },
+                    )
+                row = PromptTemplate(
                     stage=stage,
                     node=node,
                     version=version,
                     section=section,
-                    body=body or "",
+                    body=body,
                     description=description,
-                    enabled=enabled if enabled is not None else True,
+                    enabled=True if enabled is None else enabled,
                 )
-                .on_conflict_do_update(
-                    index_elements=["stage", "node", "version", "section"],
-                    set_=values,
-                )
-                .returning(PromptTemplate)
-            )
-            row = (await s.execute(stmt)).scalar_one()
+                s.add(row)
+                await s.commit()
+                return row
+
+            if body is not None:
+                existing.body = body
+            if description is not None:
+                existing.description = description
+            if enabled is not None:
+                existing.enabled = enabled
             await s.commit()
-            return row
+            return existing
 
 
 __all__ = ["AdminService"]

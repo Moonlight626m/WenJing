@@ -24,7 +24,7 @@
   "description": "剧本列表项/发布结果的轻量投影。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

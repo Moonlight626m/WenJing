@@ -34,7 +34,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "phone": None,
     "password": "supersecret1",
 }
@@ -198,7 +198,7 @@ def _make_script(
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -209,7 +209,7 @@ def _make_script(
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material.json()["id"],
             "name": name,
             "description": None,
@@ -227,7 +227,7 @@ def _publish(client: TestClient, account: dict, script_id: int, visibility: str)
     _act_as(client, account)
     resp = client.post(
         f"/api/scripts/{script_id}/publish",
-        json={"schema_version": "1.0.0", "visibility": visibility},
+        json={"schema_version": "2.0.0", "visibility": visibility},
         headers=_csrf(account),
     )
     assert resp.status_code == 200, resp.text
@@ -316,7 +316,7 @@ def test_student_opens_and_plays_to_stage3_and_terminal(client):
 
     created = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": script_id},
+        json={"schema_version": "2.0.0", "script_id": script_id},
         headers=_csrf(student),
     )
     assert created.status_code == 201, created.text
@@ -343,7 +343,7 @@ def test_my_games_list_and_resume(client):
     _act_as(client, student)
     created = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": script_id},
+        json={"schema_version": "2.0.0", "script_id": script_id},
         headers=_csrf(student),
     )
     assert created.status_code == 201, created.text
@@ -406,7 +406,7 @@ def test_teacher_can_play_own_draft(client):
     _act_as(client, teacher)
     created = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": draft},
+        json={"schema_version": "2.0.0", "script_id": draft},
         headers=_csrf(teacher),
     )
     assert created.status_code == 201, created.text
@@ -418,7 +418,7 @@ def test_teacher_can_play_own_draft(client):
     _act_as(client, other)
     denied = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": draft},
+        json={"schema_version": "2.0.0", "script_id": draft},
         headers=_csrf(other),
     )
     assert denied.status_code == 404
@@ -434,14 +434,14 @@ def test_open_session_rejects_bad_requests(client):
 
     # 未登录
     client.cookies.clear()
-    unauth = client.post("/api/sessions", json={"schema_version": "1.0.0", "script_id": 1})
+    unauth = client.post("/api/sessions", json={"schema_version": "2.0.0", "script_id": 1})
     assert unauth.status_code == 401
     assert client.get("/api/sessions").status_code == 401
 
     # 已登录但缺 CSRF
     _act_as(client, teacher)
     missing = client.post(
-        "/api/sessions", json={"schema_version": "1.0.0", "script_id": 1}
+        "/api/sessions", json={"schema_version": "2.0.0", "script_id": 1}
     )
     assert missing.status_code == 403
     assert missing.json()["code"] == "AUTH_CSRF_FAILED"
@@ -449,7 +449,7 @@ def test_open_session_rejects_bad_requests(client):
     # 剧本未生成 → 409
     not_ready = client.post(
         "/api/sessions",
-        json={"schema_version": "1.0.0", "script_id": script_id},
+        json={"schema_version": "2.0.0", "script_id": script_id},
         headers=_csrf(teacher),
     )
     assert not_ready.status_code == 409

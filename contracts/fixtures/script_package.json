@@ -1,13 +1,21 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "title": "背影",
   "characters": [
     {
       "name": "父亲",
       "public_background": "中年丧母、失业在家的父亲，言语不多却爱子心切",
       "personality_traits": [
-        {"label": "隐忍", "evidence": "祸不单行的日子里只说\"事已至此，不必难过\"", "behavior": "遇变故先把宽慰话留给家人，愁绪独自扛"},
-        {"label": "笨拙而真诚", "evidence": "穿过铁道爬月台为儿子买橘子", "behavior": "不会说漂亮话，用买橘子、嘱茶房这类实事表达关心"}
+        {
+          "label": "隐忍",
+          "evidence": "祸不单行的日子里只说\"事已至此，不必难过\"",
+          "behavior": "遇变故先把宽慰话留给家人，愁绪独自扛"
+        },
+        {
+          "label": "笨拙而真诚",
+          "evidence": "穿过铁道爬月台为儿子买橘子",
+          "behavior": "不会说漂亮话，用买橘子、嘱茶房这类实事表达关心"
+        }
       ],
       "speech_style": {
         "era_layer": "浅文白夹杂",
@@ -15,19 +23,34 @@
         "address_terms": "称儿子为\"我儿\"",
         "catchphrases": "事已至此",
         "emotion_expression": "克制，爱意藏在实事里",
-        "sample_lines": ["事已至此，不必难过。", "我买几个橘子去。你就在此地，不要走动。"]
+        "sample_lines": [
+          "事已至此，不必难过。",
+          "我买几个橘子去。你就在此地，不要走动。"
+        ]
       },
       "knowledge_boundary": {
-        "knows": ["家道中落、祖母去世", "儿子返京的车期"],
-        "not_knows": ["儿子日记里的心声"]
+        "knows": [
+          "家道中落、祖母去世",
+          "儿子返京的车期"
+        ],
+        "not_knows": [
+          "儿子日记里的心声"
+        ]
       },
-      "is_player_playable": {"value": true, "reason": "戏份贯穿全剧，动机清晰可共情"}
+      "is_player_playable": {
+        "value": true,
+        "reason": "戏份贯穿全剧，动机清晰可共情"
+      }
     },
     {
       "name": "儿子",
       "public_background": "二十岁的青年，从北京到徐州奔丧后返京",
       "personality_traits": [
-        {"label": "自作聪明", "evidence": "多次打断父亲托茶房、觉得父亲讲话不漂亮", "behavior": "遇长辈照顾先嫌多余，事后才知珍贵"}
+        {
+          "label": "自作聪明",
+          "evidence": "多次打断父亲托茶房、觉得父亲讲话不漂亮",
+          "behavior": "遇长辈照顾先嫌多余，事后才知珍贵"
+        }
       ],
       "speech_style": {
         "era_layer": "纯白话",
@@ -35,20 +58,33 @@
         "address_terms": "称\"父亲\"",
         "catchphrases": "",
         "emotion_expression": "对父爱后知后觉，追悔时直露",
-        "sample_lines": ["爸爸，你走吧。", "唉，我那时真是聪明过分！"]
+        "sample_lines": [
+          "爸爸，你走吧。",
+          "唉，我那时真是聪明过分！"
+        ]
       },
       "knowledge_boundary": {
-        "knows": ["父亲赋闲、家中变故"],
-        "not_knows": ["父亲攀月台时的全部狼狈细节（隔距离所见有限）"]
+        "knows": [
+          "父亲赋闲、家中变故"
+        ],
+        "not_knows": [
+          "父亲攀月台时的全部狼狈细节（隔距离所见有限）"
+        ]
       },
-      "is_player_playable": {"value": true, "reason": "语言难度适中，学生能自然模仿"}
+      "is_player_playable": {
+        "value": true,
+        "reason": "语言难度适中，学生能自然模仿"
+      }
     }
   ],
   "scenes": [
     {
       "scene_id": 1,
       "title": "浦口送别",
-      "participants": ["父亲", "儿子"],
+      "participants": [
+        "父亲",
+        "儿子"
+      ],
       "beats": [
         {
           "beat_id": 1,
@@ -95,7 +131,14 @@
       ]
     }
   ],
-  "teaching_focus": ["白描手法", "线索：四次背影", "朴素语言中的深情"],
-  "playable_roles": ["父亲", "儿子"],
+  "teaching_focus": [
+    "白描手法",
+    "线索：四次背影",
+    "朴素语言中的深情"
+  ],
+  "playable_roles": [
+    "父亲",
+    "儿子"
+  ],
   "stage2_ending_beat_id": 3
 }

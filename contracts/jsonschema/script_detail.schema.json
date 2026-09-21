@@ -5,7 +5,7 @@
       "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -112,7 +112,7 @@
       "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -161,7 +161,7 @@
       "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -257,7 +257,7 @@
       "description": "doubter 裁决记录：打回时带逐条问题（教师端可见）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -325,7 +325,7 @@
       "description": "闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -422,7 +422,7 @@
       "description": "生成进度：长时间生成过程不是黑盒（进度由 script_generations 落库）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -520,7 +520,7 @@
       "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -603,7 +603,7 @@
       "description": "单个 workflow 节点的进度投影。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -638,7 +638,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -704,7 +704,7 @@
       "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -727,7 +727,7 @@
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -809,7 +809,7 @@
       "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -878,7 +878,7 @@
       "description": "剧本列表项/发布结果的轻量投影。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1016,7 +1016,7 @@
       "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1061,7 +1061,7 @@
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1111,7 +1111,7 @@
   "description": "剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。\n\n`review` 仅在 status=awaiting_review 且 attempt 暂停在闸门时非空：\n教师审阅面板的中间产物快照（#34）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

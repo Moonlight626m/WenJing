@@ -3,7 +3,7 @@
   "description": "素材对外投影（不含原文全文，避免大 payload）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "title": "Schema Version",
       "type": "string"
     },

@@ -37,7 +37,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "1.0.0",
+    "schema_version": "2.0.0",
     "email": "sessions.teacher@wenjing.local",
     "phone": None,
     "password": "supersecret1",
@@ -170,7 +170,7 @@ def _make_playable(client: TestClient) -> str:
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -182,7 +182,7 @@ def _make_playable(client: TestClient) -> str:
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material.json()["id"],
             "name": "会话测试剧本",
             "description": None,

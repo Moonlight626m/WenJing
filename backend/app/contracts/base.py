@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
-CONTRACTS_SCHEMA_VERSION = "1.0.0"
+CONTRACTS_SCHEMA_VERSION = "2.0.0"
 
 
 class ContractModel(BaseModel):

@@ -40,7 +40,7 @@ _MATERIAL_TEXT = (
     "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
 )
 
-_REGISTER = {"schema_version": "1.0.0", "phone": None, "password": "supersecret1"}
+_REGISTER = {"schema_version": "2.0.0", "phone": None, "password": "supersecret1"}
 
 
 def _engine():
@@ -159,7 +159,7 @@ def _import_material(client: TestClient) -> int:
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -174,7 +174,7 @@ def _create_script(client: TestClient, material_id: int, name: str = "剧本") -
         client,
         "/api/scripts",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material_id,
             "name": name,
             "description": None,
@@ -214,7 +214,7 @@ def _publish(client: TestClient, script_id: int, visibility: str = "org"):
     return _post(
         client,
         f"/api/scripts/{script_id}/publish",
-        {"schema_version": "1.0.0", "visibility": visibility},
+        {"schema_version": "2.0.0", "visibility": visibility},
     )
 
 
@@ -262,7 +262,7 @@ def _login_owner(client: TestClient, email: str) -> dict:
     resp = client.post(
         "/api/auth/login",
         json={
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "identifier": email,
             "password": "supersecret1",
         },
@@ -371,7 +371,7 @@ def test_import_non_narrative_rejected(client):
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": "地球绕太阳公转。水由氢和氧组成。光速约为每秒三十万公里。",
@@ -438,7 +438,7 @@ def test_student_cannot_use_creation_endpoints(client):
         client,
         "/api/materials",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -451,7 +451,7 @@ def test_student_cannot_use_creation_endpoints(client):
         client,
         "/api/scripts",
         {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "material_id": material_id,
             "name": "x",
             "description": None,
