@@ -162,6 +162,57 @@ async def test_provider_reported_usage_is_preferred(factory) -> None:
     assert row.purpose == "verify"
 
 
+async def test_tool_calling_llm_meters_each_round(factory) -> None:
+    """工具调用 Agent 一轮内多次往返，每次往返各计一条（ADR-0004 §4）。"""
+    from app.domain.llm import LLMReply, TokenUsage, ToolCall
+
+    actor = await _new_actor(factory)
+
+    class _ToolLLM:
+        provider = "tool-provider"
+        model = "tool-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
+            raise AssertionError("应走 chat_with_tools")
+
+        async def chat_with_tools(  # noqa: ANN001
+            self, messages, *, tools=None, session_id="", purpose=None
+        ):
+            self.calls += 1
+            if any(m.get("role") == "tool" for m in messages):
+                return LLMReply(content="最终答复", usage=TokenUsage(3, 4, 7))
+            return LLMReply(
+                content="",
+                tool_calls=(ToolCall(id="c1", name="view_world_progress", arguments={}),),
+                usage=TokenUsage(1, 1, 2),
+            )
+
+    inner = _ToolLLM()
+    recorder = UsageRecorder(session_factory=factory)
+    llm = recorder.wrap(
+        inner, UsageContext(org_id=actor.org_id, user_id=actor.user_id)
+    )
+    schema = [{"type": "function", "function": {"name": "view_world_progress"}}]
+
+    await llm.chat_with_tools(
+        [{"role": "user", "content": "看看进度"}], tools=schema, purpose=UsagePurpose.AGENT
+    )
+    await llm.chat_with_tools(
+        [{"role": "tool", "content": "stage=stage2", "tool_call_id": "c1"}],
+        tools=schema,
+        purpose=UsagePurpose.AGENT,
+    )
+
+    rows = await _usage_rows(factory, actor.org_id, purpose="agent")
+    assert inner.calls == 2
+    assert len(rows) == 2, "工具链路每次往返都应计一条"
+    assert all(r.provider == "tool-provider" for r in rows)
+    assert sorted(r.total_tokens for r in rows) == [2, 7]
+
+
 async def test_record_failure_does_not_raise() -> None:
     class _BoomFactory:
         def __call__(self):  # noqa: ANN204

@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
-from app.domain.llm import Message, TokenUsage
+from app.domain.llm import LLMReply, Message, TokenUsage, ToolCall
 from app.infrastructure.errx import codes, wrap
 
 logger = logging.getLogger("wenjing.agents.llm")
@@ -72,6 +73,33 @@ class ChatLLMService:
         purpose: UsagePurpose = UsagePurpose.AGENT,
     ) -> tuple[str, TokenUsage | None]:
         """同 `chat`，额外返回 provider 回报的真实 token 用量（#22 计量采信）。"""
+        content, _calls, usage = await self._invoke(
+            messages, session_id=session_id, purpose=purpose
+        )
+        return content, usage
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> LLMReply:
+        """带 OpenAI 工具 schema 的对话；返回文本 + tool_calls + 用量。"""
+        content, calls, usage = await self._invoke(
+            messages, session_id=session_id, purpose=purpose, tools=tools
+        )
+        return LLMReply(content=content, tool_calls=calls, usage=usage)
+
+    async def _invoke(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str,
+        purpose: UsagePurpose,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, tuple[ToolCall, ...], TokenUsage | None]:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(
@@ -88,6 +116,7 @@ class ChatLLMService:
                         "provider": self.provider,
                         "model": self.model,
                         "messages": len(messages),
+                        "tools": len(tools) if tools else 0,
                         "purpose": purpose.value,
                     },
                 },
@@ -100,11 +129,15 @@ class ChatLLMService:
                 }
                 if self._max_tokens is not None:
                     req["max_tokens"] = self._max_tokens
+                if tools:
+                    req["tools"] = tools
                 resp = await asyncio.wait_for(
                     client.chat.completions.create(**req),
                     timeout=self._timeout,
                 )
-                content = resp.choices[0].message.content or ""
+                message = resp.choices[0].message
+                content = message.content or ""
+                calls = _tool_calls(message)
                 usage = _token_usage(resp)
                 logger.info(
                     "llm_call_end",
@@ -115,6 +148,7 @@ class ChatLLMService:
                             "model": self.model,
                             "purpose": purpose.value,
                             "content": content,  # 模型响应全文（业务层关键信息）
+                            "tool_calls": [c.name for c in calls],
                             "prompt_tokens": usage.prompt_tokens if usage else None,
                             "completion_tokens": usage.completion_tokens if usage else None,
                         },
@@ -131,7 +165,28 @@ class ChatLLMService:
                 raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
             finally:
                 await client.close()
-            return content, usage
+            return content, calls, usage
+
+
+def _tool_calls(message: Any) -> tuple[ToolCall, ...]:
+    """解析 OpenAI 响应中的 tool_calls；参数为 JSON 字符串，解析失败按空参处理。"""
+    raw = getattr(message, "tool_calls", None) or []
+    calls: list[ToolCall] = []
+    for item in raw:
+        fn = getattr(item, "function", None)
+        name = getattr(fn, "name", None)
+        if not name:
+            continue
+        try:
+            arguments = json.loads(fn.arguments or "{}")
+        except (TypeError, ValueError):
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {"value": arguments}
+        calls.append(
+            ToolCall(id=str(getattr(item, "id", "") or ""), name=name, arguments=arguments)
+        )
+    return tuple(calls)
 
 
 def _token_usage(resp: Any) -> TokenUsage | None:

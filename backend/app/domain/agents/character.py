@@ -1,9 +1,13 @@
-"""角色 Agent：三层分离（identity / memory / director）精简版。
+"""角色 Agent：基于 LangChain agent + 工具的自主查询式实现（ADR-0004）。
 
-基于 design_01 §4。MVP 阶段聚焦机制：
-- 三层结构保留（identity 稳定 prompt、memory 分层记忆、director 阶段指令）
-- 每轮 `respond()` 只调一次 LLM；输出为提议（proposal）或发言（文本）
-- 剧情质量验证 deferred，此处只保证结构正确与可调度
+三层分离（identity / memory / director 精简版）保留，但响应生成从"一次性拼装
+上下文后单次 LLM 调用"升级为"LangChain 工具调用 Agent"：
+- identity 仍是稳定 system prompt（`create_agent(system_prompt=...)`）；
+- memory 仍是分层记忆，并作为 `view_my_memory` 工具的数据源；
+- 剧情上下文 / 当前矛盾 / 世界进度不再由引擎强行灌入 prompt，而是由 Agent 通过
+  工具（`view_world_progress` 等，见 `agents/tools.py`）**按需查询**。
+- 每次生成仍以一次 `ainvoke` 为接缝；模型按需决定调用哪些工具（可能多轮往返，
+  每轮单独计量）。
 """
 
 from __future__ import annotations
@@ -12,7 +16,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.contracts.enums import UsagePurpose
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
+from app.domain.agents.chat_model import WenjingChatModel
+from app.domain.agents.tools import WorldView, build_character_tools
 from app.domain.game.types import CharacterSetting, PlayerAction, Proposal
 from app.domain.llm import LLMService
 from app.infrastructure.errx import codes, new, wrap
@@ -69,50 +77,56 @@ class CharacterIdentity:
         if self.knowledge_boundary:
             parts.append(f"{self.knowledge_boundary}。超出边界的信息，"
                          "以符合身份的方式回应（困惑、岔开或按你的立场表态）。")
+        parts.append(
+            "你可以调用工具查询当前世界进度与剧情上下文；需要这些信息时先查询，"
+            "再给出符合身份的行动，不要凭空编造未发生的情节。"
+        )
         return "".join(parts)
 
 
 class CharacterAgent:
-    """单个角色 Agent，三层分离：identity + memory + director。"""
+    """单个角色 Agent：identity + memory + LangChain 工具调用执行器。"""
 
-    def __init__(self, setting: CharacterSetting, llm: LLMService) -> None:
+    def __init__(
+        self, setting: CharacterSetting, llm: LLMService, world: WorldView
+    ) -> None:
         self.identity = CharacterIdentity(setting)
         self.memory = CharacterMemory()
         self.llm = llm
         self._proposal_seq = 0
+        self._model = WenjingChatModel(service=llm)
+        self._tools = build_character_tools(memory=self.memory, world=world)
+        self._executor = create_agent(
+            self._model,
+            tools=self._tools,
+            system_prompt=self.identity.to_system_prompt(),
+        )
 
     async def propose_action(self, stage: str) -> Proposal:
-        """按剧情上下文提出一个行动提议（一次 LLM 调用）。MVP 输出可 mock。"""
-        system = self.identity.to_system_prompt()
-        user = self._build_user_message(stage, instruction="propose_action")
-        try:
-            raw = await self.llm.chat(
-                [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                purpose=UsagePurpose.AGENT,
-            )
-        except Exception as exc:
-            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
-
+        """按当前世界状态提出一个行动提议（工具调用 Agent 跑一轮）。"""
+        text = await self._run(stage, instruction="propose_action")
         self._proposal_seq += 1
-        text = raw.strip() or "（无提议）"
-        self.memory.personal_log.append(f"提议：{text}")
-        self.memory.rejected.append(text)  # 记录提出过，避免重复
+        description = text or "（无提议）"
+        self.memory.personal_log.append(f"提议：{description}")
+        self.memory.rejected.append(description)  # 记录提出过，避免重复
         return Proposal(
             proposal_id=self._proposal_seq,
             proposed_by=self.identity.name,
-            description=text,
+            description=description,
         )
 
     async def react_to(self, player_action: PlayerAction, stage: str) -> str:
-        """对玩家操作做出反应（模式 B/C；一次 LLM 调用）。"""
-        system = self.identity.to_system_prompt()
-        user = self._build_user_message(stage, instruction="react")
-        raw = await self.llm.chat(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            purpose=UsagePurpose.AGENT,
+        """对玩家操作做出反应（模式 B/C）。"""
+        detail = player_action.text or f"选项 {player_action.option_id}"
+        text = await self._run(
+            stage,
+            instruction="react",
+            extra=f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。",
         )
-        text = raw.strip()
-        self.memory.working_memory.append({"role": self.identity.name, "content": text})
+        if text:
+            self.memory.working_memory.append(
+                {"role": self.identity.name, "content": text}
+            )
         logger.debug(
             "character_react",
             extra={"wj_extra": {"name": self.identity.name, "text": text}},
@@ -129,29 +143,69 @@ class CharacterAgent:
             description=f"修订提议{hint}",
         )
 
-    def _build_user_message(self, stage: str, instruction: str) -> str:
+    async def _run(self, stage: str, *, instruction: str, extra: str = "") -> str:
+        """驱动 LangChain 执行器一轮，返回最终 AI 文本。"""
+        message = self._build_user_message(stage, instruction=instruction, extra=extra)
+        try:
+            result = await self._executor.ainvoke(
+                {"messages": [HumanMessage(content=message)]}
+            )
+        except Exception as exc:
+            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+        return _final_text(result.get("messages", []))
+
+    def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
         stage_hint = {
             "stage2": "你处于剧情还原阶段，按课文原情节行动。",
             "stage3": "你处于剧情续写阶段，设定内自由发挥。",
         }.get(stage, "")
-        return (
-            f"{stage_hint} 剧情上下文：{self.memory.plot_context or '（无）'}\n"
-            f"当前处境：{self.memory.current_direction or '（无）'}\n"
-            f"任务：{instruction}"
-        )
+        parts = [stage_hint]
+        if extra:
+            parts.append(extra)
+        parts.append(f"任务：{instruction}（必要时先用工具查询世界进度与剧情上下文）")
+        return "\n".join(p for p in parts if p)
+
+
+def _final_text(messages: list[BaseMessage]) -> str:
+    """取最后一条**无工具调用**的 AI 文本（即最终答复）。
+
+    工具调用轮的 AIMessage 可能同时携带引导语与 tool_calls，若只取"最后一条非空
+    AI 文本"，在末轮 content 为空或被 recursion_limit 截断时会误取中间引导语。
+    故排除带 tool_calls 的消息，只认最终答复；找不到则返回空串。
+    """
+    for message in reversed(messages):
+        if not isinstance(message, AIMessage):
+            continue
+        if getattr(message, "tool_calls", None):
+            continue
+        content = message.content
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        if isinstance(content, str):
+            return content.strip()
+    return ""
 
 
 class CharacterAgentManager:
     """角色 Agent 集群管理器（design_01 §4.6 精简版）。"""
 
-    def __init__(self, llm: LLMService, player_role: str | None = None) -> None:
+    def __init__(
+        self,
+        llm: LLMService,
+        world: WorldView,
+        player_role: str | None = None,
+    ) -> None:
         self.llm = llm
+        self.world = world
         self.agents: dict[str, CharacterAgent] = {}
         self.player_role: str | None = player_role
 
     def create_agents(self, characters: list[CharacterSetting]) -> None:
         for setting in characters:
-            self.agents[setting.name] = CharacterAgent(setting, self.llm)
+            self.agents[setting.name] = CharacterAgent(setting, self.llm, self.world)
             if setting.is_player_playable:
                 self.player_role = setting.name
 

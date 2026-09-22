@@ -1,8 +1,9 @@
 """LLM 用量计量接缝（issue #22 / ADR-0002 §5）。
 
 设计要点：
-- **深模块**：`UsageRecordingLLM` 只暴露与 `LLMService` 相同的 `chat`，内部完成
-  token 估算 + 落库；调用方（Agent / Stage1）无需感知计量细节。
+- **深模块**：`UsageRecordingLLM` 暴露与 `LLMService` 相同的 `chat`（以及可选的
+  `chat_with_tools`），内部完成 token 估算 + 落库；调用方（Agent / Stage1）无需感知
+  计量细节。工具调用 Agent 一轮内多次往返时，每次往返单独计一条。
 - **best-effort**：计量失败绝不影响主流程——`UsageRecorder.record` 吞掉异常并告警。
 - **无状态**：`UsageRecordingLLM` 由调用方按上下文（org/user/script/session）构造，
   不依赖全局可变状态，天然适配并发协程。
@@ -22,7 +23,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.enums import UsagePurpose
-from app.domain.llm import TokenUsage
+from app.domain.llm import LLMReply, TokenUsage
 from app.infrastructure.models.llm_usage import LlmUsage
 
 logger = logging.getLogger("wenjing.usage.recorder")
@@ -145,6 +146,49 @@ class UsageRecordingLLM:
             usage=usage,
         )
         return completion
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> LLMReply:
+        """工具调用链路的计量委托：每次往返（工具选择 / 最终答复）单独计一条。"""
+        chat_with_tools = getattr(self._inner, "chat_with_tools", None)
+        if chat_with_tools is None:
+            # 内层不支持工具调用：降级为无工具单轮，仍计量。
+            completion = await self.chat(
+                _plain_messages(messages), session_id=session_id, purpose=purpose
+            )
+            return LLMReply(content=completion)
+        reply = await chat_with_tools(
+            messages, tools=tools, session_id=session_id, purpose=purpose
+        )
+        # 工具选择轮 completion 为空是正常的；只有 provider 未回报 usage 时才会用
+        # 文本估算，写工具名进去会污染 completion token 语义，故只记 content。
+        await self._recorder.record(
+            self._context,
+            provider=self.provider,
+            model=self.model,
+            purpose=purpose,
+            messages=_plain_messages(messages),
+            completion=reply.content,
+            usage=reply.usage,
+        )
+        return reply
+
+
+def _plain_messages(messages: Sequence[dict]) -> list[dict[str, str]]:
+    """把工具链路消息规整为计量用的 role/content 文本对（token 估算不关心 tool_calls）。"""
+    out: list[dict[str, str]] = []
+    for m in messages:
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            content = "" if content is None else str(content)
+        out.append({"role": str(m.get("role", "user")), "content": content})
+    return out
 
 
 __all__ = [

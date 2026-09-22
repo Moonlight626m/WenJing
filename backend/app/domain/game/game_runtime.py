@@ -35,6 +35,7 @@ from app.domain.game.types import (
     Proposal,
     Script,
 )
+from app.domain.game.world_view import RuntimeWorldView
 from app.domain.llm import LLMService
 from app.infrastructure.errx import codes, new
 
@@ -58,6 +59,8 @@ class _RState:
     beat_cursor: int = 0
     stage3_round_taken: int = 0
     plot_log: list[str] = field(default_factory=list)
+    # 当前矛盾/关键处境（D5 方向确认产物；供角色 Agent 的 view_current_direction 工具）
+    direction: dict[str, str] = field(default_factory=dict)
     ended: bool = False
 
 
@@ -110,18 +113,21 @@ class GameRuntime:
         self._log = log or logging.getLogger("wenjing.core.runtime")
 
         self.state_machine = GameStateMachine()
-        self.screenwriter = ScreenwriterAgent(llm)
-        self.verifier = VerifierAgent(llm)
-        self.characters = CharacterAgentManager(llm)
-        self.characters.create_agents(script.characters)
-
         self.state = _RState()
         self.active_interaction: InteractionPoint | None = None
+
+        # 角色 Agent 经只读 WorldView 按需查询世界进度（ADR-0004）；
+        # 视图惰性读取 self.state，故可在状态初始化后、开始推进前构造。
+        self.world_view = RuntimeWorldView(self)
+        self.screenwriter = ScreenwriterAgent(llm)
+        self.verifier = VerifierAgent(llm)
+        self.characters = CharacterAgentManager(llm, self.world_view)
+        self.characters.create_agents(script.characters)
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
-        # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标)
-        self._memory_marks: list[tuple[int, dict[str, Any], int]] = []
+        # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标, 该时刻的方向)
+        self._memory_marks: list[tuple[int, dict[str, Any], int, dict[str, str]]] = []
         self._valid_proposals: list[Proposal] = []
 
     # ===== 显式状态导出 / 恢复 =====
@@ -135,6 +141,7 @@ class GameRuntime:
             "beat_cursor": s.beat_cursor,
             "stage3_round_taken": s.stage3_round_taken,
             "plot_log": list(s.plot_log),
+            "direction": dict(s.direction),
             "ended": s.ended,
             "character_memories": self.characters.snapshot_memories(),
             "latest_event_id": self.event_store.latest_event_id,
@@ -151,6 +158,7 @@ class GameRuntime:
         s.beat_cursor = int(state_dump.get("beat_cursor", 0))
         s.stage3_round_taken = int(state_dump.get("stage3_round_taken", 0))
         s.plot_log = list(state_dump.get("plot_log", []))
+        s.direction = dict(state_dump.get("direction") or {})
         s.ended = bool(state_dump.get("ended", False))
 
         self.screenwriter.beat_index = s.beat_cursor
@@ -220,12 +228,12 @@ class GameRuntime:
                 self.state.plot_log.append(summary)
                 self.characters.broadcast_plot_context(summary)
         elif etype == evt.EVENT_DIRECTION:
-            self.characters.broadcast_direction(
-                {
-                    "conflict": payload.get("conflict", ""),
-                    "context": payload.get("context", ""),
-                }
-            )
+            direction = {
+                "conflict": payload.get("conflict", ""),
+                "context": payload.get("context", ""),
+            }
+            self.state.direction = direction
+            self.characters.broadcast_direction(direction)
         elif etype == evt.EVENT_SYSTEM:
             role = payload.get("selected_role")
             if role:
@@ -432,14 +440,14 @@ class GameRuntime:
 
         self.state.phase = InteractionPhase.DIRECTION.value
         direction = self.screenwriter.confirm_direction(self.script, stage)
+        direction_payload = {"conflict": direction.conflict, "context": direction.context}
+        self.state.direction = dict(direction_payload)
         self._append(
             evt.EVENT_DIRECTION,
-            {"conflict": direction.conflict, "context": direction.context},
+            direction_payload,
             sink=sink,
         )
-        self.characters.broadcast_direction(
-            {"conflict": direction.conflict, "context": direction.context}
-        )
+        self.characters.broadcast_direction(direction_payload)
 
         proposals = await self._collect_proposals(stage, sink)
         self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
@@ -562,14 +570,15 @@ class GameRuntime:
                 extra={"event_id": target_event_id},
             )
 
-        _, snap, mark_beat = 0, {}, 0
-        for mark_event_id, m_snap, m_beat in reversed(self._memory_marks):
+        _, snap, mark_beat, mark_direction = 0, {}, 0, {}
+        for mark_event_id, m_snap, m_beat, m_direction in reversed(self._memory_marks):
             if mark_event_id <= target_event_id:
-                snap, mark_beat = m_snap, m_beat
+                snap, mark_beat, mark_direction = m_snap, m_beat, m_direction
                 break
         if snap:
             self.characters.restore_memories(snap)
             self.state.beat_cursor = min(mark_beat, self.state.beat_cursor)
+            self.state.direction = dict(mark_direction)
         self.screenwriter.beat_index = self.state.beat_cursor
 
         # 回溯：旧事件保留，创建新活动分支并从目标节点继承历史
@@ -619,6 +628,7 @@ class GameRuntime:
                 self.event_store.latest_event_id,
                 self.characters.snapshot_memories(),
                 self.state.beat_cursor,
+                dict(self.state.direction),
             )
         )
 

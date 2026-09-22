@@ -44,6 +44,7 @@ async def test_replay_from_snapshot_and_events_rebuilds_state(make_runtime):
         "beat_cursor",
         "stage3_round_taken",
         "plot_log",
+        "direction",
         "ended",
     ):
         assert b[key] == a[key], f"重放后 {key} 不一致"

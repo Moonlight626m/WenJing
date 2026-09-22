@@ -2358,7 +2358,7 @@ requires-dist = [
     { name = "ddgs", specifier = ">=9.16.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "langchain", specifier = ">=0.3" },
+    { name = "langchain", specifier = ">=1.0" },
     { name = "langgraph", specifier = ">=0.2" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.1" },
     { name = "openai", specifier = ">=1.50" },
