@@ -12,16 +12,18 @@ import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
 import { InteractionCard } from "@/components/interaction-card";
 import { MessageStream } from "@/components/message-stream";
+import { GameStage } from "@/components/game-stage";
+import { SubtitleTrack } from "@/components/subtitle-track";
 import { RolePanel } from "@/components/role-panel";
 import { RollbackBar } from "@/components/rollback-bar";
 import { ToastHost } from "@/components/toast-host";
 
 const CONNECTION_LABELS: Record<string, { text: string; className: string }> = {
-  idle: { text: "未连接", className: "text-zinc-400" },
-  connecting: { text: "连接中…", className: "text-amber-500" },
-  connected: { text: "已连接", className: "text-emerald-600 dark:text-emerald-400" },
-  reconnecting: { text: "重连中…", className: "text-amber-500 animate-pulse" },
-  closed: { text: "已断开", className: "text-red-500" },
+  idle: { text: "未连接", className: "text-white/40" },
+  connecting: { text: "连接中…", className: "text-amber-300" },
+  connected: { text: "已连接", className: "text-emerald-300" },
+  reconnecting: { text: "重连中…", className: "text-amber-300 animate-pulse" },
+  closed: { text: "已断开", className: "text-red-400" },
 };
 
 function GameContent() {
@@ -98,56 +100,64 @@ function GameContent() {
   const conn = CONNECTION_LABELS[connection] ?? CONNECTION_LABELS.idle;
 
   return (
-    <main className="mx-auto flex h-screen w-full max-w-5xl flex-col p-4">
-      <header className="flex items-center justify-between border-b border-zinc-200 pb-3 dark:border-zinc-800">
-        <div className="flex items-baseline gap-3">
-          <h1 className="font-semibold">文境</h1>
-          <span className="text-xs text-zinc-400">{sessionId.slice(0, 8)}</span>
-          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-            {stageLabel(stage)}
-          </span>
-          {playerRole && (
-            <span className="text-xs text-emerald-600 dark:text-emerald-400">
-              扮演：{playerRole}
+    <main className="flex h-screen w-full flex-col overflow-hidden">
+      <GameStage>
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-black/30 px-4 py-3 text-white backdrop-blur-sm">
+          <div className="flex flex-wrap items-baseline gap-3">
+            <h1 className="font-semibold">文境</h1>
+            <span className="text-xs text-white/40">{sessionId.slice(0, 8)}</span>
+            <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-white/70">
+              {stageLabel(stage)}
             </span>
-          )}
-        </div>
-        <div className="flex items-center gap-3 text-xs">
-          {pending && (
-            <span className="animate-pulse text-amber-500">处理中：{pending.label}…</span>
-          )}
-          <span className={conn.className}>{conn.text}</span>
-          <Link href="/" className="text-zinc-400 underline dark:text-zinc-500">
-            首页
-          </Link>
-        </div>
-      </header>
-
-      <div className="flex min-h-0 flex-1 gap-4 py-4">
-        <aside className="hidden w-56 shrink-0 overflow-y-auto md:block">
-          <h2 className="mb-3 text-xs font-medium text-zinc-400">角色面板</h2>
-          <RolePanel
-            characters={characters}
-            playableRoles={playableRoles}
-            playerRole={playerRole}
-          />
-        </aside>
-
-        <section className="flex min-h-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-            {messages.length === 0 ? (
-              <p className="text-sm text-zinc-400">等待剧情开始…</p>
-            ) : (
-              <MessageStream messages={messages} showSeq={process.env.NODE_ENV !== "production"} />
+            {playerRole && (
+              <span className="text-xs text-emerald-300">扮演：{playerRole}</span>
             )}
           </div>
-
-          <div className="mt-3 flex flex-col gap-3">
-            <InteractionCard />
-            <RollbackBar />
+          <div className="flex items-center gap-3 text-xs">
+            {pending && (
+              <span className="animate-pulse text-amber-300">处理中：{pending.label}…</span>
+            )}
+            <span className={conn.className}>{conn.text}</span>
+            <Link href="/" className="text-white/50 underline">
+              首页
+            </Link>
           </div>
-        </section>
-      </div>
+        </header>
+
+        <div className="flex min-h-0 flex-1 gap-4 p-3 md:p-4">
+          <aside className="hidden w-56 shrink-0 overflow-y-auto md:block">
+            <h2 className="mb-3 text-xs font-medium text-white/60">角色面板</h2>
+            <RolePanel
+              characters={characters}
+              playableRoles={playableRoles}
+              playerRole={playerRole}
+            />
+          </aside>
+
+          <section className="flex min-h-0 flex-1 flex-col">
+            <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-white/10 bg-black/35 backdrop-blur-sm">
+              <div className="absolute inset-0 overflow-y-auto p-4">
+                {messages.length === 0 ? (
+                  <p className="text-sm text-white/50">等待剧情开始…</p>
+                ) : (
+                  <MessageStream
+                    messages={messages}
+                    showSeq={process.env.NODE_ENV !== "production"}
+                  />
+                )}
+              </div>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/75 via-black/35 to-transparent px-4 pt-10 pb-3">
+                <SubtitleTrack messages={messages} />
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-col gap-3">
+              <InteractionCard />
+              <RollbackBar />
+            </div>
+          </section>
+        </div>
+      </GameStage>
       <ToastHost />
     </main>
   );
