@@ -70,13 +70,16 @@ class AssetCredit:
 
 @dataclass(frozen=True)
 class ImageCandidate:
-    """开放版权库检索的单条候选：字节 + 许可元数据。"""
+    """开放版权库检索的单条候选：字节 + 许可元数据 + 供审核的相关性文本。"""
 
     image_bytes: bytes
     content_type: str = "image/jpeg"
     source_url: str = ""
     width: int = 0
     height: int = 0
+    # 图库标题/描述（审核 agent #45 判"相关"的文本依据；无视觉模型时唯一线索）。
+    title: str = ""
+    description: str = ""
     credit: AssetCredit = field(default_factory=AssetCredit)
 
 

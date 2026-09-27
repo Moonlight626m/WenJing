@@ -116,7 +116,7 @@ class WikimediaImageSearch:
         if not url:
             return None
         try:
-            page = await self._fetcher.fetch(url)
+            fetched = await self._fetcher.fetch(url)
         except Error:
             return None
 
@@ -126,11 +126,13 @@ class WikimediaImageSearch:
         width = as_int(info.get("thumbwidth")) if thumb_url else as_int(info.get("width"))
         height = as_int(info.get("thumbheight")) if thumb_url else as_int(info.get("height"))
         return ImageCandidate(
-            image_bytes=page.body_bytes,
-            content_type=page.content_type,
+            image_bytes=fetched.body_bytes,
+            content_type=fetched.content_type,
             source_url=landing,
             width=width,
             height=height,
+            title=_clean_text(page.get("title")).removeprefix("File:").replace("_", " "),
+            description=_clean_text(_meta_value(meta, "ImageDescription")),
             credit=AssetCredit(
                 author=_clean_text(_meta_value(meta, "Artist"))
                 or _clean_text(_meta_value(meta, "Credit")),

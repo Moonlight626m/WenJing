@@ -141,6 +141,8 @@ class UsagePurpose(StrEnum):
     DIVIDE_EVENTS = "divide_events"
     CHARACTER_DESIGN = "character_design"
     SCRIPT_WRITING = "script_writing"
+    # 媒体图片审核 agent（ADR-0005 §6 / issue #45）：便宜模型结构化判定。
+    IMAGE_REVIEW = "image_review"
 
 
 class MessageCategory(StrEnum):

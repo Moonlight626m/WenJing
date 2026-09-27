@@ -77,6 +77,7 @@ export const USAGE_PURPOSE_LABELS: Record<UsagePurpose, string> = {
   divide_events: "事件划分",
   character_design: "人物设定",
   script_writing: "剧本书写",
+  image_review: "配图审核",
 };
 
 export function usagePurposeLabel(purpose: UsagePurpose): string {

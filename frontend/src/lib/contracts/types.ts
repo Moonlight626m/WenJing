@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.2.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.3.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -248,7 +248,8 @@ export type UsagePurpose =
   | "doubter"
   | "divide_events"
   | "character_design"
-  | "script_writing";
+  | "script_writing"
+  | "image_review";
 
 export interface UsageAggregateRow {
   schema_version: string;

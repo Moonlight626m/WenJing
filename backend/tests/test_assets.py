@@ -28,7 +28,7 @@ from app.services.assets import AssetAccessService
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
 )
-_REGISTER = {"schema_version": "2.2.0", "phone": None, "password": "supersecret1"}
+_REGISTER = {"schema_version": "2.3.0", "phone": None, "password": "supersecret1"}
 
 
 # ===== ImageProcessor（无 DB）=====

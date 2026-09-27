@@ -148,7 +148,7 @@ async def test_insufficient_source_raises():
     analysis = TextAnalysis(
         content_hash="h",
         genre={
-            "schema_version": "2.2.0",
+            "schema_version": "2.3.0",
             "genre": "narrative",
             "is_supported": True,
             "signals": [],

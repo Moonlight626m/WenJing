@@ -110,6 +110,8 @@ class OpenverseImageSearch:
             source_url=landing,
             width=as_int(item.get("width")),
             height=as_int(item.get("height")),
+            title=str(item.get("title") or ""),
+            description=str(item.get("description") or ""),
             credit=AssetCredit(
                 author=str(item.get("creator") or ""),
                 license=license_name,

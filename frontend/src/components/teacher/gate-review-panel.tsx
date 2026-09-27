@@ -92,7 +92,7 @@ export function GateReviewPanel({
 
   function buildResume(action: "approve" | "reject"): GateResumePayload {
     const empty: GateEdits = {
-      schema_version: "2.2.0",
+      schema_version: "2.3.0",
       dossier: null,
       division: null,
       profiles: null,
