@@ -41,6 +41,25 @@ class Settings(BaseSettings):
     # Literal 校验：非法值启动即报错，不静默回落（避免复刻"持续静默降级"）。
     rag_search_provider: Literal["null", "ddgs"] = "null"
 
+    # --- 媒体与对象存储（ADR-0005 / M0 #39 配置项；M1 起接入真实实现）---
+    # 存储 provider：null=不落盘空实现；s3=S3 兼容（MinIO 开发 / OSS 生产，M1 #40）。
+    media_storage_provider: Literal["null", "s3"] = "null"
+    # 内网 endpoint（backend 访问对象存储）与浏览器可达的 public endpoint 分离：
+    # 预签名 URL 必须用 public endpoint 重写，否则浏览器拿到容器内主机名不可达。
+    media_storage_endpoint: str = ""
+    media_storage_public_endpoint: str = ""
+    media_storage_region: str = ""
+    media_storage_bucket: str = "wenjing-media"
+    media_storage_access_key: str = ""
+    media_storage_secret_key: str = ""
+    media_storage_presign_ttl: int = 900
+
+    # 生图 provider（M2 #46 接入）；检索 provider（M2 #44 接入）。
+    media_image_gen_provider: Literal["null"] = "null"
+    media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"
+    # 每会话运行期生图上限（ADR-0005 §7 成本控制）。
+    media_max_images_per_session: int = 20
+
     # 默认上限需覆盖 Stage1 全剧本生成（实测 DeepSeek 约 100s）；短调用仅受上界约束
     llm_timeout_seconds: int = 150
     player_timeout_seconds: int = 300
