@@ -6,11 +6,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from app.composition import get_container
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UserRole
 from app.contracts.material import MaterialInput
@@ -25,57 +25,16 @@ from app.contracts.script_library import (
     ScriptSummary,
 )
 from app.controllers.auth_deps import Principal, require_role
-from app.infrastructure.config import get_settings
-from app.infrastructure.diagnostics.logging import exc_reason
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.services.script_library import ScriptLibrary
 from app.services.script_projection import script_summary
 
 router = APIRouter(prefix="/api", tags=["scripts"])
 
-_logger = logging.getLogger("wenjing.api.scripts")
-
-_library: ScriptLibrary | None = None
-_checkpointer = None
-
-
-def set_generation_checkpointer(saver) -> None:
-    """lifespan 注入 AsyncPostgresSaver（闸门恢复用；None = 无 checkpointer 降级）。"""
-    global _checkpointer
-    _checkpointer = saver
-
 
 def get_script_library() -> ScriptLibrary:
-    """进程级 ScriptLibrary 单例（与 SessionApplication 同源 LLM 配置）。"""
-    global _library
-    if _library is None:
-        from app.infrastructure.db.session import SessionLocal
-        from app.infrastructure.llm.factory import ModelServiceFactory
-        from app.infrastructure.rag.service import RagService, build_search_provider
-        from app.infrastructure.usage import UsageRecorder
-
-        settings = get_settings()
-        script_llm = None
-        if settings.llm_api_key:
-            try:
-                script_llm = ModelServiceFactory.build(settings.llm_model_config())
-            except Exception as exc:
-                # 上游组件（真实 provider）构建失败，回落到下游（无 LLM 降级模式）前先告警
-                _logger.warning(
-                    "script_llm_build_failed_fallback_degraded",
-                    extra={"wj_extra": {"reason": exc_reason(exc)}},
-                )
-                script_llm = None
-        _library = ScriptLibrary(
-            session_factory=SessionLocal,
-            script_llm=script_llm,
-            rag=RagService(search_provider=build_search_provider(settings.rag_search_provider)),
-            model_name=settings.llm_model,
-            usage_recorder=UsageRecorder(session_factory=SessionLocal),
-            workflow_checkpointer=_checkpointer,
-            workflow_enabled=script_llm is not None,
-        )
-    return _library
+    """进程级 ScriptLibrary（由组合根 `app.composition` 装配）。"""
+    return get_container().script_library
 
 
 _Teacher = Annotated[Principal, Depends(require_role(UserRole.TEACHER))]

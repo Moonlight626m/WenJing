@@ -1,4 +1,3 @@
-import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -7,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.composition import get_container
 from app.controllers.admin import router as admin_router
 from app.controllers.auth import router as auth_router
 from app.controllers.errors import error_response
@@ -15,49 +15,16 @@ from app.controllers.scripts import router as scripts_router
 from app.infrastructure.config import get_settings
 from app.infrastructure.errx import Error as WJError
 
-logger = logging.getLogger("wenjing.main")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # 生成 workflow 的 checkpointer（issue #28）：psycopg（非 asyncpg）连接，
-    # setup() 幂等建 checkpointer 四表（saver 自管迁移，与 Alembic 无关）。
-    settings = get_settings()
-    checkpoint_pool = (
-        await _open_checkpointer(settings.database_url) if settings.llm_api_key else None
-    )
+    # 组合根建立事件循环绑定资源（生成 workflow checkpointer，issue #28）。
+    container = get_container()
+    await container.open()
     try:
         yield
     finally:
-        if checkpoint_pool is not None:
-            await checkpoint_pool.close()
-
-
-async def _open_checkpointer(database_url: str):
-    """async 创建 AsyncPostgresSaver 并注册；只捕连接/建表异常（注入/配置错误显式暴露）。
-
-    PG 不可达时降级返回 None：workflow 无 checkpointer 也可跑（闸门恢复 #34 完整启用）。
-    """
-    from app.controllers.scripts import set_generation_checkpointer
-
-    pool = None
-    try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        from psycopg_pool import AsyncConnectionPool
-
-        conninfo = database_url.replace("+asyncpg", "")
-        pool = AsyncConnectionPool(conninfo=conninfo, open=False, min_size=1)
-        saver = AsyncPostgresSaver(pool)
-        await pool.open()
-        await saver.setup()
-        set_generation_checkpointer(saver)
-        return pool
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("generation_checkpointer_setup_failed_degraded reason=%s", exc)
-        if pool is not None:
-            # 连接失败时回收已创建的 pool，防泄漏
-            await pool.close()
-        return None
+        await container.close()
 
 
 def create_app() -> FastAPI:

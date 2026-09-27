@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
 
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
+from app.composition import get_container
 from app.contracts.dto import (
     CreateSessionRequest,
     SessionListResponse,
@@ -21,52 +22,16 @@ from app.controllers.errors import error_response as _error_response
 from app.infrastructure.config import get_settings
 from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.db.session import create_engine as create_db_engine
-from app.infrastructure.diagnostics.logging import exc_reason, get_logger
 from app.infrastructure.diagnostics.metrics import metrics
 from app.infrastructure.errx import Error as WJError
 from app.infrastructure.errx import codes, new
 
-logger = get_logger("api.routes")
-
 router = APIRouter()
-
-_application = None
 
 
 def get_application():
-    """进程级 SessionApplication 单例。
-
-    #12 真实集成组装：配置 LLM key 时用真实 provider（DeepSeek/OpenAI…）；
-    无 key 回落 DeterministicAgentLLM（快速演示/测试模式）。
-    剧本生成/素材导入在 `app/controllers/scripts.py` 的 ScriptLibrary 中组装。
-    """
-    global _application
-    if _application is None:
-        from app.infrastructure.db.session import SessionLocal
-        from app.infrastructure.llm.fake import DeterministicAgentLLM
-        from app.infrastructure.usage import UsageRecorder
-        from app.services.session_runtime import SessionApplication
-
-        settings = get_settings()
-        agent_llm: object = DeterministicAgentLLM()
-        if settings.llm_api_key:
-            try:
-                from app.infrastructure.llm.factory import ModelServiceFactory
-
-                agent_llm = ModelServiceFactory.build(settings.llm_model_config())
-            except Exception as exc:
-                # 上游组件（真实 provider）构建失败，回落到下游确定性实现前先告警
-                logger.warning(
-                    "llm_factory_build_failed_fallback_fake",
-                    extra={"wj_extra": {"reason": exc_reason(exc)}},
-                )
-                agent_llm = DeterministicAgentLLM()
-        _application = SessionApplication(
-            session_factory=SessionLocal,
-            agent_llm=agent_llm,
-            usage_recorder=UsageRecorder(session_factory=SessionLocal),
-        )
-    return _application
+    """进程级 SessionApplication（由组合根 `app.composition` 装配）。"""
+    return get_container().session_application
 
 
 def _ensure_uuid(raw: str) -> uuid.UUID:

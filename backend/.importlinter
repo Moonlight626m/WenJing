@@ -1,7 +1,7 @@
 # import-linter: backend 分层依赖方向守卫（`make lint-arch`）
 #
 # 布局（见 AGENTS.md「后端分层与依赖方向」）：
-#   controllers（HTTP/WS 适配）→ services（应用编排）→ domain（领域）
+#   composition（唯一组合根）→ controllers/main（HTTP/WS 适配）→ services（应用编排）→ domain（领域）
 #   infrastructure 为适配器层：实现 domain 端口，可依赖 domain，不得依赖 controllers/services
 #   contracts 为共享叶子层（零 app.* 依赖）
 #
@@ -60,3 +60,14 @@ forbidden_modules =
     app.services
     app.domain
     app.infrastructure
+
+[importlinter:contract:composition_is_outer]
+name = 组合根只被 controllers/main 引用（内层不得反向依赖）
+type = forbidden
+source_modules =
+    app.domain
+    app.services
+    app.infrastructure
+    app.contracts
+forbidden_modules =
+    app.composition

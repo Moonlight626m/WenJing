@@ -3,26 +3,22 @@
 职责与接缝：
 - 生命周期：open_session(script_id) → submit_command → get_status；剧本由剧本库
   生成并发布，会话经 `script_id` 引用（生成/导入素材不在此，见 `app/services/script_library`）。
-- 事务边界：一次命令受理 = commands 行 + events 行 + sessions head/version/
-  active_branch 同一事务提交（`PersistentEventStore.write_pending` 事务外置）。
+- 持久化（事务/CAS/恢复）委托 `app.services.session_store.SessionStore`：本类只做
+  用例编排、访问控制与投影，不再直接拼事务。
 - 幂等：commands 表主键为第一道闸（无内存运行时后仍是唯一权威闸）。
 - 投影：StepResult/export_state → 契约 RuntimeUpdate/RuntimeState（projection.py）。
 - **无状态命令路径（#21）**：不常驻内存运行时；每次命令从 DB（最新快照 + 事件）
-  重建运行时。并发由乐观锁保护——恢复时以 `SELECT ... FOR UPDATE` 锁定会话行读取
-  (version, events) 一致快照，落库时 `UPDATE ... WHERE version = <恢复时版本>`，
-  冲突者整事务回滚（`SESS_CONFLICT`），绝不部分推进。
+  重建运行时（`SessionStore.restore` 以 `SELECT ... FOR UPDATE` 取一致快照）。
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.commands import CommandKind, PlayerCommand
@@ -39,15 +35,11 @@ from app.domain.game.engine_config import EngineConfig
 from app.domain.game.game_runtime import GameRuntime
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.llm import LLMService
-from app.infrastructure.db.branch import commit_rollback_branch  # noqa: F401  (回溯专用原子路径)
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
-from app.infrastructure.errx import codes, new, wrap
-from app.infrastructure.models.command import CommandRecord, CommandStatus
-from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
-from app.infrastructure.models.event_branch import EventBranchRecord
+from app.infrastructure.errx import codes, new
+from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.session import Session as SessionRecord
-from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
 from app.services.session_projection import (
     messages_from_update,
     project_messages,
@@ -55,6 +47,7 @@ from app.services.session_projection import (
     project_status,
     project_update,
 )
+from app.services.session_store import SessionStore
 
 logger = logging.getLogger("wenjing.session.application")
 
@@ -69,11 +62,13 @@ class SessionApplication:
         agent_llm: LLMService,
         config: EngineConfig | None = None,
         usage_recorder=None,
+        store: SessionStore | None = None,
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
         self._config = config or EngineConfig()
         self._usage_recorder = usage_recorder
+        self._store = store or SessionStore(session_factory=session_factory)
 
     # ===== 创建 =====
 
@@ -113,7 +108,7 @@ class SessionApplication:
         try:
             await self.initialize_session(created.session_id, actor)
         except Exception:
-            await self._discard_session(created.session_id)
+            await self._store.discard(created.session_id)
             raise
         return await self.get_status(created.session_id, actor=actor)
 
@@ -146,16 +141,6 @@ class SessionApplication:
             ]
         )
 
-    async def _discard_session(self, session_id: uuid.UUID) -> None:
-        """回收未成功初始化的会话（open_session 失败补偿）：按 FK 顺序删净其数据。"""
-        async with self._factory() as s:
-            for model in (SnapshotRecord, CommandRecord, GameEventRecord, EventBranchRecord):
-                await s.execute(delete(model).where(model.session_id == session_id))
-            await s.execute(
-                delete(SessionRecord).where(SessionRecord.id == session_id)
-            )
-            await s.commit()
-
     async def _require_playable_script(self, actor: Actor, script_id: int) -> None:
         """不可见剧本按不存在处理（不泄露存在性）；无生成内容则 SCR_NOT_READY。"""
         async with self._factory() as s:
@@ -182,7 +167,7 @@ class SessionApplication:
         无状态：运行时构建后即丢弃（#21），后续命令一律从 DB 重建。
         """
         sess = await self._access_session(session_id, actor)
-        package = await self._load_package(session_id)
+        package = await self._store.load_package(session_id)
         if package is None:
             raise new(
                 codes.SESS_NOT_FOUND,
@@ -219,9 +204,7 @@ class SessionApplication:
         await self._access_session(session_id, actor)
         runtime, store, version = await self._restore_runtime(session_id)
 
-        async with self._factory() as s:
-            existing = await s.get(CommandRecord, command.command_id)
-        if existing is not None:
+        if await self._store.has_command(command.command_id):
             # 幂等闸：对账返回当前状态，不重复执行
             return (
                 project_update(
@@ -260,128 +243,30 @@ class SessionApplication:
         *,
         expected_version: int,
     ) -> None:
-        """命令 + 事件 + head/version/active_branch + 快照，同一事务。
-
-        乐观锁（#21）：`expected_version` 是恢复运行时读取到的会话版本。落库先用
-        `UPDATE ... WHERE version = expected_version` 抢占会话行（同时获得行锁，
-        串行化同一会话的写入），失败即 `SESS_CONFLICT` 且不写任何事件；成功后再写
-        事件/命令/head，确保并发命令绝无部分推进、也不会撞 `(branch, sequence)` 唯一键。
-        DB 失败统一转为 `PER_WRITE_FAILED`（可重试）；显式业务错误原样上抛。
-        """
-        try:
-            async with self._factory() as s:
-                sess = await s.get(SessionRecord, session_id)
-                if sess is None:
-                    raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
-
-                # 1) 乐观锁 CAS 抢占：版本不符即冲突，事务内不写任何东西
-                claimed = await s.execute(
-                    update(SessionRecord)
-                    .where(
-                        SessionRecord.id == session_id,
-                        SessionRecord.version == expected_version,
-                    )
-                    .values(version=expected_version + 1)
-                )
-                if claimed.rowcount != 1:
-                    raise new(
-                        codes.SESS_CONFLICT,
-                        extra={"id": str(session_id), "expected": expected_version},
-                    )
-
-                # 2) 持锁后写事件 + 命令（同事务；任何失败整体回滚）
-                rows = await store.write_pending(s, str(session_id))
-                s.add(
-                    CommandRecord(
-                        command_id=command.command_id,
-                        session_id=session_id,
-                        kind=command.kind.value,
-                        payload=command.payload,
-                        status=CommandStatus.SUCCEEDED.value,
-                    )
-                )
-                await s.flush()
-                head_db = rows[-1].id if rows else sess.head_event_id
-
-                # 3) 更新 head/branch/stage/status（head 依赖新事件行，故在写入后）
-                await s.execute(
-                    update(SessionRecord)
-                    .where(SessionRecord.id == session_id)
-                    .values(
-                        head_event_id=head_db,
-                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
-                        player_role=runtime.state.player_role,
-                        current_stage=runtime.state.stage,
-                        status="ended" if result.terminal else sess.status,
-                    )
-                )
-                if rows:
-                    export = runtime.export_state()
-                    s.add(
-                        SnapshotRecord(
-                            session_id=session_id,
-                            event_id=head_db,
-                            state_machine=json.dumps(
-                                {"stage": export["stage"], "phase": export.get("phase")}
-                            ),
-                            character_memories=export.get("character_memories") or {},
-                            plot_context=export,
-                            schema_version=EVENTS_SCHEMA_VERSION,
-                        )
-                    )
-                await s.commit()
-        except Exception as exc:
-            if isinstance(exc, SQLAlchemyError):
-                raise wrap(
-                    exc, codes.PER_WRITE_FAILED, extra={"op": "persist_command"}
-                ) from exc
-            raise
+        """命令 + 事件 + head/version/active_branch + 快照，同一事务（见 SessionStore）。"""
+        await self._store.commit(
+            session_id=session_id,
+            store=store,
+            stage=runtime.state.stage,
+            expected_version=expected_version,
+            op="persist_command",
+            command=command,
+            player_role=runtime.state.player_role,
+            ended=bool(result.terminal) if result is not None else False,
+            runtime_state=runtime.export_state,
+        )
 
     async def _commit_system_events(
         self, session_id: uuid.UUID, store: PersistentEventStore, *, stage: str
     ) -> None:
-        """系统动作（如 runtime.start）产生的事件 + head/stage 推进，单事务。
-
-        与 `_persist_command` 同一乐观锁拼写：先 CAS 抢占会话行，再写事件与
-        head/active_branch/current_stage；避免「stage 另起事务写」导致的状态背离。
-        """
-        try:
-            async with self._factory() as s:
-                sess = await s.get(SessionRecord, session_id)
-                if sess is None:
-                    raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
-                expected = sess.version
-                claimed = await s.execute(
-                    update(SessionRecord)
-                    .where(
-                        SessionRecord.id == session_id,
-                        SessionRecord.version == expected,
-                    )
-                    .values(version=expected + 1)
-                )
-                if claimed.rowcount != 1:
-                    raise new(
-                        codes.SESS_CONFLICT,
-                        extra={"id": str(session_id), "expected": expected},
-                    )
-                rows = await store.write_pending(s, str(session_id))
-                await s.flush()
-                await s.execute(
-                    update(SessionRecord)
-                    .where(SessionRecord.id == session_id)
-                    .values(
-                        head_event_id=rows[-1].id if rows else sess.head_event_id,
-                        active_branch_id=branch_uuid(session_id, store.active_branch_id),
-                        current_stage=stage,
-                    )
-                )
-                await s.commit()
-        except Exception as exc:
-            if isinstance(exc, SQLAlchemyError):
-                raise wrap(
-                    exc, codes.PER_WRITE_FAILED, extra={"op": "commit_system_events"}
-                ) from exc
-            raise
+        """系统动作（如 runtime.start）产生的事件 + head/stage 推进，单事务。"""
+        await self._store.commit(
+            session_id=session_id,
+            store=store,
+            stage=stage,
+            expected_version=None,
+            op="commit_system_events",
+        )
 
     # ===== 状态查询 =====
 
@@ -389,7 +274,7 @@ class SessionApplication:
         self, session_id: uuid.UUID, *, actor: Actor
     ) -> SessionStatusResponse:
         sess = await self._access_session(session_id, actor)
-        pkg = await self._load_package(session_id)
+        pkg = await self._store.load_package(session_id)
         playable = (
             [c.name for c in pkg.characters if c.is_player_playable] if pkg else []
         )
@@ -456,50 +341,14 @@ class SessionApplication:
         容错（issue #13）：剧本/快照损坏或 schema 不兼容时，宁可忽略快照
         从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
         """
-        async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id, with_for_update=True)
-            version = sess.version if sess is not None else 0
-            script_id = sess.script_id if sess is not None else None
-            script_row = (
-                await s.get(ScriptRecord, script_id) if script_id is not None else None
-            )
-            if sess is None or script_row is None or script_row.script_data is None:
-                raise new(
-                    codes.SESS_NOT_FOUND,
-                    extra={"id": str(session_id), "reason": "script not available"},
-                )
-            usage_context = self._usage_context(session_id, sess)
-            try:
-                package = ScriptPackage.model_validate(script_row.script_data)
-            except Exception as exc:
-                raise wrap(
-                    exc,
-                    codes.PER_INCOMPATIBLE_SCHEMA,
-                    extra={"id": str(session_id), "reason": "script package invalid"},
-                ) from exc
-            snap = (
-                await s.execute(
-                    select(SnapshotRecord)
-                    .where(SnapshotRecord.session_id == session_id)
-                    .order_by(SnapshotRecord.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            store = PersistentEventStore()
-            try:
-                events = await store.restore_active_branch(s, str(session_id))
-            except SQLAlchemyError as exc:
-                raise wrap(
-                    exc, codes.PER_WRITE_FAILED, extra={"op": "restore_events"}
-                ) from exc
-            except ValueError as exc:
-                raise wrap(
-                    exc, codes.PER_CORRUPT_SNAPSHOT, extra={"reason": "events corrupt"}
-                ) from exc
-
+        loaded = await self._store.restore(session_id)
         runtime, store = self._build_runtime(
-            session_id, package, store=store, usage_context=usage_context
+            session_id,
+            loaded.package,
+            store=loaded.store,
+            usage_context=self._usage_context(session_id, loaded.session),
         )
+        snap = loaded.snapshot
         base: dict | None = None
         if snap is not None:
             if snap.schema_version != EVENTS_SCHEMA_VERSION:
@@ -519,7 +368,7 @@ class SessionApplication:
                     extra={"session_id": str(session_id)},
                 )
         cutoff = int((base or {}).get("latest_event_id", 0))
-        replay = [e.to_dict() for e in events if e.event_id > cutoff]
+        replay = [e.to_dict() for e in loaded.events if e.event_id > cutoff]
         try:
             runtime.replay_from(base, replay)
         except Exception as exc:
@@ -527,9 +376,9 @@ class SessionApplication:
                 "snapshot_replay_failed_rebuild",
                 extra={"session_id": str(session_id), "reason": str(exc)},
             )
-            runtime.replay_from(None, [e.to_dict() for e in events])
+            runtime.replay_from(None, [e.to_dict() for e in loaded.events])
 
-        return runtime, store, version
+        return runtime, store, loaded.version
 
     # ===== 内部工具 =====
 
@@ -566,24 +415,6 @@ class SessionApplication:
             script_id=sess.script_id,
             session_id=session_id,
         )
-
-    async def _load_package(self, session_id: uuid.UUID) -> ScriptPackage | None:
-        async with self._factory() as s:
-            sess = await s.get(SessionRecord, session_id)
-            script_id = sess.script_id if sess is not None else None
-            row = (
-                await s.get(ScriptRecord, script_id) if script_id is not None else None
-            )
-        if row is None or row.script_data is None:
-            return None
-        try:
-            return ScriptPackage.model_validate(row.script_data)
-        except Exception as exc:
-            raise wrap(
-                exc,
-                codes.PER_INCOMPATIBLE_SCHEMA,
-                extra={"id": str(session_id), "reason": "script package invalid"},
-            ) from exc
 
     @staticmethod
     def _engine_payload(

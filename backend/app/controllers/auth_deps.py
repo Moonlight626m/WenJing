@@ -16,6 +16,7 @@ from typing import Annotated, Any
 from fastapi import Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.composition import get_container
 from app.contracts.enums import UserRole
 from app.controllers.auth_cookies import CSRF_COOKIE, SESSION_COOKIE, set_auth_cookies
 from app.domain.access import Actor
@@ -28,14 +29,10 @@ from app.services.auth import AuthService, session_ttl
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-_auth_service: AuthService | None = None
-
 
 def get_auth_service() -> AuthService:
-    global _auth_service
-    if _auth_service is None:
-        _auth_service = AuthService()
-    return _auth_service
+    """进程级 AuthService（由组合根 `app.composition` 装配）。"""
+    return get_container().auth_service
 
 
 @dataclass

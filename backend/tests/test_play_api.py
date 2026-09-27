@@ -115,13 +115,14 @@ def client():
     asyncio.run(engine.dispose())
 
     # 测试必须走确定性 fake（backend/.env 可能配置了真实 LLM key）
-    from app.controllers import routes as routes_mod
+    from app import composition
     from app.infrastructure.db.session import SessionLocal
     from app.infrastructure.llm.fake import DeterministicAgentLLM
     from app.services.session_runtime import SessionApplication
 
-    original = routes_mod._application
-    routes_mod._application = SessionApplication(
+    container = composition.get_container()
+    original = container._session_application
+    container._session_application = SessionApplication(
         session_factory=SessionLocal, agent_llm=DeterministicAgentLLM()
     )
 
@@ -130,7 +131,7 @@ def client():
         with TestClient(app) as c:
             yield c
     finally:
-        routes_mod._application = original
+        container._session_application = original
         asyncio.run(_teardown())
         asyncio.run(engine.dispose())
 
