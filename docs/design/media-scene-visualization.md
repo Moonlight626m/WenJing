@@ -3,6 +3,10 @@
 > 状态：设计已确认并经 `codebase-design` 评审修订；**issues 已发布**（epic #38，tickets #39–#64，见文末附录映射）。
 > 架构决策见 `docs/adr/0005-media-asset-streaming-architecture.md`；本文件记录讨论过程、
 > 现状事实、目标架构、评审修订、里程碑与拟建 issue。执行前请先合并 #36（前置）。
+>
+> **2026-09-28 更新（ADR-0006）**：组合根已落地为 `app/composition.py`，会话持久化
+> （CAS 单事务 / 恢复）已抽为 `services/session_store.py`；下文中 `session_runtime` 的
+> 事务/CAS 拼写现由 `SessionStore.commit()` 承担，命令外事件路径直接复用。
 
 ## 一、现状事实（代码为准）
 
@@ -19,7 +23,8 @@
   （`script.py:48-56`）；`RuntimeState.scene_id` 投影恒 `None`
   （`backend/app/services/session_projection.py:84`）。
 - **运行时模型约束（评审关键）**：命令路径无状态、每次从 DB 重建运行时后即弃
-  （`services/session_runtime.py`），事件只在命令事务内带 CAS 写入；`project_state`/
+  （`services/session_runtime.py`；CAS 单事务见 `services/session_store.py`），
+  事件只在命令事务内带 CAS 写入；`project_state`/
   `project_messages` 是纯同步纯函数（`session_projection.py:73-232`）；
   `EventStore.branch_path` 已是分支继承的唯一权威。
 - **接缝与调研已有**：`design_07` 预留 `StoragePort`（未实现）；
@@ -73,7 +78,7 @@
 | 编号 | 问题 | 修订 |
 |------|------|------|
 | R1/B1 | `AssetRef` 定义自相矛盾（含/不含 object_key） | 契约 = `AssetRef{asset_id, kind, status}`；`object_key` 只在 `assets` 表与端口内 |
-| R2/B2 | 异步 `asset_ready` 无合法落库路径 | 新增 `SessionApplication.report_runtime_event/report_asset_ready`：CAS 落库、不带命令、校验 branch active；后台任务不持有 `GameRuntime` |
+| R2/B2 | 异步 `asset_ready` 无合法落库路径 | 新增 `SessionApplication.report_runtime_event/report_asset_ready`（经 `SessionStore.commit()` 复用 CAS 拼写）：落库、不带命令、校验 branch active；后台任务不持有 `GameRuntime` |
 | R3/B3 | 预签名物化污染纯投影 + 缺授权闸门 | 契约 URL-free；新增鉴权端点 `GET /api/assets/{id}/url`；投影保持纯函数 |
 | R4/B4 | 端口漏持久化/计量/配额 | 补 `AssetRepositoryPort` / `MediaMeterPort` / `MediaQuotaPort`（配额在付费调用前） |
 | R5/B5 | `scene_id` 修正缺事件侧支撑 | `_RState.scene_key` 进 `export_state`/`restore` 与 `plot_advancement` payload；`_replay_event` 重建 |
@@ -106,8 +111,10 @@ flowchart TB
       AR["media/asset_repo（SQLAlchemy）"]
       IP["media/image_processor（多规格/WebP）"]
     end
-    subgraph svc["services / controllers"]
-      SR["session_runtime（命令 + report_runtime_event + 投影/WS 适配）"]
+    subgraph svc["services / controllers / composition"]
+      SR["session_application（命令 + report_runtime_event + 投影/WS 适配）"]
+      SS["session_store（CAS 单事务 / 恢复）"]
+      CP["composition（唯一组合根）"]
     end
     OSS[("对象存储 私有桶")]
     LLM[["LLM provider"]]
@@ -121,7 +128,10 @@ flowchart TB
     P --> IS --> WEB
     P --> AR
     P --> IP
+    SR --> SS
     SR --> ST --> LLM
+    CP -.装配.-> SR
+    CP -.装配.-> P
 ```
 
 - **domain** 定义 Mgr/接口与编排；**infra** 实现适配器；**services/controllers** 把 WS/HTTP 适配到端口。

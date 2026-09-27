@@ -17,7 +17,7 @@
 ## 目录结构
 
 ```
-backend/            # FastAPI 服务（app: controllers/services/domain/infrastructure/contracts）
+backend/            # FastAPI 服务（app: composition/controllers/services/domain/infrastructure/contracts）
 frontend/           # Next.js 应用（app/components/stores/lib）
 docs/               # ADR、专题设计、调研、agent 配置（见 docs/README.md）
 docs/archive/design/# 已归档的 MVP 期系统设计（历史参考，非现行规格）

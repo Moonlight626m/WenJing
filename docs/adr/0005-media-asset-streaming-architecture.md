@@ -72,10 +72,11 @@
   新场景出现时由引擎发起 `scene_asset_request`，调 `SceneDesigner` 后台生成；
   叙事先行（占位/纯文本），完成后替换。
 - **命令之外的领域事件必须有一等公民落库路径**（现状事件只在命令事务内、带 CAS，见
-  `services/session_runtime.py`）：新增 `SessionApplication.report_runtime_event(...)` /
-  `report_asset_ready(session_id, branch_id, scene_key, asset_id)`：新建 store、以与
-  `_persist_command` 相同的 CAS 拼写落库、**不带 player command**；落库前校验 branch 仍为
-  active，否则 no-op；**后台任务不得持有 `GameRuntime`**，请求期把 `branch/scene` 绑定进任务。
+  `services/session_store.py` 的 `SessionStore.commit`，ADR-0006）：新增
+  `SessionApplication.report_runtime_event(...)` /
+  `report_asset_ready(session_id, branch_id, scene_key, asset_id)`：新建 store、经
+  `SessionStore.commit()` 复用同一 CAS 拼写落库、**不带 player command**；落库前校验 branch
+  仍为 active，否则 no-op；**后台任务不得持有 `GameRuntime`**，请求期把 `branch/scene` 绑定进任务。
 - **Stage2 资产节点幂等**（workflow resume/容错会重跑，ADR-0003 §2）：SceneDesigner 以
   `(script_id, scene_id, purpose, style, provider_version)` 为键幂等，命中即跳过；付费调用前
   先落"生成意图"票据。

@@ -7,7 +7,7 @@
 
 | 位置 | 内容 | 状态 |
 |------|------|------|
-| `docs/adr/` | 架构决策记录（ADR-0001…0005） | 现行，冲突时以此为准 |
+| `docs/adr/` | 架构决策记录（ADR-0001…0006） | 现行，冲突时以此为准 |
 | `docs/design/` | 专题设计（如 `media-scene-visualization.md`） | 现行 |
 | `docs/agents/` | agent skills 配置：issue tracker / triage labels / domain docs | 现行 |
 | `docs/contract-change-process.md` | 契约变更流程（四处单源） | 现行 |
