@@ -10,6 +10,7 @@ M0（#39）只放空实现与配置，不接业务：
 
 from __future__ import annotations
 
+from app.infrastructure.media.meter import MediaUsageRecorder
 from app.infrastructure.media.null import (
     NullAssetRepository,
     NullImageGen,
@@ -18,8 +19,11 @@ from app.infrastructure.media.null import (
     NullMediaQuota,
     NullObjectStorage,
 )
+from app.infrastructure.media.quota import MediaQuotaService
 
 __all__ = [
+    "MediaQuotaService",
+    "MediaUsageRecorder",
     "NullAssetRepository",
     "NullImageGen",
     "NullImageSearch",

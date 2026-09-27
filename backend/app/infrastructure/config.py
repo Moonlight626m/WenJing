@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # 每会话运行期生图上限（ADR-0005 §7 成本控制）。
     media_max_images_per_session: int = 20
 
+    # org 级媒体配额预算（付费调用前 check+consume，ADR-0005 §12）；0=不限额。
+    media_org_image_budget: int = 0
+    media_org_tts_budget: int = 0
+    media_org_asr_budget: int = 0
+
     # 默认上限需覆盖 Stage1 全剧本生成（实测 DeepSeek 约 100s）；短调用仅受上界约束
     llm_timeout_seconds: int = 150
     player_timeout_seconds: int = 300

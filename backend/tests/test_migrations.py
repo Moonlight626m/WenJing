@@ -38,6 +38,7 @@ _BASELINE_TABLES = {
     "snapshots",
     "commands",
     "llm_usage",
+    "media_usage",
 }
 
 
@@ -176,6 +177,38 @@ async def test_accounts_schema_columns(migrated: Config):
         assert {"user_id", "token_hash", "csrf_token", "expires_at", "revoked_at"} <= (
             session_cols
         )
+    finally:
+        await engine.dispose()
+
+
+async def test_media_usage_columns(migrated: Config):
+    """媒体计量表（ADR-0005 §12 / #41）列齐备。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'media_usage'"
+                    )
+                )
+            }
+        required = {
+            "kind",
+            "provider",
+            "model",
+            "units",
+            "size",
+            "org_id",
+            "user_id",
+            "script_id",
+            "session_id",
+            "meta",
+            "created_at",
+        }
+        assert required <= cols, f"media_usage 缺列: {required - cols}"
     finally:
         await engine.dispose()
 
