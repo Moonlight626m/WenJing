@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -178,6 +178,43 @@ class UsageRecordingLLM:
             usage=reply.usage,
         )
         return reply
+
+    async def astream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[str]:
+        """流式委托 + 计量：一次往返记一条（#58 / ADR-0005 §10）。
+
+        内层未实现 `astream` 时降级为非流式 `chat`，单段产出并计量（行为无回归）。
+        正常结束时按累计文本计量；若在产出任何内容前失败/被中断，则不写记录，
+        避免为失败的调用留下 completion_tokens=1 的幻影账（与非流式 chat 一致）。
+        """
+        astream = getattr(self._inner, "astream", None)
+        if astream is None:
+            text = await self.chat(messages, session_id=session_id, purpose=purpose)
+            yield text
+            return
+        parts: list[str] = []
+        completed = False
+        try:
+            async for delta in astream(messages, session_id=session_id, purpose=purpose):
+                parts.append(delta)
+                yield delta
+            completed = True
+        finally:
+            if parts or completed:
+                await self._recorder.record(
+                    self._context,
+                    provider=self.provider,
+                    model=self.model,
+                    purpose=purpose,
+                    messages=messages,
+                    completion="".join(parts),
+                    usage=None,
+                )
 
 
 def _plain_messages(messages: Sequence[dict]) -> list[dict[str, str]]:

@@ -1,6 +1,7 @@
 """LLM 端口（domain 持有的抽象，实现由 infrastructure 提供）。
 
-- `LLMService`（Protocol）：统一的 `chat(messages, *, session_id)` 入口，返回文本。
+- `LLMService`（Protocol）：统一的 `chat(messages, *, session_id)` 入口，返回文本；
+  另含 `astream`，逐段产出内容增量（真 token 流，ADR-0005 §10）。
 - `ToolCallingLLM`（Protocol）：在 `LLMService` 之上增加 `chat_with_tools`，供
   LangChain agent 的工具调用链路（`agents/chat_model.py`）使用；实现可选，
   不支持工具调用的实现只需提供 `chat`，chat_model 会降级为无工具单轮。
@@ -12,10 +13,15 @@
 设计约束（design_00 D7 / ADR-0004）：单例会所，每轮每 Agent 一次 LLM 调用；
 工具调用 Agent 在一轮内可能往返多次（工具调用 + 最终答复），每次调用仍单独计量；
 错误统一包装为 `codes.LLM_CALL_FAILED`。
+
+流式（#58 / ADR-0005 §10）：`astream` 只发出可见 `content` 增量；工具调用轮
+（`tool_call_chunks`）不产生下游 token，其前置引导语视为临时文本，由最终持久
+`character_speech` 覆盖。事件流只存最终完整文本。
 """
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
@@ -69,6 +75,21 @@ class LLMService(Protocol):
         session_id: str = "",
         purpose: UsagePurpose = UsagePurpose.AGENT,
     ) -> str: ...
+
+    def astream(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[str]:
+        """逐段产出可见 `content` 增量（async generator，无需 await 即调用）。
+
+        这是端口的**必需成员**（实现应提供，见 `ChatLLMService`/`DeterministicAgentLLM`）；
+        `UsageRecordingLLM` 为兼容既有 chat-only 实现，用 `getattr` 探测缺失并降级为
+        单段产出。
+        """
+        ...
 
 
 @runtime_checkable

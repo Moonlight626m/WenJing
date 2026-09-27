@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import TypeAlias
 
 from app.contracts.enums import UsagePurpose
@@ -46,3 +47,16 @@ class DeterministicAgentLLM:
         if "react" in user:
             return self._react_text
         return self._proposal_text
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[str]:
+        """无真实 token 流，单段产出；满足 `LLMService.astream` 端口形状。"""
+
+        text = await self.chat(messages, session_id=session_id, purpose=purpose)
+        if text:
+            yield text

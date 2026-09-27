@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
@@ -53,6 +55,42 @@ class ChatLLMService:
             "x-opencode-session": session_id or "wenjing-anonymous",
         }
 
+    @contextlib.asynccontextmanager
+    async def _client(self, session_id: str) -> AsyncIterator[Any]:
+        """每请求一个 OpenAI 客户端（provider 头随会话），退出时确保关闭。"""
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            default_headers=self._provider_headers(session_id),
+        )
+        try:
+            yield client
+        finally:
+            await client.close()
+
+    def _request(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        stream: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """构造 OpenAI-compatible 请求体（流式/工具共用）。"""
+        req: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self._temperature,
+        }
+        if self._max_tokens is not None:
+            req["max_tokens"] = self._max_tokens
+        if stream:
+            req["stream"] = True
+        if tools:
+            req["tools"] = tools
+        return req
+
     async def chat(
         self,
         messages: list[Message],
@@ -92,6 +130,72 @@ class ChatLLMService:
         )
         return LLMReply(content=content, tool_calls=calls, usage=usage)
 
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[str]:
+        """OpenAI-compatible 流式：逐段 yield `delta.content`（#58 / ADR-0005 §10）。
+
+        只发出可见 content 增量；`tool_call_chunks`（工具轮）不产出下游 token。
+        超时按**相邻 chunk 的空闲间隔**计（不把消费者处理/背压时间算作 provider 超时）；
+        错误统一包装为 `LLM_CALL_FAILED`。
+        """
+        chunks = 0
+        async with self._client(session_id) as client, self._semaphore:
+            logger.info(
+                "llm_stream_start",
+                extra={
+                    "session_id": session_id or None,
+                    "wj_extra": {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "messages": len(messages),
+                        "purpose": purpose.value,
+                    },
+                },
+            )
+            try:
+                stream = await asyncio.wait_for(
+                    client.chat.completions.create(**self._request(messages, stream=True)),
+                    timeout=self._timeout,
+                )
+                iterator = stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            iterator.__anext__(), timeout=self._timeout
+                        )
+                    except StopAsyncIteration:
+                        break
+                    text = _delta_content(chunk)
+                    if text:
+                        chunks += 1
+                        yield text
+                logger.info(
+                    "llm_stream_end",
+                    extra={
+                        "session_id": session_id or None,
+                        "wj_extra": {
+                            "provider": self.provider,
+                            "model": self.model,
+                            "purpose": purpose.value,
+                            "chunks": chunks,
+                        },
+                    },
+                )
+            except Exception as exc:
+                logger.error(
+                    "llm_stream_failed",
+                    extra={
+                        "wj_extra": {"reason": str(exc), "chunks": chunks},
+                        "session_id": session_id or None,
+                    },
+                )
+                raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+
     async def _invoke(
         self,
         messages: list[dict[str, Any]],
@@ -100,14 +204,7 @@ class ChatLLMService:
         purpose: UsagePurpose,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str, tuple[ToolCall, ...], TokenUsage | None]:
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            default_headers=self._provider_headers(session_id),
-        )
-        async with self._semaphore:
+        async with self._client(session_id) as client, self._semaphore:
             logger.info(
                 "llm_call_start",
                 extra={
@@ -122,17 +219,8 @@ class ChatLLMService:
                 },
             )
             try:
-                req: dict[str, Any] = {
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": self._temperature,
-                }
-                if self._max_tokens is not None:
-                    req["max_tokens"] = self._max_tokens
-                if tools:
-                    req["tools"] = tools
                 resp = await asyncio.wait_for(
-                    client.chat.completions.create(**req),
+                    client.chat.completions.create(**self._request(messages, tools=tools)),
                     timeout=self._timeout,
                 )
                 message = resp.choices[0].message
@@ -163,9 +251,19 @@ class ChatLLMService:
                     },
                 )
                 raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
-            finally:
-                await client.close()
             return content, calls, usage
+
+
+def _delta_content(chunk: Any) -> str:
+    """从流式 chunk 中取出可见 content 增量；工具轮/结束块无 content 时返回空串。"""
+
+    choices = getattr(chunk, "choices", None) or []
+    if not choices:
+        return ""
+    delta = getattr(choices[0], "delta", None)
+    if delta is None:
+        return ""
+    return getattr(delta, "content", None) or ""
 
 
 def _tool_calls(message: Any) -> tuple[ToolCall, ...]:
