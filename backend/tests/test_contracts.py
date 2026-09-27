@@ -125,6 +125,50 @@ def test_script_package_fixture_roundtrip() -> None:
     assert ScriptPackage.model_validate(out) == pkg
 
 
+def test_asset_ref_is_url_free() -> None:
+    """AssetRef 只放稳定引用，不得泄漏 object_key/URL（#43 验收）。"""
+    from pydantic import ValidationError
+
+    from app.contracts.script import AssetRef
+
+    assert set(AssetRef.model_fields) == {"schema_version", "asset_id", "kind", "status"}
+    with pytest.raises(ValidationError):
+        AssetRef.model_validate(
+            {
+                "asset_id": "11111111-1111-4111-8111-111111111111",
+                "kind": "background",
+                "status": "ready",
+                "object_key": "org/secret.png",
+            }
+        )
+
+
+def test_asset_types_align_with_domain() -> None:
+    """契约 AssetRef/AssetCredit 与 domain/game/media 的领域定义不漂移。"""
+    from typing import get_args
+
+    from app.contracts.script import AssetCredit, AssetRef
+    from app.domain.game.media import AssetCredit as DomainCredit
+    from app.domain.game.media import AssetKind
+
+    assert set(get_args(AssetRef.model_fields["kind"].annotation)) == {
+        k.value for k in AssetKind
+    }
+    assert set(AssetCredit.model_fields) - {"schema_version"} == set(
+        DomainCredit.__dataclass_fields__
+    )
+
+
+def test_script_package_carries_asset_refs() -> None:
+    """fixture 已覆盖 Scene/CharacterProfile 的资产引用与署名。"""
+    from app.contracts.script import ScriptPackage
+
+    pkg = ScriptPackage.model_validate(json.loads((FIXTURES / "script_package.json").read_text()))
+    assert pkg.scenes[0].background_asset is not None
+    assert pkg.characters[0].avatar_asset is not None
+    assert pkg.characters[0].avatar_credit is not None
+
+
 def test_domain_event_fresh_build_defaults() -> None:
     from uuid import uuid4
 

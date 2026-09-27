@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.0.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.1.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -398,6 +398,21 @@ export interface Playability {
   reason: string;
 }
 
+/** 稳定资产引用（ADR-0005 §3）：URL-free，访问经鉴权端点签发预签名 URL。 */
+export interface AssetRef {
+  asset_id: string;
+  kind: "background" | "avatar" | "fullbody";
+  status: "pending" | "ready" | "failed";
+}
+
+/** 素材署名/许可元数据（ADR-0005 §6）。 */
+export interface AssetCredit {
+  author: string;
+  license: string;
+  source_url: string;
+  license_url: string;
+}
+
 export interface CharacterProfile {
   name: string;
   public_background: string;
@@ -405,6 +420,10 @@ export interface CharacterProfile {
   speech_style?: SpeechStyle | null;
   knowledge_boundary: KnowledgeBoundary;
   is_player_playable: Playability;
+  avatar_asset?: AssetRef | null;
+  fullbody_asset?: AssetRef | null;
+  avatar_credit?: AssetCredit | null;
+  fullbody_credit?: AssetCredit | null;
 }
 
 export interface Beat {
@@ -419,6 +438,8 @@ export interface Scene {
   title: string;
   participants: string[];
   beats: Beat[];
+  background_asset?: AssetRef | null;
+  background_credit?: AssetCredit | null;
 }
 
 export interface ScriptPackage {

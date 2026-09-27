@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "gate": "pre_write",
   "dossier": null,
   "evidence": [],
@@ -48,7 +48,7 @@
   },
   "profiles": [
     {
-      "schema_version": "2.0.0",
+      "schema_version": "2.1.0",
       "name": "我",
       "public_background": "离家买药的青年",
       "personality_traits": [
@@ -73,7 +73,7 @@
       }
     },
     {
-      "schema_version": "2.0.0",
+      "schema_version": "2.1.0",
       "name": "母亲",
       "public_background": "病中的母亲",
       "personality_traits": [
