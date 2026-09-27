@@ -1,6 +1,6 @@
 # Wenjing — Agent Instructions
 
-语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。动手前先读 `design/` 中对应模块的设计文档（`design.md`、`design_00_tech_decisions.md`、`design_0X_*`）。**注意：`design/` 是 MVP 时期的文档，很多内容后期都会升级，只作背景参考，不是现行规格**；若与后续演进冲突，以更新者为准，优先级大致为 `docs/adr/`（最新）> GitHub issue/spec > `design/`。
+语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。**规格优先级**：`docs/adr/`（ADR，最新）> GitHub issue/spec > `CONTEXT.md`。MVP 期设计文档已归档到 `docs/archive/design/`，**仅作历史背景，不是现行规格**；文档地图见 `docs/README.md`。动手前先读相关 ADR 与 `CONTEXT.md` 术语。
 
 ## 实现工作流
 

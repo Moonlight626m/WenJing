@@ -1,5 +1,8 @@
 # 文境 (Wenjing) — 技术设计决议（Brainstorm 输出）
 
+> ⚠️ **已归档（非现行规格）**：D1–D15 中多项已被 ADR-0002/0003/0004/0005 修订，
+> 说明见 `docs/archive/README.md`；现行决策以 `docs/adr/` 为准。
+
 > 本文件汇总 brainstorm 收敛后的技术架构决议（D1–D15）与需求基线（R1–R5），供模块设计与实现引用。
 > 功能设计（核心概念、Agent 体系、交互模型、MVP 范围）详见 [`design.md`](design.md)（主索引）及五个子模块
 > （[01 Agent 架构](design_01_agent_architecture.md) / [02 交互系统](design_02_interaction_system.md) /

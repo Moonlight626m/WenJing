@@ -1,5 +1,9 @@
 # 文境 (Wenjing) — 模块设计：会话组合根、长驻引擎与 Infra 接缝
 
+> ⚠️ **已过期（非现行规格）**：本模块的「长驻 run + asyncio.Task」形态已被 #7 的
+> GameRuntime command/step 取代；Infra 接缝（如 `StoragePort`）以 ADR-0005 为准。
+> 说明见 `docs/archive/README.md`。
+
 > 澄清后端后续扩展时的架构取向：**不推倒重分层**，只补"组合根/use-case"这一层，
 > 并划清基础设施抽象的边界。本文记录三个已收敛的裁决，供实现里程碑落地。
 

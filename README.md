@@ -2,7 +2,8 @@
 
 面向学生的语文课文情景演绎 multi-agent 角色扮演平台。基于课文由编剧 Agent 生成剧本，玩家与角色 Agents 共同演绎剧情，还原课文后进入同人续写。
 
-> 功能设计见 [`design/design.md`](design/design.md)；技术决议（D1–D15）见 [`design/design_00_tech_decisions.md`](design/design_00_tech_decisions.md)。
+> 现行决策见 [`docs/adr/`](docs/adr/)（ADR），文档地图见 [`docs/README.md`](docs/README.md)；
+> MVP 期设计文档已归档到 [`docs/archive/design/`](docs/archive/design/)（历史参考，非现行规格）。
 
 ## 技术栈
 
@@ -16,9 +17,12 @@
 ## 目录结构
 
 ```
-backend/     # FastAPI 服务（app: config/api/core/agents/db/schemas）
-frontend/    # Next.js 应用（app/components/stores/lib）
-design/      # 系统设计文档
+backend/            # FastAPI 服务（app: controllers/services/domain/infrastructure/contracts）
+frontend/           # Next.js 应用（app/components/stores/lib）
+docs/               # ADR、专题设计、调研、agent 配置（见 docs/README.md）
+docs/archive/design/# 已归档的 MVP 期系统设计（历史参考，非现行规格）
+CONTEXT.md          # 领域术语表
+AGENTS.md           # 仓库协作与命令约定
 ```
 
 ## 环境配置

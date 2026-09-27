@@ -4,7 +4,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Before exploring, read these
 
-- **`design/`**: the module design docs (`design.md`, `design_00_tech_decisions.md`, `design_0X_*`). Read the design for the module you're about to touch. When it conflicts with an ADR, the newer ADR wins.
+- **`docs/archive/design/`**: 已归档的 MVP 期模块设计文档（`design.md`、`design_00_tech_decisions.md`、`design_0X_*`），**仅作历史背景，非现行规格**；与 ADR 冲突时以较新的 ADR 为准。当前文档地图见 `docs/README.md`。
 - **`CONTEXT.md`** at the repo root, or
 - **`CONTEXT-MAP.md`** at the repo root if it exists: it points at one `CONTEXT.md` per context. Read each one relevant to the topic.
 - **`docs/adr/`**: read ADRs that touch the area you're about to work in. In multi-context repos, also check `src/<context>/docs/adr/` for context-scoped decisions.
