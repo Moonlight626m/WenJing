@@ -18,6 +18,7 @@ from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.diagnostics.logging import exc_reason
 from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
+from app.infrastructure.media import build_object_storage
 from app.infrastructure.rag.service import RagService, build_search_provider
 from app.infrastructure.usage import UsageRecorder
 from app.services.admin import AdminService
@@ -40,6 +41,7 @@ class Container:
         self._script_library: ScriptLibrary | None = None
         self._auth_service: AuthService | None = None
         self._admin_service: AdminService | None = None
+        self._object_storage: Any | None = None
 
     # ===== 生命周期（lifespan 调用）=====
 
@@ -124,6 +126,13 @@ class Container:
         if self._admin_service is None:
             self._admin_service = AdminService(session_factory=self.session_factory)
         return self._admin_service
+
+    @property
+    def object_storage(self) -> Any:
+        """对象存储端口（ADR-0005 §4）；provider=null 时为安全空实现。"""
+        if self._object_storage is None:
+            self._object_storage = build_object_storage(self.settings)
+        return self._object_storage
 
     # ===== LLM 构建（含降级日志）=====
 

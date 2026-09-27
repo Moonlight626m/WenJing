@@ -2,7 +2,7 @@ PY := uv run
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install db-up db-down db-reset dev dev-stop dev-status dev-backend dev-frontend test lint lint-arch build \
+.PHONY: help install db-up db-down db-reset media-up dev dev-stop dev-status dev-backend dev-frontend test lint lint-arch build \
 	build-backend build-frontend up down logs migrate seed demo e2e
 
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "  make db-up          启动本地 PostgreSQL (docker compose)"
 	@echo "  make db-down        停止本地 PostgreSQL"
 	@echo "  make db-reset       破坏式重建：删库卷 → 起库 → 迁移 → seed（旧数据不可恢复）"
+	@echo "  make media-up       启动本地 MinIO 对象存储 + 建桶（docker compose）"
 	@echo "  make migrate        运行 Alembic 迁移 (backend)"
 	@echo "  make seed           写入默认 org 与测试账号（幂等）"
 	@echo "  make dev            一键启动 db+backend+frontend（后台，日志 .run/logs）"
@@ -46,6 +47,10 @@ db-reset:
 	docker compose up -d --wait db
 	cd $(BACKEND) && $(PY) alembic upgrade head
 	cd $(BACKEND) && $(PY) python -m app.services.auth_seed
+
+# 本地对象存储（MinIO，S3 兼容）：建桶幂等；生产用 OSS/COS 时无需此步。
+media-up:
+	docker compose --profile media up -d minio minio-init
 
 migrate:
 	cd $(BACKEND) && $(PY) alembic upgrade head

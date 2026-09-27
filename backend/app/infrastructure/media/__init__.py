@@ -20,6 +20,7 @@ from app.infrastructure.media.null import (
     NullObjectStorage,
 )
 from app.infrastructure.media.quota import MediaQuotaService
+from app.infrastructure.media.storage_s3 import S3ObjectStorage, build_object_storage
 
 __all__ = [
     "MediaQuotaService",
@@ -30,4 +31,6 @@ __all__ = [
     "NullMediaMeter",
     "NullMediaQuota",
     "NullObjectStorage",
+    "S3ObjectStorage",
+    "build_object_storage",
 ]

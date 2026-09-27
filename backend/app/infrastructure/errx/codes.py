@@ -31,6 +31,7 @@ LLM_UNKNOWN_MODEL = 4003            # 请求了未登记/未知的 provider 或�
 
 # ===== 配置（CFG）=====
 CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
+CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
 
 # ===== 内容（CNT）=====
 CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
@@ -51,6 +52,9 @@ SEARCH_TIMEOUT = 8003               # 抓取连接/读取超时
 # ===== 协议（PRT）=====
 PRT_MALFORMED_MESSAGE = 9001        # 请求消息/标识格式非法
 PRT_UNKNOWN_COMMAND = 9002          # 未知的命令类型
+
+# ===== 媒体（MEDIA，issue #40 / ADR-0005）=====
+MEDIA_STORAGE_FAILED = 13001        # 对象存储 put/presign 失败
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -112,6 +116,11 @@ def register_all() -> None:
     register(LLM_UNKNOWN_MODEL, "unknown llm model/provider: {provider}")
 
     register(CFG_UNKNOWN_PROVIDER, "unknown llm provider: {provider}", is_affect_stability=False)
+    register(
+        CFG_MEDIA_STORAGE_INCOMPLETE,
+        "media storage provider=s3 requires: {missing}",
+        is_affect_stability=False,
+    )
 
     register(CNT_UNSUPPORTED_GENRE, "unsupported genre: {genre}", is_affect_stability=False)
     register(
@@ -148,6 +157,8 @@ def register_all() -> None:
         is_affect_stability=False,
     )
     register(PRT_UNKNOWN_COMMAND, "unknown command: {kind}", is_affect_stability=False)
+
+    register(MEDIA_STORAGE_FAILED, "media storage {op} failed: {reason}")
 
     register(PER_WRITE_FAILED, "persistence write failed: {op}")
     register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")
