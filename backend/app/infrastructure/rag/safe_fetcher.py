@@ -46,6 +46,11 @@ class SafePageFetcher:
         concurrency: int = DEFAULT_CONCURRENCY,
         client: httpx.AsyncClient | None = None,
         validator: Callable[[str], None] | None = None,
+        allowed_content_types: tuple[str, ...] = ALLOWED_CONTENT_TYPES,
+        require_content_type: bool = False,
+        unavailable_code: int = codes.SEARCH_UNAVAILABLE,
+        blocked_code: int = codes.SEARCH_BLOCKED_TARGET,
+        timeout_code: int = codes.SEARCH_TIMEOUT,
     ) -> None:
         self._connect_timeout = connect_timeout
         self._read_timeout = read_timeout
@@ -53,6 +58,12 @@ class SafePageFetcher:
         self._max_redirects = max_redirects
         self._semaphore = asyncio.Semaphore(concurrency)
         self._validator = validator or validate_target
+        # 可参数化：媒体检索复用同一抓取器，但换 content-type 白名单与错误码段。
+        self._allowed_content_types = allowed_content_types
+        self._require_content_type = require_content_type
+        self._unavailable_code = unavailable_code
+        self._blocked_code = blocked_code
+        self._timeout_code = timeout_code
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             follow_redirects=False,
@@ -78,20 +89,20 @@ class SafePageFetcher:
         try:
             self._validator(url)
         except ValueError as exc:
-            raise new(codes.SEARCH_BLOCKED_TARGET, extra={"reason": str(exc)}) from exc
+            raise new(self._blocked_code, extra={"reason": str(exc)}) from exc
 
         try:
             resp = await self._client.get(url)
         except httpx.TimeoutException as exc:
-            raise new(codes.SEARCH_TIMEOUT, extra={"url": url}) from exc
+            raise new(self._timeout_code, extra={"url": url}) from exc
         except httpx.HTTPError as exc:
-            raise wrap(exc, codes.SEARCH_UNAVAILABLE, extra={"url": url}) from exc
+            raise wrap(exc, self._unavailable_code, extra={"url": url}) from exc
 
         if resp.is_redirect:
             location = resp.headers.get("location")
             if not location or redirects_left <= 0:
                 raise new(
-                    codes.SEARCH_UNAVAILABLE,
+                    self._unavailable_code,
                     extra={"reason": "too many redirects or missing location"},
                 )
             next_url = urljoin(str(resp.url), location)
@@ -99,16 +110,22 @@ class SafePageFetcher:
             return await self._fetch_with_redirects(next_url, redirects_left - 1)
 
         content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
-        if content_type and content_type not in ALLOWED_CONTENT_TYPES:
+        if content_type:
+            if content_type not in self._allowed_content_types:
+                raise new(
+                    self._unavailable_code,
+                    extra={"reason": f"content-type not allowed: {content_type}"},
+                )
+        elif self._require_content_type:
             raise new(
-                codes.SEARCH_UNAVAILABLE,
-                extra={"reason": f"content-type not allowed: {content_type}"},
+                self._unavailable_code,
+                extra={"reason": "missing content-type"},
             )
 
         body = resp.content
         if len(body) > self._max_body_bytes:
             raise new(
-                codes.SEARCH_UNAVAILABLE,
+                self._unavailable_code,
                 extra={"reason": "body too large"},
             )
 

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     # 生图 provider（M2 #46 接入）；检索 provider（M2 #44 接入）。
     media_image_gen_provider: Literal["null"] = "null"
     media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"
+    # 检索下载安全边界（复用 RAG SSRF/DNS 校验）：连接/读取超时与单图字节上限。
+    media_image_search_connect_timeout: float = 5.0
+    media_image_search_read_timeout: float = 10.0
+    media_image_search_max_bytes: int = 8 * 1024 * 1024
+    # Openverse 可选访问令牌（匿名可用但限流；配置后走 Bearer）。Wikimedia 无需 key。
+    media_image_search_openverse_token: str = ""
+    # Wikimedia 要求可识别的 User-Agent（含联系方式更佳）。
+    media_image_search_user_agent: str = "Wenjing/1.0 media-search"
     # 每会话运行期生图上限（ADR-0005 §7 成本控制）。
     media_max_images_per_session: int = 20
 

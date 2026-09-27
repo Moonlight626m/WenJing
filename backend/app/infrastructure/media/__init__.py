@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from app.infrastructure.media.asset_repo import SqlAssetRepository
 from app.infrastructure.media.image_processor import ImageProcessor, ImageVariant
+from app.infrastructure.media.image_search import build_image_search
+from app.infrastructure.media.image_search_openverse import OpenverseImageSearch
+from app.infrastructure.media.image_search_wikimedia import WikimediaImageSearch
 from app.infrastructure.media.meter import MediaUsageRecorder
 from app.infrastructure.media.null import (
     NullAssetRepository,
@@ -35,7 +38,10 @@ __all__ = [
     "NullMediaMeter",
     "NullMediaQuota",
     "NullObjectStorage",
+    "OpenverseImageSearch",
     "S3ObjectStorage",
     "SqlAssetRepository",
+    "WikimediaImageSearch",
+    "build_image_search",
     "build_object_storage",
 ]

@@ -32,6 +32,7 @@ LLM_UNKNOWN_MODEL = 4003            # 请求了未登记/未知的 provider 或�
 # ===== 配置（CFG）=====
 CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
 CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
+CFG_UNKNOWN_MEDIA_PROVIDER = 5003    # 未知的媒体 provider（检索/生图）
 
 # ===== 内容（CNT）=====
 CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
@@ -58,6 +59,9 @@ MEDIA_STORAGE_FAILED = 13001        # 对象存储 put/presign 失败
 MEDIA_IMAGE_INVALID = 13002         # 图片字节无法解码/处理
 MEDIA_ASSET_NOT_FOUND = 13003       # 资产不存在
 MEDIA_ASSET_NOT_READY = 13004       # 资产尚未就绪（pending/failed）
+MEDIA_SEARCH_FAILED = 13005         # 开放版权检索 provider 不可用/响应异常
+MEDIA_SEARCH_BLOCKED = 13006        # SSRF/DNS 校验拒绝检索目标（私有/回环/元数据）
+MEDIA_SEARCH_TIMEOUT = 13007        # 检索请求连接/读取超时
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -124,6 +128,11 @@ def register_all() -> None:
         "media storage provider=s3 requires: {missing}",
         is_affect_stability=False,
     )
+    register(
+        CFG_UNKNOWN_MEDIA_PROVIDER,
+        "unknown media provider: {provider}",
+        is_affect_stability=False,
+    )
 
     register(CNT_UNSUPPORTED_GENRE, "unsupported genre: {genre}", is_affect_stability=False)
     register(
@@ -173,6 +182,13 @@ def register_all() -> None:
         "asset {asset_id} not ready (status={status})",
         is_affect_stability=False,
     )
+    register(MEDIA_SEARCH_FAILED, "media image search failed: {reason}", is_affect_stability=False)
+    register(
+        MEDIA_SEARCH_BLOCKED,
+        "blocked media search target: {reason}",
+        is_affect_stability=False,
+    )
+    register(MEDIA_SEARCH_TIMEOUT, "media image search timed out: {url}")
 
     register(PER_WRITE_FAILED, "persistence write failed: {op}")
     register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")
