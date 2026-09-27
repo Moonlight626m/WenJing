@@ -92,6 +92,7 @@ class ErrorDomain(StrEnum):
     INPUT = "input"
     CONTENT = "content"
     SEARCH = "search"
+    MEDIA = "media"
     LLM = "llm"
     GAME = "game"
     SESSION = "session"

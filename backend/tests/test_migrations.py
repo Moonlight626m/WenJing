@@ -39,6 +39,7 @@ _BASELINE_TABLES = {
     "commands",
     "llm_usage",
     "media_usage",
+    "assets",
 }
 
 
@@ -209,6 +210,42 @@ async def test_media_usage_columns(migrated: Config):
             "created_at",
         }
         assert required <= cols, f"media_usage 缺列: {required - cols}"
+    finally:
+        await engine.dispose()
+
+
+async def test_assets_columns(migrated: Config):
+    """资产元数据表（ADR-0005 §4 / #42）列齐备，含 object_key 与署名字段。"""
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            cols = {
+                r[0]
+                for r in await conn.execute(
+                    text(
+                        "select column_name from information_schema.columns "
+                        "where table_name = 'assets'"
+                    )
+                )
+            }
+        required = {
+            "asset_id",
+            "object_key",
+            "kind",
+            "status",
+            "source",
+            "org_id",
+            "script_id",
+            "session_id",
+            "dedup_key",
+            "version",
+            "author",
+            "license",
+            "source_url",
+            "license_url",
+            "created_at",
+        }
+        assert required <= cols, f"assets 缺列: {required - cols}"
     finally:
         await engine.dispose()
 

@@ -21,7 +21,7 @@ PROMPT_VERSION = f"{NODE}.{VERSION}"
 OUTPUT_CONTRACT = """\
 【字段类型契约（必须严格遵守）】
 {
-  "schema_version": "2.1.0",
+  "schema_version": "2.2.0",
   "title": "字符串",
   "characters": [
     {"name": "字符串（只能取自人物列表）", "public_background": "字符串",

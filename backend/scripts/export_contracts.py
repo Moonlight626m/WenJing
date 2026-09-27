@@ -33,6 +33,7 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.media import AssetUrlResponse
 from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState, RuntimeUpdate
 from app.contracts.script_library import (
@@ -56,6 +57,7 @@ EXPORTS: dict[str, type] = {
     "material_input": MaterialInput,
     "material": Material,
     "material_public": MaterialPublic,
+    "asset_url_response": AssetUrlResponse,
     "text_analysis": TextAnalysis,
     "player_command": PlayerCommand,
     "domain_event": DomainEvent,

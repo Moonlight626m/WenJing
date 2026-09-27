@@ -74,7 +74,7 @@ export function buildCommand<K extends CommandKind>(
   payload: CommandPayloadByKind[K]
 ): PlayerCommand {
   return {
-    schema_version: "2.1.0",
+    schema_version: "2.2.0",
     command_id: crypto.randomUUID(),
     session_id: sessionId,
     kind,

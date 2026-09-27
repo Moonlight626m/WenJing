@@ -10,6 +10,8 @@ M0（#39）只放空实现与配置，不接业务：
 
 from __future__ import annotations
 
+from app.infrastructure.media.asset_repo import SqlAssetRepository
+from app.infrastructure.media.image_processor import ImageProcessor, ImageVariant
 from app.infrastructure.media.meter import MediaUsageRecorder
 from app.infrastructure.media.null import (
     NullAssetRepository,
@@ -23,6 +25,8 @@ from app.infrastructure.media.quota import MediaQuotaService
 from app.infrastructure.media.storage_s3 import S3ObjectStorage, build_object_storage
 
 __all__ = [
+    "ImageProcessor",
+    "ImageVariant",
     "MediaQuotaService",
     "MediaUsageRecorder",
     "NullAssetRepository",
@@ -32,5 +36,6 @@ __all__ = [
     "NullMediaQuota",
     "NullObjectStorage",
     "S3ObjectStorage",
+    "SqlAssetRepository",
     "build_object_storage",
 ]

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.composition import get_container
 from app.controllers.admin import router as admin_router
+from app.controllers.assets import router as assets_router
 from app.controllers.auth import router as auth_router
 from app.controllers.errors import error_response
 from app.controllers.routes import router
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(scripts_router)
     app.include_router(admin_router)
+    app.include_router(assets_router)
 
     @app.exception_handler(WJError)
     async def _wj_error_handler(request: Request, exc: WJError) -> JSONResponse:

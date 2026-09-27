@@ -55,6 +55,9 @@ PRT_UNKNOWN_COMMAND = 9002          # 未知的命令类型
 
 # ===== 媒体（MEDIA，issue #40 / ADR-0005）=====
 MEDIA_STORAGE_FAILED = 13001        # 对象存储 put/presign 失败
+MEDIA_IMAGE_INVALID = 13002         # 图片字节无法解码/处理
+MEDIA_ASSET_NOT_FOUND = 13003       # 资产不存在
+MEDIA_ASSET_NOT_READY = 13004       # 资产尚未就绪（pending/failed）
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -159,6 +162,17 @@ def register_all() -> None:
     register(PRT_UNKNOWN_COMMAND, "unknown command: {kind}", is_affect_stability=False)
 
     register(MEDIA_STORAGE_FAILED, "media storage {op} failed: {reason}")
+    register(MEDIA_IMAGE_INVALID, "invalid image bytes: {reason}", is_affect_stability=False)
+    register(
+        MEDIA_ASSET_NOT_FOUND,
+        "asset {asset_id} not found",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_ASSET_NOT_READY,
+        "asset {asset_id} not ready (status={status})",
+        is_affect_stability=False,
+    )
 
     register(PER_WRITE_FAILED, "persistence write failed: {op}")
     register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")

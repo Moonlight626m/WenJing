@@ -18,10 +18,11 @@ from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.diagnostics.logging import exc_reason
 from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
-from app.infrastructure.media import build_object_storage
+from app.infrastructure.media import SqlAssetRepository, build_object_storage
 from app.infrastructure.rag.service import RagService, build_search_provider
 from app.infrastructure.usage import UsageRecorder
 from app.services.admin import AdminService
+from app.services.assets import AssetAccessService
 from app.services.auth import AuthService
 from app.services.script_library import ScriptLibrary
 from app.services.session_runtime import SessionApplication
@@ -42,6 +43,7 @@ class Container:
         self._auth_service: AuthService | None = None
         self._admin_service: AdminService | None = None
         self._object_storage: Any | None = None
+        self._asset_access: AssetAccessService | None = None
 
     # ===== 生命周期（lifespan 调用）=====
 
@@ -133,6 +135,18 @@ class Container:
         if self._object_storage is None:
             self._object_storage = build_object_storage(self.settings)
         return self._object_storage
+
+    @property
+    def asset_access(self) -> AssetAccessService:
+        """资产访问服务（ADR-0005 §3 / #42）：鉴权 + 预签名 URL。"""
+        if self._asset_access is None:
+            self._asset_access = AssetAccessService(
+                assets=SqlAssetRepository(session_factory=self.session_factory),
+                storage=self.object_storage,
+                session_factory=self.session_factory,
+                presign_ttl=self.settings.media_storage_presign_ttl,
+            )
+        return self._asset_access
 
     # ===== LLM 构建（含降级日志）=====
 

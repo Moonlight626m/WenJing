@@ -41,6 +41,10 @@ _CODE_MAP: dict[int, str] = {
     codes.SEARCH_UNAVAILABLE: "SEARCH_UNAVAILABLE",
     codes.SEARCH_BLOCKED_TARGET: "SEARCH_BLOCKED_TARGET",
     codes.SEARCH_TIMEOUT: "SEARCH_TIMEOUT",
+    codes.MEDIA_STORAGE_FAILED: "MEDIA_STORAGE_FAILED",
+    codes.MEDIA_IMAGE_INVALID: "MEDIA_IMAGE_INVALID",
+    codes.MEDIA_ASSET_NOT_FOUND: "MEDIA_ASSET_NOT_FOUND",
+    codes.MEDIA_ASSET_NOT_READY: "MEDIA_ASSET_NOT_READY",
     codes.PRT_MALFORMED_MESSAGE: "PROTOCOL_MALFORMED_MESSAGE",
     codes.PRT_UNKNOWN_COMMAND: "PROTOCOL_UNKNOWN_COMMAND",
     codes.PER_WRITE_FAILED: "PERSISTENCE_WRITE_FAILED",
@@ -55,19 +59,6 @@ _CODE_MAP: dict[int, str] = {
     codes.SCR_NOT_EDITABLE: "CONTENT_SCRIPT_NOT_EDITABLE",
     codes.SCR_MATERIAL_NOT_FOUND: "CONTENT_MATERIAL_NOT_FOUND",
     codes.SCR_NOT_READY: "CONTENT_SCRIPT_NOT_READY",
-}
-
-_DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
-    "1": ErrorDomain.SESSION,   # SESS
-    "2": ErrorDomain.GAME,      # ENG
-    "3": ErrorDomain.GAME,      # AGENT 归入 game 域
-    "4": ErrorDomain.LLM,       # LLM
-    "6": ErrorDomain.CONTENT,   # CNT
-    "7": ErrorDomain.INPUT,     # INP
-    "8": ErrorDomain.SEARCH,     # SEARCH
-    "9": ErrorDomain.PROTOCOL,  # PRT
-    "11": ErrorDomain.AUTH,     # AUTH
-    "12": ErrorDomain.CONTENT,  # SCR（剧本库，归入 content 域）
 }
 
 
@@ -101,6 +92,10 @@ def safe_message(err: Any) -> str:
         codes.SEARCH_UNAVAILABLE: "网络资料检索暂不可用，将仅基于原文生成。",
         codes.SEARCH_BLOCKED_TARGET: "目标网址不可访问。",
         codes.SEARCH_TIMEOUT: "网络资料获取超时，将仅基于原文生成。",
+        codes.MEDIA_STORAGE_FAILED: "媒体存储暂时不可用，请稍后重试。",
+        codes.MEDIA_IMAGE_INVALID: "图片格式无法处理。",
+        codes.MEDIA_ASSET_NOT_FOUND: "资产不存在。",
+        codes.MEDIA_ASSET_NOT_READY: "资产尚未就绪，请稍后重试。",
         codes.PRT_MALFORMED_MESSAGE: "请求格式无法处理。",
         codes.PRT_UNKNOWN_COMMAND: "不支持的命令类型。",
         codes.PER_WRITE_FAILED: "数据保存失败，请稍后重试。",

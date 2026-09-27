@@ -44,6 +44,7 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.media import AssetUrlResponse
 from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState
 from app.contracts.script_library import (
@@ -78,6 +79,7 @@ def _load(name: str) -> dict:
         ("material_input", MaterialInput),
         ("material", Material),
         ("material_public", MaterialPublic),
+        ("asset_url_response", AssetUrlResponse),
         ("script_create_request", ScriptCreateRequest),
         ("script_publish_request", ScriptPublishRequest),
         ("generation_resume_request", GenerationResumeRequest),

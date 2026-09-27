@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.1.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.2.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -66,6 +66,7 @@ export type ErrorDomain =
   | "input"
   | "content"
   | "search"
+  | "media"
   | "llm"
   | "game"
   | "session"
@@ -411,6 +412,14 @@ export interface AssetCredit {
   license: string;
   source_url: string;
   license_url: string;
+}
+
+/** 资产预签名 URL 物化响应（GET /api/assets/{id}/url）。 */
+export interface AssetUrlResponse {
+  schema_version: string;
+  asset_id: string;
+  url: string;
+  expires_at: string;
 }
 
 export interface CharacterProfile {
