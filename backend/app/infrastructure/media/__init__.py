@@ -13,7 +13,7 @@ from __future__ import annotations
 from app.infrastructure.media.asset_repo import SqlAssetRepository
 from app.infrastructure.media.image_gen import build_image_gen
 from app.infrastructure.media.image_gen_openai import OpenAIImageGen
-from app.infrastructure.media.image_processor import ImageProcessor, ImageVariant
+from app.infrastructure.media.image_processor import ImageProcessor
 from app.infrastructure.media.image_search import build_image_search
 from app.infrastructure.media.image_search_openverse import OpenverseImageSearch
 from app.infrastructure.media.image_search_wikimedia import WikimediaImageSearch
@@ -31,7 +31,6 @@ from app.infrastructure.media.storage_s3 import S3ObjectStorage, build_object_st
 
 __all__ = [
     "ImageProcessor",
-    "ImageVariant",
     "MediaQuotaService",
     "MediaUsageRecorder",
     "NullAssetRepository",

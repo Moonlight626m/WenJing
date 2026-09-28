@@ -90,15 +90,24 @@ class SqlAssetRepository:
         return _to_record(row) if row is not None else None
 
     async def find_by_dedup_key(
-        self, *, org_id: uuid.UUID, dedup_key: str
+        self,
+        *,
+        org_id: uuid.UUID,
+        dedup_key: str,
+        status: AssetStatus | None = None,
     ) -> AssetRecord | None:
+        """按 (org, dedup_key) 取最新一行；`status` 给定时只认该状态。
+
+        不过滤状态时会踩坑：并发/崩溃留下的 pending 行时间戳更新，会把更早的 READY
+        行遮住，于是缓存假性未命中、再次付费生成。
+        """
         async with self._factory() as session:
-            stmt = (
-                select(Asset)
-                .where(Asset.org_id == org_id, Asset.dedup_key == dedup_key)
-                .order_by(Asset.created_at.desc())
-                .limit(1)
+            stmt = select(Asset).where(
+                Asset.org_id == org_id, Asset.dedup_key == dedup_key
             )
+            if status is not None:
+                stmt = stmt.where(Asset.status == status.value)
+            stmt = stmt.order_by(Asset.created_at.desc(), Asset.asset_id.desc()).limit(1)
             row = (await session.execute(stmt)).scalar_one_or_none()
         return _to_record(row) if row is not None else None
 

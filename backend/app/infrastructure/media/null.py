@@ -11,6 +11,7 @@ import uuid
 from app.domain.game.media import (
     AssetKind,
     AssetRecord,
+    AssetStatus,
     GeneratedImage,
     ImageCandidate,
     MediaKind,
@@ -59,7 +60,11 @@ class NullAssetRepository:
         return None
 
     async def find_by_dedup_key(
-        self, *, org_id: uuid.UUID, dedup_key: str
+        self,
+        *,
+        org_id: uuid.UUID,
+        dedup_key: str,
+        status: AssetStatus | None = None,
     ) -> AssetRecord | None:
         return None
 
@@ -73,6 +78,11 @@ class NullMediaMeter:
 
 class NullMediaQuota:
     """不设限的 `MediaQuotaPort`：check 恒真、consume 空操作。"""
+
+    async def try_acquire(
+        self, *, org_id: uuid.UUID, kind: MediaKind, units: int = 1
+    ) -> bool:
+        return True
 
     async def check(self, *, org_id: uuid.UUID, kind: MediaKind, units: int = 1) -> bool:
         return True

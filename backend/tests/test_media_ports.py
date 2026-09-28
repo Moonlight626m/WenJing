@@ -63,7 +63,7 @@ def test_port_method_shapes():
     assert set(_methods(ImageSearchPort)) == {"search"}
     assert set(_methods(AssetRepositoryPort)) == {"save", "get_by_id", "find_by_dedup_key"}
     assert set(_methods(MediaMeterPort)) == {"record"}
-    assert set(_methods(MediaQuotaPort)) == {"check", "consume"}
+    assert set(_methods(MediaQuotaPort)) == {"try_acquire", "check", "consume"}
 
 
 def test_port_keyword_only_params():
@@ -81,13 +81,15 @@ def test_port_keyword_only_params():
         "self",
         "org_id",
         "dedup_key",
+        "status",
     }
-    assert set(_methods(MediaQuotaPort)["check"].parameters) == {
-        "self",
-        "org_id",
-        "kind",
-        "units",
-    }
+    for method in ("try_acquire", "check", "consume"):
+        assert set(_methods(MediaQuotaPort)[method].parameters) == {
+            "self",
+            "org_id",
+            "kind",
+            "units",
+        }
 
 
 def test_null_impls_satisfy_ports():
@@ -147,16 +149,31 @@ def test_build_dedup_key_is_org_scoped_and_normalized():
     )
 
 
-def test_scene_designer_skeleton_holds_ports():
+class _NoopReviewer:
+    """骨架形状测试不该走到审核：走到就报错。"""
+
+    async def review(self, candidate, *, scene_description, kind):
+        raise AssertionError("reviewer should not be called in a shape test")
+
+
+def _noop_transcode(_data: bytes) -> list:
+    return []
+
+
+def test_scene_designer_holds_ports():
     designer = SceneDesigner(
         storage=NullObjectStorage(),
         image_gen=NullImageGen(),
         image_search=NullImageSearch(),
         assets=NullAssetRepository(),
+        reviewer=_NoopReviewer(),
+        transcode=_noop_transcode,
         meter=NullMediaMeter(),
         quota=NullMediaQuota(),
     )
     assert isinstance(designer.storage, ObjectStoragePort)
+    # 去重键的 provider_version 默认跟随生图实现，换 provider 即失效缓存
+    assert designer.provider_version == "NullImageGen"
 
 
 def test_stream_tee_drops_oldest_over_capacity():

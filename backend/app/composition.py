@@ -13,12 +13,17 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.domain.game.image_review import ImageReviewAgent
+from app.domain.game.media import MediaKind, SceneDesigner
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.diagnostics.logging import exc_reason
 from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.infrastructure.media import (
+    ImageProcessor,
+    MediaQuotaService,
+    MediaUsageRecorder,
     SqlAssetRepository,
     build_image_gen,
     build_image_search,
@@ -51,6 +56,7 @@ class Container:
         self._image_search: Any | None = None
         self._image_gen: Any | None = None
         self._asset_access: AssetAccessService | None = None
+        self._scene_designer: SceneDesigner | None = None
 
     # ===== 生命周期（lifespan 调用）=====
 
@@ -73,6 +79,8 @@ class Container:
         # 下持续泄漏 socket/fd（空实现无 close，走 hasattr 守卫）。置空以便重建。
         await self._aclose_port("_image_search")
         await self._aclose_port("_image_gen")
+        # 编排器持有上面两个端口（可能已被关闭），一并丢弃以便按新端口重建。
+        self._scene_designer = None
 
     async def _aclose_port(self, attr: str) -> None:
         port = getattr(self, attr, None)
@@ -178,6 +186,32 @@ class Container:
                 presign_ttl=self.settings.media_storage_presign_ttl,
             )
         return self._asset_access
+
+    @property
+    def scene_designer(self) -> SceneDesigner:
+        """场景资产编排（ADR-0005 §6 / #47）：检索→审核→回退生成→存储。
+
+        转码以 `ImageProcessor().process` 注入（domain 不 import infra，故不形式化成端口）；
+        审核用 agent 侧 LLM，其失败在 `ImageReviewAgent` 内部降级为「拒绝候选」，
+        不会打断编排。配额为 0 表示不限额（`MediaQuotaService` 语义）。
+        """
+        if self._scene_designer is None:
+            self._scene_designer = SceneDesigner(
+                storage=self.object_storage,
+                image_gen=self.image_gen,
+                image_search=self.image_search,
+                assets=SqlAssetRepository(session_factory=self.session_factory),
+                reviewer=ImageReviewAgent(llm=self._build_agent_llm()),
+                transcode=ImageProcessor().process,
+                # 参与去重键：换 model 等于换画风，历史资产不能继续命中缓存。
+                generation_model=self.settings.media_image_gen_model,
+                meter=MediaUsageRecorder(session_factory=self.session_factory),
+                quota=MediaQuotaService(
+                    session_factory=self.session_factory,
+                    limits={MediaKind.IMAGE: self.settings.media_org_image_budget},
+                ),
+            )
+        return self._scene_designer
 
     # ===== LLM 构建（含降级日志）=====
 

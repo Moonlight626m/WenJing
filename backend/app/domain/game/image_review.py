@@ -18,6 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -147,6 +148,23 @@ def build_review_prompt(
     )
 
 
+@runtime_checkable
+class ImageReviewerPort(Protocol):
+    """审核端口（#47 SceneDesigner 依赖的形状；`ImageReviewAgent` 是它的实现）。
+
+    **不抛异常**：LLM 失败或输出不可解析时返回 `reason=REVIEW_FAILED` 的拒绝结论，
+    由调用方决定是否付费回退生成（#45 的降级语义）。
+    """
+
+    async def review(
+        self,
+        candidate: ImageCandidate,
+        *,
+        scene_description: str,
+        kind: AssetKind,
+    ) -> ImageReviewResult: ...
+
+
 class ImageReviewAgent:
     """图片审核 agent（便宜模型 + 结构化输出）。"""
 
@@ -219,6 +237,7 @@ class ImageReviewAgent:
 
 __all__ = [
     "ImageReviewAgent",
+    "ImageReviewerPort",
     "ImageReviewResult",
     "LicenseStatus",
     "ReviewReason",
