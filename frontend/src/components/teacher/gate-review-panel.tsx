@@ -9,6 +9,7 @@ import type {
   MaterialDossier,
   ScriptPackage,
 } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const TEXT_FIELD =
   "w-full rounded-lg border border-amber-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-amber-500 dark:border-amber-800";
@@ -92,7 +93,7 @@ export function GateReviewPanel({
 
   function buildResume(action: "approve" | "reject"): GateResumePayload {
     const empty: GateEdits = {
-      schema_version: "2.3.0",
+      schema_version: CONTRACTS_SCHEMA_VERSION,
       dossier: null,
       division: null,
       profiles: null,

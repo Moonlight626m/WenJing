@@ -12,6 +12,7 @@ import {
   startScriptGeneration,
 } from "@/lib/api";
 import type { MaterialPublic } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 export function ScriptCreateFlow() {
   const router = useRouter();
@@ -43,7 +44,7 @@ export function ScriptCreateFlow() {
     setError(null);
     try {
       const result = await importSourceMaterial({
-        schema_version: "2.3.0",
+        schema_version: CONTRACTS_SCHEMA_VERSION,
         source: filename ? "upload" : "paste",
         filename,
         raw_text: rawText,

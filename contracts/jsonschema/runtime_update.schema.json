@@ -5,7 +5,7 @@
       "description": "当前等待玩家响应的交互点（稳定交互点语义）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -47,7 +47,7 @@
       "description": "RuntimeUpdate 内的事件引用（完整 DomainEvent 由 event store 持久化）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -86,7 +86,8 @@
         "player_action_recorded",
         "agent_reactions_done",
         "stage_transitioned",
-        "rollback_executed"
+        "rollback_executed",
+        "asset_ready"
       ],
       "title": "EventType",
       "type": "string"
@@ -106,7 +107,7 @@
       "description": "交互点的单个选项。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -131,7 +132,7 @@
       "description": "显式、可序列化的运行时状态；恢复/回放的重建目标。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -237,7 +238,7 @@
       "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -281,7 +282,7 @@
   "description": "一次命令推进的结果：提交后到下一个稳定交互点或终态返回。\n\n含状态、新事件、活动交互与允许命令——session 层据此投影对外消息。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "title": "Schema Version",
       "type": "string"
     },

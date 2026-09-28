@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.3.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.4.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -60,7 +60,8 @@ export type EventType =
   | "player_action_recorded"
   | "agent_reactions_done"
   | "stage_transitioned"
-  | "rollback_executed";
+  | "rollback_executed"
+  | "asset_ready";
 
 export type ErrorDomain =
   | "input"

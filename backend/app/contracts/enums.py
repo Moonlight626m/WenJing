@@ -84,6 +84,7 @@ class EventType(StrEnum):
     AGENT_REACTIONS_DONE = "agent_reactions_done"
     STAGE_TRANSITIONED = "stage_transitioned"
     ROLLBACK_EXECUTED = "rollback_executed"
+    ASSET_READY = "asset_ready"
 
 
 class ErrorDomain(StrEnum):

@@ -16,6 +16,7 @@ import type {
   SessionListResponse,
   UsageAggregateResponse,
 } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -146,7 +147,7 @@ export interface RuntimeUpdateDto {
 export function openSession(scriptId: number): Promise<SessionStatus> {
   return request("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.3.0", script_id: scriptId }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, script_id: scriptId }),
   });
 }
 
@@ -194,7 +195,7 @@ export function createScriptDraft(
 ): Promise<ScriptSummary> {
   return request("/api/scripts", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.3.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 
@@ -216,7 +217,7 @@ export function resumeScriptGeneration(
   return request(`/api/scripts/${scriptId}/generation/resume`, {
     method: "POST",
     body: JSON.stringify({
-      schema_version: "2.3.0",
+      schema_version: CONTRACTS_SCHEMA_VERSION,
       ...payload,
     } satisfies GenerationResumeRequest),
   });
@@ -232,7 +233,7 @@ export function publishScript(
 ): Promise<ScriptSummary> {
   return request(`/api/scripts/${scriptId}/publish`, {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.3.0", visibility }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, visibility }),
   });
 }
 
@@ -286,14 +287,14 @@ export function listAdminUsage(
 export function register(input: Omit<RegisterRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.3.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 
 export function login(input: Omit<LoginRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.3.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 

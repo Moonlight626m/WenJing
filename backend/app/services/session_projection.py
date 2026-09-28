@@ -32,6 +32,7 @@ _EVENT_TYPE_MAP: dict[str, EventType] = {
     "player_action": EventType.PLAYER_ACTION_RECORDED,
     "character_speech": EventType.AGENT_REACTIONS_DONE,
     "rollback": EventType.ROLLBACK_EXECUTED,
+    "asset_ready": EventType.ASSET_READY,
 }
 
 
@@ -71,10 +72,19 @@ def project_interaction(
 
 
 def project_state(
-    session_id: uuid.UUID, store: PersistentEventStore, export: dict[str, Any]
+    session_id: uuid.UUID,
+    store: PersistentEventStore,
+    export: dict[str, Any],
+    *,
+    path: list[Any] | None = None,
 ) -> RuntimeState:
-    """export_state → 契约 RuntimeState。"""
-    path = store.active_events()
+    """export_state → 契约 RuntimeState。
+
+    `path` 允许调用方传入已算好的活动分支事件（`project_update` 复用同一次遍历），
+    否则每次调用都要重走一遍 `branch_path`（血缘分支数 × 事件数）。
+    """
+    if path is None:
+        path = store.active_events()
     return RuntimeState(
         session_id=session_id,
         branch_id=branch_uuid(session_id, store.active_branch_id),
@@ -105,12 +115,14 @@ def project_update(
     result: StepResult,
 ) -> RuntimeUpdate:
     """StepResult → 契约 RuntimeUpdate（new_events 映射为确定性 UUID 引用）。"""
-    path_ids = {e.event_id: e for e in store.active_events()}
-    order = {e.event_id: i for i, e in enumerate(store.active_events())}
+    # 活动分支事件只遍历一次：投影消息与状态都复用同一 path（此前每次命令走三遍）
+    path = store.active_events()
+    order = {e.event_id: i for i, e in enumerate(path)}
     refs: list[DomainEventRef] = []
     for entry in result.new_events:
         local_id = int(entry["event_id"])
-        ev = path_ids.get(local_id)
+        pos = order.get(local_id)
+        ev = path[pos] if pos is not None else None
         payload = ev.payload if ev else (entry.get("payload") or {})
         refs.append(
             DomainEventRef(
@@ -122,7 +134,7 @@ def project_update(
     return RuntimeUpdate(
         session_id=session_id,
         branch_id=branch_uuid(session_id, store.active_branch_id),
-        state=project_state(session_id, store, result.state),
+        state=project_state(session_id, store, result.state, path=path),
         new_events=refs,
         terminal=result.terminal,
         emitted_event_types=sorted({r.event_type for r in refs}, key=lambda t: t.value),

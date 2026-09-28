@@ -20,6 +20,7 @@ from app.infrastructure.models.session import Session
 S1 = str(uuid4())
 S2 = str(uuid4())
 S3 = str(uuid4())
+S4 = str(uuid4())
 
 _DB_URL = os.environ.get(
     "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
@@ -65,6 +66,9 @@ async def session_factory():
         )
         session.add(
             Session(id=uuid.UUID(S2), org_id=actor.org_id, owner_user_id=actor.user_id)
+        )
+        session.add(
+            Session(id=uuid.UUID(S4), org_id=actor.org_id, owner_user_id=actor.user_id)
         )
         await session.commit()
     try:
@@ -119,3 +123,38 @@ async def test_flush_idempotent_empty(session_factory):
     store = PersistentEventStore()
     async with session_factory() as session:
         assert await store.flush(session, 'not-a-uuid-but-empty-flush') == 0
+
+
+async def test_scene_assets_derive_after_pg_round_trip(session_factory):
+    """#55「重放一致」：经 PG 落库 + `restore_active_branch` 后派生的资产索引与内存态相同。
+
+    这一层差异只在真实持久化路径上暴露：JSONB 往返会给 payload 补 session_id/event_id/
+    timestamp 等键，分支整数 id 由 event_branches 行反查重排——内存 EventStore 覆盖不到。
+    """
+    from app.domain.game.assets import RuntimeAssets
+
+    first, second = str(uuid4()), str(uuid4())
+    store = PersistentEventStore()
+    store.append("asset_ready", {"scene_key": "scene:1", "asset_id": first}, session_id=S4)
+    store.append("plot_advancement", {"summary": "转场"}, session_id=S4)
+    # 同一 scene_key 后写覆盖先写；另一 scene_key 取默认 kind
+    store.append("asset_ready", {"scene_key": "scene:1", "asset_id": second}, session_id=S4)
+    store.append(
+        "asset_ready",
+        {"scene_key": "scene:2", "asset_id": first, "kind": "avatar"},
+        session_id=S4,
+    )
+    expected = RuntimeAssets.rebuild(store)
+
+    async with session_factory() as session:
+        await store.flush(session, S4)
+
+    restored = PersistentEventStore()
+    async with session_factory() as session:
+        await restored.restore_active_branch(session, S4)
+
+    index = RuntimeAssets.rebuild(restored)
+    assert index.by_scene == expected.by_scene
+    assert index.current("scene:1").asset_id == uuid.UUID(second)
+    assert index.current("scene:2").kind == "avatar"
+    assert index.current("scene:missing") is None
