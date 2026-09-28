@@ -10,18 +10,6 @@
 
 命令在仓库根用 Makefile 封装；后端在 `backend/` 用 uv，前端在 `frontend/` 用 npm。
 
-```bash
-make dev            # 起 db + 迁移 + backend(:8000) + frontend(:3000)，后台，日志 .run/logs/
-make dev-stop       # 停止；make dev-status 查看状态
-make migrate        # Alembic upgrade head
-make seed           # 默认 org + super_admin/teacher/student 测试账号（幂等）
-make db-reset       # 破坏式重建本地库：删卷 → 迁移 → seed（旧数据不可恢复）
-make test           # backend pytest（PG 可用时含集成测试）
-make lint           # backend ruff + frontend eslint（不含类型检查）
-make lint-arch      # import-linter 分层依赖守卫
-make e2e            # Playwright（需 backend+frontend 已运行）
-```
-
 - 单个测试：`cd backend && uv run pytest tests/test_x.py::test_y -q`
 - 前端类型检查必须用 `npm run typecheck`（先 `next typegen` 再 `tsc --noEmit`）；直接 `tsc` 会因缺全局生成类型报 `TS2304`。
 - 验证顺序：`make lint` → `make lint-arch` → `cd frontend && npm run typecheck` → `make test`。
