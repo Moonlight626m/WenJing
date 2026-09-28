@@ -20,6 +20,7 @@ from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.infrastructure.media import (
     SqlAssetRepository,
+    build_image_gen,
     build_image_search,
     build_object_storage,
 )
@@ -48,6 +49,7 @@ class Container:
         self._admin_service: AdminService | None = None
         self._object_storage: Any | None = None
         self._image_search: Any | None = None
+        self._image_gen: Any | None = None
         self._asset_access: AssetAccessService | None = None
 
     # ===== 生命周期（lifespan 调用）=====
@@ -67,6 +69,16 @@ class Container:
         self.checkpointer = None
         # 关闭后再次访问需以无 checkpointer 重建，避免绑定已关闭的 saver
         self._script_library = None
+        # 检索/生图端口各自持有自建 httpx 连接池；不关会在长跑进程与多轮 lifespan
+        # 下持续泄漏 socket/fd（空实现无 close，走 hasattr 守卫）。置空以便重建。
+        await self._aclose_port("_image_search")
+        await self._aclose_port("_image_gen")
+
+    async def _aclose_port(self, attr: str) -> None:
+        port = getattr(self, attr, None)
+        if port is not None and hasattr(port, "close"):
+            await port.close()
+        setattr(self, attr, None)
 
     async def _open_checkpointer(self) -> tuple[Any | None, Any | None]:
         """async 创建 AsyncPostgresSaver；只捕连接/建表异常（配置错误显式暴露）。"""
@@ -147,6 +159,13 @@ class Container:
         if self._image_search is None:
             self._image_search = build_image_search(self.settings)
         return self._image_search
+
+    @property
+    def image_gen(self) -> Any:
+        """文生图端口（ADR-0005 §2/§6 / #46）；provider=null 时为安全空实现。"""
+        if self._image_gen is None:
+            self._image_gen = build_image_gen(self.settings)
+        return self._image_gen
 
     @property
     def asset_access(self) -> AssetAccessService:

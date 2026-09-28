@@ -54,8 +54,25 @@ class Settings(BaseSettings):
     media_storage_secret_key: str = ""
     media_storage_presign_ttl: int = 900
 
-    # 生图 provider（M2 #46 接入）；检索 provider（M2 #44 接入）。
-    media_image_gen_provider: Literal["null"] = "null"
+    # 生图 provider（M2 #46 接入）：openai = OpenAI 兼容 Images API（换厂商不改 adapter；
+    # provider 选型仍是 ADR-0005 待定项）；null = 不生成，上层降级为无图。
+    media_image_gen_provider: Literal["null", "openai"] = "null"
+    media_image_gen_base_url: str = "https://api.openai.com/v1"
+    media_image_gen_api_key: str = ""
+    media_image_gen_model: str = "gpt-image-1"
+    media_image_gen_connect_timeout: float = 5.0
+    # 生图明显慢于检索（单张 16:9 常见 10–40s），读超时给足但仍设上界。
+    media_image_gen_read_timeout: float = 90.0
+    media_image_gen_max_bytes: int = 16 * 1024 * 1024
+    media_image_gen_max_prompt_chars: int = 1200
+    # 多数兼容 provider 认 "b64_json"/"url"；gpt-image-1 不接受该参数，留空即不发。
+    media_image_gen_response_format: str = ""
+    # 尺寸模式：preset=按宽高比映射到 provider 固定档位（gpt-image-1 只认
+    # 1024x1024/1536x1024/1024x1536，发 1280x720 会 400）；exact=直发 WxH，
+    # 适合接受任意尺寸的兼容 provider。
+    media_image_gen_size_mode: Literal["preset", "exact"] = "preset"
+
+    # 检索 provider（M2 #44 接入）。
     media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"
     # 检索下载安全边界（复用 RAG SSRF/DNS 校验）：连接/读取超时与单图字节上限。
     media_image_search_connect_timeout: float = 5.0

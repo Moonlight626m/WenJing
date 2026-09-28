@@ -68,6 +68,10 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "MEDIA_SEARCH_FAILED": (ErrorDomain.MEDIA, True),
     "MEDIA_SEARCH_BLOCKED": (ErrorDomain.MEDIA, False),
     "MEDIA_SEARCH_TIMEOUT": (ErrorDomain.MEDIA, True),
+    "MEDIA_IMAGE_GEN_FAILED": (ErrorDomain.MEDIA, True),
+    "MEDIA_IMAGE_GEN_TIMEOUT": (ErrorDomain.MEDIA, True),
+    "MEDIA_IMAGE_GEN_BLOCKED": (ErrorDomain.MEDIA, False),
+    "MEDIA_IMAGE_GEN_INVALID": (ErrorDomain.MEDIA, False),
     # llm
     "LLM_TIMEOUT": (ErrorDomain.LLM, True),
     "LLM_INVALID_OUTPUT": (ErrorDomain.LLM, True),

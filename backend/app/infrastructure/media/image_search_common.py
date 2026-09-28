@@ -35,17 +35,24 @@ def build_image_fetcher(
     client: httpx.AsyncClient,
     validator: Callable[[str], None] | None = None,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    unavailable_code: int = codes.MEDIA_SEARCH_FAILED,
+    blocked_code: int = codes.MEDIA_SEARCH_BLOCKED,
+    timeout_code: int = codes.MEDIA_SEARCH_TIMEOUT,
 ) -> SafePageFetcher:
-    """构建按图片规则收敛的抓取器：仅图片 content-type、错误码归 MEDIA_SEARCH_*。"""
+    """构建按图片规则收敛的抓取器：仅图片 content-type，错误码段可换。
+
+    错误码可覆盖是为了让复用方保留语义——生图 adapter 下载产物时要能区分
+    「取图超时」与「SSRF 拦截」，而不是一律压成通用失败码（#46）。
+    """
     return SafePageFetcher(
         client=client,
         validator=validator,
         max_body_bytes=max_bytes,
         allowed_content_types=ALLOWED_IMAGE_TYPES,
         require_content_type=True,
-        unavailable_code=codes.MEDIA_SEARCH_FAILED,
-        blocked_code=codes.MEDIA_SEARCH_BLOCKED,
-        timeout_code=codes.MEDIA_SEARCH_TIMEOUT,
+        unavailable_code=unavailable_code,
+        blocked_code=blocked_code,
+        timeout_code=timeout_code,
     )
 
 

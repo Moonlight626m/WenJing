@@ -33,6 +33,7 @@ LLM_UNKNOWN_MODEL = 4003            # 请求了未登记/未知的 provider 或�
 CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
 CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
 CFG_UNKNOWN_MEDIA_PROVIDER = 5003    # 未知的媒体 provider（检索/生图）
+CFG_MEDIA_IMAGE_GEN_INCOMPLETE = 5004  # provider=openai 但缺少 base_url/api_key
 
 # ===== 内容（CNT）=====
 CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
@@ -62,6 +63,10 @@ MEDIA_ASSET_NOT_READY = 13004       # 资产尚未就绪（pending/failed）
 MEDIA_SEARCH_FAILED = 13005         # 开放版权检索 provider 不可用/响应异常
 MEDIA_SEARCH_BLOCKED = 13006        # SSRF/DNS 校验拒绝检索目标（私有/回环/元数据）
 MEDIA_SEARCH_TIMEOUT = 13007        # 检索请求连接/读取超时
+MEDIA_IMAGE_GEN_FAILED = 13008      # 生图 provider 不可用/响应异常
+MEDIA_IMAGE_GEN_TIMEOUT = 13009     # 生图请求连接/读取超时
+MEDIA_IMAGE_GEN_BLOCKED = 13010     # 本地安全闸门拒绝（prompt 过滤 / 产物 URL 被 SSRF 拦）
+MEDIA_IMAGE_GEN_INVALID = 13011     # provider 返回的图片无效（解码/内容类型/尺寸）
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -133,6 +138,11 @@ def register_all() -> None:
         "unknown media provider: {provider}",
         is_affect_stability=False,
     )
+    register(
+        CFG_MEDIA_IMAGE_GEN_INCOMPLETE,
+        "media image gen provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
 
     register(CNT_UNSUPPORTED_GENRE, "unsupported genre: {genre}", is_affect_stability=False)
     register(
@@ -189,6 +199,18 @@ def register_all() -> None:
         is_affect_stability=False,
     )
     register(MEDIA_SEARCH_TIMEOUT, "media image search timed out: {url}")
+    register(MEDIA_IMAGE_GEN_FAILED, "media image generation failed: {reason}")
+    register(MEDIA_IMAGE_GEN_TIMEOUT, "media image generation timed out: {reason}")
+    register(
+        MEDIA_IMAGE_GEN_BLOCKED,
+        "blocked image generation prompt: {reason}",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_IMAGE_GEN_INVALID,
+        "invalid generated image: {reason}",
+        is_affect_stability=False,
+    )
 
     register(PER_WRITE_FAILED, "persistence write failed: {op}")
     register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")

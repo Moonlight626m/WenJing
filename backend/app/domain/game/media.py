@@ -39,6 +39,15 @@ class AssetStatus(StrEnum):
     FAILED = "failed"
 
 
+# 生成尺寸（ADR-0005 §6）：背景统一 16:9、头像 1:1（每角色一次、跨场景复用），
+# 立绘走竖版。调用方未显式给宽高（0）时按 kind 取此表。
+ASSET_SIZES: dict[AssetKind, tuple[int, int]] = {
+    AssetKind.BACKGROUND: (1280, 720),
+    AssetKind.AVATAR: (512, 512),
+    AssetKind.FULLBODY: (768, 1024),
+}
+
+
 class MediaKind(StrEnum):
     """媒体计量类别（ADR-0005 §12）：与 token 语义的 `llm_usage` 分离。"""
 
@@ -260,6 +269,7 @@ class SceneDesigner:
 
 
 __all__ = [
+    "ASSET_SIZES",
     "AssetCredit",
     "AssetKind",
     "AssetRecord",
