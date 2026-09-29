@@ -45,6 +45,8 @@
 
 事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）。生产侧的调用点只有一处：`GameRuntime._current_background`（#56），解析顺序是**事件索引优先、剧本槽位兜底**——槽位是 Stage2 离线预生成的图（那时还没有 `asset_ready` 事件），运行期配图必须压过它，否则续写阶段的实时图永远显示不出来。
 
+运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
+
 ### 剧本生成 workflow（ADR-0003）
 
 ```

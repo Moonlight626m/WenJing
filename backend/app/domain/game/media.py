@@ -2,9 +2,10 @@
 
 本模块定义：
 
-- **六个 domain 端口**（infra 提供适配器）：
+- **七个 domain 端口**（infra 提供适配器）：
   `ObjectStoragePort` / `ImageGenPort` / `ImageSearchPort` /
-  `AssetRepositoryPort` / `MediaMeterPort` / `MediaQuotaPort`。
+  `AssetRepositoryPort` / `MediaMeterPort` / `MediaQuotaPort` /
+  `AssetJobPort`（运行期配图任务的持久台账，#57）。
 - 端口间传递的**领域数据结构**（不落契约，契约 `AssetRef`/`AssetCredit` 见 #43）。
 - `SceneDesigner`：检索→审核→回退生成→存储→产出 `AssetRecord` 的编排组件（#47）。
 
@@ -29,7 +30,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from app.contracts.script import AssetCredit as AssetCreditContract
 from app.contracts.script import AssetRef
-from app.domain.game.media_safety import MAX_PROMPT_CHARS
+from app.domain.game.media_safety import MAX_PROMPT_CHARS, screen_generation_prompt
 from app.infrastructure.errx import Error
 
 # 仅为类型标注：image_review 反向 import 本模块，运行期 import 会成环。
@@ -161,6 +162,8 @@ class AssetRecord:
     session_id: uuid.UUID | None = None
     dedup_key: str = ""
     version: int = 1
+    #: 失败原因摘要（诊断/失败率归因）；成功时为空
+    reason: str = ""
     created_at: datetime | None = None
 
 
@@ -233,6 +236,15 @@ class AssetRepositoryPort(Protocol):
         status: AssetStatus | None = None,
     ) -> AssetRecord | None: ...
 
+    async def fail_stale_pending(self, *, before: datetime) -> int:
+        """把 `before` 之前仍未转出 `PENDING` 的票据判死，返回处理行数。
+
+        `pending` 是「付费调用已开始、结果未知」的中间态；写它的进程要是没了，
+        就再没人会推进它。启动时（进程内必然没有在途生成）调用一次，表里便不再
+        挂着永远不动的 pending 行（ADR-0005 §5 / R14「pending 资产崩溃后永挂」）。
+        """
+        ...
+
 
 @runtime_checkable
 class MediaMeterPort(Protocol):
@@ -257,6 +269,86 @@ class MediaQuotaPort(Protocol):
     async def check(self, *, org_id: uuid.UUID, kind: MediaKind, units: int = 1) -> bool: ...
 
     async def consume(self, *, org_id: uuid.UUID, kind: MediaKind, units: int = 1) -> None: ...
+
+
+@dataclass(frozen=True)
+class SceneAssetRequest:
+    """一次运行期配图请求：请求期绑定的全部上下文（后台任务只拿到它）。
+
+    放在 domain 而非 services：`asset_jobs` 的持久化端口在 infrastructure 一侧，
+    而 infrastructure 只允许 import domain（`make lint-arch`）。它本身也确实是
+    领域值——「引擎说这个场景缺图」+ 应用层补上的归属上下文。
+    """
+
+    session_id: uuid.UUID
+    #: 请求发起时的活动分支；落库前据此校验分支是否已被回溯放弃。
+    branch_id: uuid.UUID
+    scene_key: str
+    description: str
+    org_id: uuid.UUID
+    script_id: int | None = None
+    user_id: uuid.UUID | None = None
+
+
+class AssetJobStatus(StrEnum):
+    """运行期配图任务的生命周期：pending（已发起、未收口）→ ready / failed。"""
+
+    PENDING = "pending"
+    READY = "ready"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class AssetJob:
+    """`asset_jobs` 一行：一次运行期配图尝试的持久记录。"""
+
+    job_id: uuid.UUID
+    request: SceneAssetRequest
+    status: AssetJobStatus = AssetJobStatus.PENDING
+    asset_id: uuid.UUID | None = None
+    reason: str = ""
+    created_at: datetime | None = None
+
+
+@runtime_checkable
+class AssetJobPort(Protocol):
+    """运行期配图任务的持久台账（ADR-0005 §5 崩溃恢复，issue #57）。
+
+    为什么另立一张表，而不是复用 `assets` 行：
+
+    - 运行期产物必须记在**剧本**名下（`script_id`，`session_id` 留空），否则
+      `AssetAccessService` 会改按「会话 owner」鉴权，同一剧本的第二个会话拿到
+      缓存复用资产时直接 403——跨会话缓存命中就没了。
+    - 于是「按会话」的账（每会话生图上限、崩溃后重排）无处可记，只能另存一张。
+    - 上限与去重还必须**跨进程存活**：进程内计数器一重启就归零，崩溃循环里的
+      会话能一次次绕开上限。
+
+    `open` 是唯一的发起口：同 `(session_id, scene_key)` 已存在，或该会话已达上限，
+    都返回 `None`（两种原因的区分由实现记日志，调用方一律「这次不发起」）。
+    """
+
+    async def open(self, request: SceneAssetRequest, *, limit: int = 0) -> AssetJob | None:
+        """登记一次尝试并返回任务；去重命中或超上限时返回 None（不生成）。"""
+        ...
+
+    async def finish(
+        self,
+        job_id: uuid.UUID,
+        *,
+        status: AssetJobStatus,
+        asset_id: uuid.UUID | None = None,
+        reason: str = "",
+    ) -> None:
+        """收口一次尝试。`ready` 表示产出成功（发布是否被接受是另一回事）。"""
+        ...
+
+    async def pending(self, *, since: datetime | None = None) -> list[AssetJob]:
+        """未收口的任务（可选按创建时间下界过滤），启动重排用。"""
+        ...
+
+    async def expire(self, *, before: datetime) -> int:
+        """把 `before` 之前仍未收口的任务判死，返回处理行数（TTL 兜底）。"""
+        ...
 
 
 def content_hash(data: bytes) -> str:
@@ -307,6 +399,9 @@ def build_dedup_key(
 
 # 生成 prompt 的统一画风/构图约束（ADR-0005 §6：背景不含人物、统一画风）。
 DEFAULT_STYLE = "写实"
+
+#: 失败原因入库前的长度上限（`assets.reason` / `asset_jobs.reason` 同宽）。
+_REASON_MAX_CHARS = 200
 # 每个 kind 的构图尾巴。FULLBODY **不能**套背景那条——否则立绘会被要求
 # 「画面中不出现任何人物」，永远生成不出角色（#47 评审发现）。
 _KIND_TAILS: dict[AssetKind, str] = {
@@ -379,6 +474,18 @@ class _Picked:
     credit: AssetCredit = field(default_factory=AssetCredit)
     width: int = 0
     height: int = 0
+
+
+@dataclass(frozen=True)
+class _GenOutcome:
+    """付费回退生成的结果：成果，或**具体**失败原因。
+
+    带原因是给失败率归因用的：上游只会看到 `FAILED`，光凭状态分不清「配额用尽」
+    「prompt 被本地过滤拦下」「provider 报错」「生成的图与旧图重复」。空结果一律带原因。
+    """
+
+    picked: _Picked | None = None
+    reason: str = ""
 
 
 class _UnusableCandidate(Exception):
@@ -516,19 +623,20 @@ class SceneDesigner:
                     exc,
                 )
 
-        picked = (
-            await self._generate(
+        outcome = (
+            _GenOutcome(reason="search_only: no accepted candidate")
+            if search_only
+            else await self._generate(
                 org_id=org_id,
                 description=description,
                 kind=kind,
                 style=resolved_style,
                 exclude_content_hashes=hash_exclusions,
             )
-            if not search_only
-            else None
         )
+        picked = outcome.picked
         if picked is None:
-            return await self._fail(record, reason="no usable image (search+review+generate)")
+            return await self._fail(record, reason=outcome.reason or "no usable image")
         # 钱**已经花了**：计量必须在此刻落，不能等到 READY——否则转码/上传失败时
         # 这笔真实花费在记账与配额种子里完全消失（ADR-0005 §12）。
         await self._meter(
@@ -607,7 +715,7 @@ class SceneDesigner:
         kind: AssetKind,
         style: str,
         exclude_content_hashes: Sequence[str] = (),
-    ) -> _Picked | None:
+    ) -> _GenOutcome:
         """付费回退生成。
 
         `exclude_content_hashes`（#49）语义：文生图无法保证「与旧图不同」——同
@@ -615,23 +723,32 @@ class SceneDesigner:
         视为本次编排失败（返回 None → 上层记 FAILED），由教师再次重试；不悄悄
         放行旧字节，也不为换图无限重烧配额。
         """
+        prompt = build_generation_prompt(description=description, kind=kind, style=style)
+        try:
+            # 本地安全过滤（#46 的确定性闸）必须在**预扣配额之前**：被拦下的 prompt
+            # 根本没送去 provider，白吃一次 org 预算的话，预算是拿真实付费喂出来的，
+            # 一点都经不起这种漏水。
+            screen_generation_prompt(prompt)
+        except Error as exc:
+            logger.warning("scene_asset_prompt_blocked reason=%s", exc.msg)
+            return _GenOutcome(reason=f"blocked: {exc.msg}")
+
         # 原子预扣：check+consume 两步在并发下会双双通过而超额（quota.py 明确要求
         # 付费方走 try_acquire）。
         if self.quota is not None and not await self.quota.try_acquire(
             org_id=org_id, kind=MediaKind.IMAGE
         ):
             logger.warning("scene_asset_quota_exhausted org=%s", org_id)
-            return None
+            return _GenOutcome(reason="org quota exhausted")
 
-        prompt = build_generation_prompt(description=description, kind=kind, style=style)
         try:
             image = await self.image_gen.generate(prompt=prompt, kind=kind)
         except Error as exc:
             logger.warning("scene_asset_generation_failed reason=%s", exc.msg)
-            return None
+            return _GenOutcome(reason=f"provider: {exc.msg}")
         if not image.image_bytes:
             logger.warning("scene_asset_generation_empty prompt=%r", prompt[:80])
-            return None
+            return _GenOutcome(reason="provider returned no bytes")
         if (
             exclude_content_hashes
             and content_hash(image.image_bytes) in set(exclude_content_hashes)
@@ -639,16 +756,18 @@ class SceneDesigner:
             logger.warning(
                 "scene_asset_generation_duplicate subject_desc=%r", description[:60]
             )
-            return None
+            return _GenOutcome(reason="duplicate of excluded image")
 
-        return _Picked(
-            image_bytes=image.image_bytes,
-            content_type=image.content_type,
-            source=AssetSource.GENERATED,
-            provider=type(self.image_gen).__name__,
-            model=self.generation_model,
-            width=image.width,
-            height=image.height,
+        return _GenOutcome(
+            picked=_Picked(
+                image_bytes=image.image_bytes,
+                content_type=image.content_type,
+                source=AssetSource.GENERATED,
+                provider=type(self.image_gen).__name__,
+                model=self.generation_model,
+                width=image.width,
+                height=image.height,
+            )
         )
 
     # ===== 存储与收尾 =====
@@ -709,9 +828,15 @@ class SceneDesigner:
         return record
 
     async def _fail(self, record: AssetRecord, *, reason: str) -> AssetRecord:
-        """失败也落库（`FAILED`），让上层能区分「还没好」与「不会好」。"""
+        """失败也落库（`FAILED` + 原因），让上层能区分「还没好」与「不会好」。
+
+        原因写进记录而不只是日志：上游（#56 的运行期任务台账）拿得到 `record`，
+        拿不到我们的日志行——失败率要能归因到「配额用尽 / 被安全过滤拦下 /
+        provider 报错 / 产物重复」这几类，靠的就是这个字段。
+        """
         logger.warning("scene_asset_failed asset=%s reason=%s", record.asset_id, reason)
         record.status = AssetStatus.FAILED
+        record.reason = reason[:_REASON_MAX_CHARS]
         await self.assets.save(record)
         return record
 

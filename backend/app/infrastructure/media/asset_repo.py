@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.game.media import (
@@ -19,6 +21,8 @@ from app.domain.game.media import (
     AssetStatus,
 )
 from app.infrastructure.models.asset import Asset
+
+logger = logging.getLogger("wenjing.media.assets")
 
 
 def _to_row(record: AssetRecord) -> Asset:
@@ -38,6 +42,7 @@ def _to_row(record: AssetRecord) -> Asset:
         session_id=record.session_id,
         dedup_key=record.dedup_key,
         version=record.version,
+        reason=record.reason,
         author=record.credit.author,
         license=record.credit.license,
         source_url=record.credit.source_url,
@@ -68,6 +73,7 @@ def _to_record(row: Asset) -> AssetRecord:
         session_id=row.session_id,
         dedup_key=row.dedup_key,
         version=row.version,
+        reason=row.reason,
         created_at=row.created_at,
     )
 
@@ -110,6 +116,31 @@ class SqlAssetRepository:
             stmt = stmt.order_by(Asset.created_at.desc(), Asset.asset_id.desc()).limit(1)
             row = (await session.execute(stmt)).scalar_one_or_none()
         return _to_record(row) if row is not None else None
+
+    async def fail_stale_pending(self, *, before: datetime) -> int:
+        """把 `before` 之前仍未转出 `pending` 的票据判死（启动时调用一次）。
+
+        启动这一刻进程内没有任何在途生成，所以此刻还是 `pending` 的行**必然**是
+        上一次进程留下的：写它的协程已经不在了，再没人会推进它（ADR-0005 §5 /
+        R14「pending 资产崩溃后永挂」）。判成 `failed` 而不是删掉——留痕，
+        且按语义它是「不会好了」而不是「从来没发生过」。
+        """
+        async with self._factory() as session:
+            result = await session.execute(
+                update(Asset)
+                .where(
+                    Asset.status == AssetStatus.PENDING.value,
+                    Asset.created_at < before,
+                )
+                .values(
+                    status=AssetStatus.FAILED.value, reason="stale pending ticket"
+                )
+            )
+            await session.commit()
+        count = int(result.rowcount or 0)
+        if count:
+            logger.warning("stale_pending_assets_failed count=%d", count)
+        return count
 
 
 __all__ = ["SqlAssetRepository"]

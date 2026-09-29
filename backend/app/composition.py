@@ -16,7 +16,7 @@ from typing import Any
 from app.domain.game.image_review import ImageReviewAgent
 from app.domain.game.media import MediaKind, SceneDesigner
 from app.infrastructure.config import Settings, get_settings
-from app.infrastructure.db.session import SessionLocal
+from app.infrastructure.db.session import SessionLocal, engine
 from app.infrastructure.diagnostics.logging import exc_reason
 from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
@@ -24,6 +24,7 @@ from app.infrastructure.media import (
     ImageProcessor,
     MediaQuotaService,
     MediaUsageRecorder,
+    SqlAssetJobStore,
     SqlAssetRepository,
     build_image_gen,
     build_image_search,
@@ -58,6 +59,8 @@ class Container:
         self._image_search: Any | None = None
         self._image_gen: Any | None = None
         self._asset_access: AssetAccessService | None = None
+        self._asset_repo: SqlAssetRepository | None = None
+        self._asset_jobs: SqlAssetJobStore | None = None
         self._scene_designer: SceneDesigner | None = None
         self._event_hub: SessionEventHub | None = None
         self._asset_scheduler: SceneAssetScheduler | None = None
@@ -68,9 +71,37 @@ class Container:
         """建立事件循环绑定资源（重复调用会先释放旧 pool）。失败降级不阻断启动。"""
         if self._checkpoint_pool is not None:
             await self._checkpoint_pool.close()
+        # DB 连接池同样是事件循环绑定资源：asyncpg 连接只属于创建它的那个 loop，
+        # 换一个 loop 再取出来用会报 "another operation is in progress"，而且那条
+        # 坏连接会被还回池子里继续毒害后续请求。启动恢复（#57）是 open() 里第一个
+        # 碰 DB 的动作，不先丢弃旧连接就轮到它踩。生产只 open 一次，这里是空操作。
+        # close=False：只丢池子不逐条关闭——在**新** loop 里关闭旧 loop 的连接，
+        # 正是我们要避免的那件事。
+        await engine.dispose(close=False)
         self.checkpointer, self._checkpoint_pool = await self._open_checkpointer()
         # checkpointer 若在建库前已被访问过，丢弃缓存以纳入新 saver
         self._script_library = None
+        await self._recover_asset_jobs()
+
+    async def _recover_asset_jobs(self) -> None:
+        """启动时的在途配图恢复（ADR-0005 §5 / issue #57）。
+
+        恢复失败**不阻断启动**：它只是把上次崩溃欠下的账收一收，收不动也不该
+        让整个服务起不来（与 checkpointer 建不起来时的降级同一个取舍）。
+        """
+        try:
+            report = await self.session_application.recover_asset_jobs()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "asset_jobs_recovery_failed",
+                extra={"wj_extra": {"reason": exc_reason(exc)}},
+            )
+            return
+        if report.requeued or report.expired:
+            logger.info(
+                "asset_jobs_recovery_done",
+                extra={"requeued": report.requeued, "expired": report.expired},
+            )
 
     async def close(self) -> None:
         # 在途运行期配图先收尾：任务已经付过费，等它把 asset_ready 落库再走，
@@ -129,12 +160,29 @@ class Container:
         return self._event_hub
 
     @property
+    def asset_repo(self) -> SqlAssetRepository:
+        """资产元数据仓库（ADR-0005 §4）。无状态，进程内共用一个即可。"""
+        if self._asset_repo is None:
+            self._asset_repo = SqlAssetRepository(session_factory=self.session_factory)
+        return self._asset_repo
+
+    @property
+    def asset_jobs(self) -> SqlAssetJobStore:
+        """运行期配图任务台账（#57）：每会话上限与崩溃恢复都建在它上面。"""
+        if self._asset_jobs is None:
+            self._asset_jobs = SqlAssetJobStore(session_factory=self.session_factory)
+        return self._asset_jobs
+
+    @property
     def asset_scheduler(self) -> SceneAssetScheduler:
         """运行期配图调度（#56）：`scene_designer` 以 lambda 延迟求值，
         避免在没有生成任务时也构建整套媒体栈。"""
         if self._asset_scheduler is None:
             self._asset_scheduler = SceneAssetScheduler(
-                designer=lambda: self.scene_designer
+                designer=lambda: self.scene_designer,
+                jobs=self.asset_jobs,
+                max_images_per_session=self.settings.media_max_images_per_session,
+                job_ttl_seconds=self.settings.media_asset_job_ttl_seconds,
             )
         return self._asset_scheduler
 
@@ -147,6 +195,7 @@ class Container:
                 usage_recorder=UsageRecorder(session_factory=self.session_factory),
                 asset_scheduler=self.asset_scheduler,
                 event_hub=self.event_hub,
+                assets=self.asset_repo,
             )
         return self._session_application
 
@@ -211,7 +260,7 @@ class Container:
         """资产访问服务（ADR-0005 §3 / #42）：鉴权 + 预签名 URL。"""
         if self._asset_access is None:
             self._asset_access = AssetAccessService(
-                assets=SqlAssetRepository(session_factory=self.session_factory),
+                assets=self.asset_repo,
                 storage=self.object_storage,
                 session_factory=self.session_factory,
                 presign_ttl=self.settings.media_storage_presign_ttl,
@@ -231,7 +280,7 @@ class Container:
                 storage=self.object_storage,
                 image_gen=self.image_gen,
                 image_search=self.image_search,
-                assets=SqlAssetRepository(session_factory=self.session_factory),
+                assets=self.asset_repo,
                 reviewer=ImageReviewAgent(llm=self._build_agent_llm()),
                 transcode=ImageProcessor().process,
                 # 参与去重键：换 model 等于换画风，历史资产不能继续命中缓存。

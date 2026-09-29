@@ -53,6 +53,9 @@ class Asset(Base):
     dedup_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # 失败原因摘要（诊断/失败率归因）；成功时为空
+    reason: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
     # 署名/许可（ADR-0005 §6）
     author: Mapped[str] = mapped_column(String(256), nullable=False, default="")
     license: Mapped[str] = mapped_column(String(128), nullable=False, default="")

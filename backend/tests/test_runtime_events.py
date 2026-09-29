@@ -1,10 +1,15 @@
-"""命令外事件路径 + 运行期配图（issue #56 验收，真实 PG + fake adapters）。
+"""命令外事件路径 + 运行期配图（issue #56/#57 验收，真实 PG + fake adapters）。
 
-覆盖 ADR-0005 §5 / design M4-2 的三条验收：
-- 端到端：新场景占位 → 生成 → 事件落库 → 推送（前端据此替换背景）；
-- 并发命令不破坏 CAS：配图落库与玩家命令撞版本时重试，两边都不丢；
-- 失败占位不阻塞游玩：设计器失败只让这场没有图，叙事照常推进。
-依赖真实 PostgreSQL；不可用时 skip。
+覆盖 ADR-0005 §5 / design M4-2、M4-3 的验收：
+
+- 端到端：新场景占位 → 生成 → 事件落库 → 推送（前端据此替换背景）（#56）；
+- 并发命令不破坏 CAS：配图落库与玩家命令撞版本时重试，两边都不丢（#56）；
+- 失败占位不阻塞游玩：设计器失败只让这场没有图，叙事照常推进（#56）；
+- 每会话生图上限：超限只留占位，不再发起生成（#57）；
+- 崩溃恢复：进程留下的 pending 票据判死、TTL 内的在途任务重排并补推（#57）。
+
+依赖真实 PostgreSQL；不可用时 skip。这里用**真的** `SqlAssetJobStore` /
+`SqlAssetRepository`（上限与恢复的语义都建在库上），只把设计器换成假的。
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, text
@@ -19,9 +25,18 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
-from app.domain.game.media import AssetKind, AssetRecord, AssetStatus
+from app.domain.game.media import (
+    AssetJobStatus,
+    AssetKind,
+    AssetRecord,
+    AssetStatus,
+    SceneAssetRequest,
+)
 from app.infrastructure.errx import codes, new
+from app.infrastructure.media import SqlAssetJobStore, SqlAssetRepository
+from app.infrastructure.models.asset_job import AssetJob as AssetJobRow
 from app.infrastructure.models.command import CommandRecord
+from app.infrastructure.models.session import Session as SessionRecord
 from app.services.scene_assets import SceneAssetScheduler
 from app.services.session_events import SessionEventHub
 from app.services.session_runtime import SessionApplication
@@ -95,11 +110,15 @@ class FakeSceneDesigner:
 class Harness:
     """一个装配了假设计器 + hub 的应用，便于同时断言「落库」与「推送」。"""
 
-    def __init__(self, app: SessionApplication, sid: uuid.UUID, designer, hub) -> None:
+    def __init__(
+        self, app: SessionApplication, sid: uuid.UUID, designer, hub, jobs, assets
+    ) -> None:
         self.app = app
         self.sid = sid
         self.designer = designer
         self.hub = hub
+        self.jobs = jobs
+        self.assets = assets
 
     async def drain(self) -> None:
         """等在途生成收尾——不然「没有推送」可能只是因为任务还没跑。"""
@@ -112,19 +131,33 @@ async def _make_harness(
     actor,
     *,
     status: AssetStatus = AssetStatus.READY,
+    max_images_per_session: int = 0,
+    job_ttl_seconds: int = 900,
 ) -> Harness:
-    """建可玩会话：应用挂了假设计器与 hub（组合根接线等价物）。"""
+    """建可玩会话：应用挂了假设计器与 hub（组合根接线等价物）。
+
+    台账与资产仓库用**真实现**（#57 的上限/恢复语义就建在它们上面），
+    只有设计器是假的——真设计器要连 provider。
+    """
     from conftest import generate_script_id
 
     from app.infrastructure.llm.fake import DeterministicAgentLLM
 
     designer = FakeSceneDesigner(status)
     hub = SessionEventHub()
+    jobs = SqlAssetJobStore(session_factory=factory)
+    assets = SqlAssetRepository(session_factory=factory)
     app = SessionApplication(
         session_factory=factory,
         agent_llm=DeterministicAgentLLM(),
-        asset_scheduler=SceneAssetScheduler(designer=lambda: designer),
+        asset_scheduler=SceneAssetScheduler(
+            designer=lambda: designer,
+            jobs=jobs,
+            max_images_per_session=max_images_per_session,
+            job_ttl_seconds=job_ttl_seconds,
+        ),
         event_hub=hub,
+        assets=assets,
     )
     script_id = await generate_script_id(factory, actor)
     sid = (
@@ -133,7 +166,7 @@ async def _make_harness(
         )
     ).session_id
     await app.initialize_session(sid, actor)
-    return Harness(app, sid, designer, hub)
+    return Harness(app, sid, designer, hub, jobs, assets)
 
 
 def _cmd(sid: uuid.UUID, kind: CommandKind, payload: dict | None = None) -> PlayerCommand:
@@ -382,3 +415,213 @@ async def test_stage2_does_not_generate_at_runtime(factory, actor):
 
     await harness.drain()
     assert harness.designer.calls == []
+
+
+# ===== 每会话生图上限（#57）=====
+
+
+async def _request_for(
+    harness: Harness,
+    actor,
+    *,
+    scene_key: str,
+    branch_id: uuid.UUID,
+    description: str = "长安酒馆偶遇",
+) -> SceneAssetRequest:
+    """按真实路径的绑定口径造一个配图请求（归属上下文全从会话取）。"""
+    from app.infrastructure.models.session import Session as SessionRow
+
+    async with harness.app._factory() as s:
+        sess = await s.get(SessionRow, harness.sid)
+    return SceneAssetRequest(
+        session_id=harness.sid,
+        branch_id=branch_id,
+        scene_key=scene_key,
+        description=description,
+        org_id=sess.org_id,
+        script_id=sess.script_id,
+        user_id=sess.owner_user_id,
+    )
+
+
+async def _playable_harness(factory, actor, **kwargs) -> tuple[Harness, str, uuid.UUID]:
+    """建可玩会话并选角：返回 (harness, 当前 scene_key, 活动 branch_id)。
+
+    选角本身不发起配图（只有 stage3 的运行期新场景才发起），所以这里拿到的
+    「当前场景」正是待配图的那个。
+    """
+    harness = await _make_harness(factory, actor, **kwargs)
+    role = (await harness.app.get_status(harness.sid, actor=actor)).playable_roles[0]
+    await harness.app.submit_command(
+        harness.sid,
+        _cmd(harness.sid, CommandKind.SELECT_ROLE, {"role_name": role}),
+        actor=actor,
+    )
+    init = await harness.app.session_init(harness.sid, actor=actor)
+    return harness, init["scene_key"], uuid.UUID(init["branch_id"])
+
+
+async def _schedule(app: SessionApplication, request: SceneAssetRequest) -> bool:
+    assert app._asset_scheduler is not None
+    return app._asset_scheduler.schedule(request, on_ready=app._apply_asset_ready)
+
+
+async def test_session_cap_keeps_placeholder(factory, actor):
+    """超限那场只留占位：上限是**硬**成本闸，不是「尽量少生成」。"""
+    harness, scene_key, branch_id = await _playable_harness(
+        factory, actor, max_images_per_session=1
+    )
+    first = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    second = await _request_for(
+        harness, actor, scene_key=f"{scene_key}+1", branch_id=branch_id
+    )
+
+    assert await _schedule(harness.app, first) is True
+    assert await _schedule(harness.app, second) is True
+    await harness.drain()
+
+    assert len(harness.designer.calls) == 1
+    # 第一张照常落库：上限拦住的是「继续花钱」，不是「已经花掉的那张」
+    assert (await harness.app.session_init(harness.sid, actor=actor))[
+        "current_asset"
+    ] is not None
+
+
+async def test_session_cap_is_per_session(factory, actor):
+    """上限按会话算：另一个会话不该被邻居的额度拖累。"""
+    harness, scene_key, branch_id = await _playable_harness(
+        factory, actor, max_images_per_session=1
+    )
+    async with harness.app._factory() as s:
+        sess = await s.get(SessionRecord, harness.sid)
+    other = (
+        await harness.app.create_session(
+            org_id=sess.org_id, owner_user_id=sess.owner_user_id, script_id=sess.script_id
+        )
+    ).session_id
+    other_init = await harness.app.session_init(other, actor=actor)
+
+    mine = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    theirs = SceneAssetRequest(
+        session_id=other,
+        branch_id=uuid.UUID(other_init["branch_id"]),
+        scene_key=scene_key,
+        description="长安酒馆偶遇",
+        org_id=sess.org_id,
+        script_id=sess.script_id,
+        user_id=sess.owner_user_id,
+    )
+
+    assert await _schedule(harness.app, mine) is True
+    assert await _schedule(harness.app, theirs) is True
+    await harness.drain()
+
+    assert len(harness.designer.calls) == 2
+
+
+async def test_same_scene_is_not_regenerated_after_restart(factory, actor):
+    """重启后仍不重复付费：进程内去重集合丢了，`asset_jobs` 的唯一约束还在。"""
+    harness, scene_key, branch_id = await _playable_harness(factory, actor)
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+
+    assert await _schedule(harness.app, request) is True
+    await harness.drain()
+    # 换一个调度器（等于重启后新进程），同一场景再发起
+    fresh = SceneAssetScheduler(
+        designer=lambda: harness.designer, jobs=harness.jobs
+    )
+
+    assert fresh.schedule(request, on_ready=harness.app._apply_asset_ready) is True
+    await fresh.drain()
+
+    assert len(harness.designer.calls) == 1
+
+
+# ===== 崩溃恢复（#57）=====
+
+
+async def test_crash_leaves_recoverable_pending_job(factory, actor):
+    """崩溃现场重排：TTL 内的在途任务重新生成，图照样出现在会话里。
+
+    这里手工造出「进程崩在生成中途」的现场——台账一行 pending、assets 一张
+    pending 票据——再走一次启动恢复，等价于重启后玩家重连。
+    """
+    harness, scene_key, branch_id = await _playable_harness(factory, actor)
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    job = await harness.jobs.open(request)
+    assert job is not None
+    stale_id = uuid.uuid4()
+    await harness.assets.save(
+        AssetRecord(
+            asset_id=stale_id,
+            object_key="org/x/assets/stale/original.webp",
+            kind=AssetKind.BACKGROUND,
+            status=AssetStatus.PENDING,
+            org_id=request.org_id,
+            script_id=request.script_id,
+            dedup_key="crash-leftover",
+        )
+    )
+
+    with harness.hub.subscribe(harness.sid) as queue:
+        report = await harness.app.recover_asset_jobs()
+        await harness.drain()
+        pushed = await asyncio.wait_for(queue.get(), timeout=15)
+
+    assert report.requeued == 1
+    assert len(harness.designer.calls) == 1
+    # 崩溃留下的 pending 票据判死：表里不再挂永远不动的行
+    stale = await harness.assets.get_by_id(stale_id)
+    assert stale is not None and stale.status is AssetStatus.FAILED
+    # 补上的图进了事件流：玩家重连走 session_init 就能拿到
+    assert pushed["payload"]["scene_key"] == scene_key
+    init = await harness.app.session_init(harness.sid, actor=actor)
+    assert init["current_asset"]["asset_id"] == pushed["payload"]["current_asset"]["asset_id"]
+
+
+async def test_recover_expires_job_past_ttl(factory, actor):
+    """超 TTL 的在途任务判死而不重排：崩溃循环不该反复为同一场景付费。"""
+    harness, scene_key, branch_id = await _playable_harness(
+        factory, actor, job_ttl_seconds=60
+    )
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    job = await harness.jobs.open(request)
+    assert job is not None
+    async with harness.app._factory() as s:
+        row = await s.get(AssetJobRow, job.job_id)
+        row.created_at = datetime.now(UTC) - timedelta(seconds=120)
+        await s.commit()
+
+    report = await harness.app.recover_asset_jobs()
+    await harness.drain()
+
+    assert report.expired == 1
+    assert report.requeued == 0
+    assert harness.designer.calls == []
+    async with harness.app._factory() as s:
+        row = await s.get(AssetJobRow, job.job_id)
+    assert row.status == AssetJobStatus.FAILED.value
+    assert row.reason
+
+
+async def test_failed_attempt_is_recorded_with_reason(factory, actor):
+    """失败也要在台账上留原因：光有 status 归因不出失败率。"""
+    harness, scene_key, branch_id = await _playable_harness(factory, actor)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("provider 503")
+
+    harness.designer.design_scene = _boom
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+
+    await _schedule(harness.app, request)
+    await harness.drain()
+
+    async with harness.app._factory() as s:
+        row = (
+            await s.execute(
+                select(AssetJobRow).where(AssetJobRow.session_id == harness.sid)
+            )
+        ).scalars().one()
+    assert row.status == AssetJobStatus.FAILED.value
+    assert "provider 503" in row.reason

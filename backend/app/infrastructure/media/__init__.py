@@ -10,6 +10,7 @@ M0（#39）只放空实现与配置，不接业务：
 
 from __future__ import annotations
 
+from app.infrastructure.media.asset_jobs import SqlAssetJobStore
 from app.infrastructure.media.asset_repo import SqlAssetRepository
 from app.infrastructure.media.image_gen import build_image_gen
 from app.infrastructure.media.image_gen_openai import OpenAIImageGen
@@ -42,6 +43,7 @@ __all__ = [
     "OpenAIImageGen",
     "OpenverseImageSearch",
     "S3ObjectStorage",
+    "SqlAssetJobStore",
     "SqlAssetRepository",
     "WikimediaImageSearch",
     "build_image_gen",

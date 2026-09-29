@@ -4,6 +4,8 @@
 - 「给定场景产出 AssetRef」→ test_search_accept_path_returns_ready_record
 - 「resume/重跑不重复生成」→ test_second_run_hits_cache_and_skips_paid_calls
 - 「缓存命中不重复付费」→ test_cache_hit_skips_paid_calls / 换 provider 失效缓存
+- 「缓存跨会话命中」（#57）→ test_cache_hits_across_sessions_of_the_same_script
+- 「安全过滤命中丢弃」（#57）→ test_blocked_prompt_is_dropped_before_quota
 
 全部用 fake 端口，无 DB、无网络；真实存储/生图链路由各自 adapter 的 key-gated 冒烟覆盖。
 """
@@ -955,3 +957,69 @@ def test_requires_attribution_follows_license_whitelist():
     assert requires_attribution("CC0 1.0") is False
     assert requires_attribution("Public domain") is False
     assert requires_attribution("") is False
+
+
+# ===== 运行期成本与安全闸（#57）=====
+
+
+async def test_blocked_prompt_is_dropped_before_quota():
+    """本地安全过滤命中即丢弃：不调 provider，也**不吃 org 预算**。
+
+    顺序是这条用例的全部意义——`screen_generation_prompt` 若排在 `try_acquire`
+    之后，一张注定被拒的图会白吃一次配额，而配额是拿真实付费喂出来的。
+    """
+    gen, quota = FakeGen(), FakeQuota()
+    designer = _designer(gen=gen, quota=quota, search=FakeSearch(candidates=[]))
+
+    record = await _design(designer, description="一段nsfw画面")
+
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0, "被过滤的 prompt 绝不能送去 provider"
+    assert quota.consumed == 0
+    # 原因要落到记录上：运行期任务台账靠它归因失败率
+    assert record.reason.startswith("blocked:")
+
+
+async def test_blocked_prompt_does_not_poison_cache():
+    """被拦下的那次不留缓存命中：换个干净描述，同一场景照样能出图。"""
+    gen = FakeGen()
+    assets = FakeAssets()
+    designer = _designer(assets=assets, gen=gen, search=FakeSearch(candidates=[]))
+
+    blocked = await _design(designer, description="裸露画面")
+    assert blocked.status is AssetStatus.FAILED
+
+    ok = await _design(designer, description="古老的江南水乡")
+    assert ok.status is AssetStatus.READY
+    assert gen.calls == 1
+
+
+async def test_cache_hits_across_sessions_of_the_same_script():
+    """缓存跨会话命中（#57）：同一剧本的第二个会话直接复用，不再付费。
+
+    这也是运行期产物**不能**写 `session_id` 的原因——一写，
+    `AssetAccessService` 就改按会话 owner 鉴权，第二个会话拿到这张图直接 403。
+    """
+    assets, gen = FakeAssets(), FakeGen()
+    designer = _designer(assets=assets, gen=gen, search=FakeSearch(candidates=[]))
+
+    first = await _design(
+        designer, script_id=101, session_id=uuid.uuid4(), subject_key="scene:5"
+    )
+    second = await _design(
+        designer, script_id=101, session_id=uuid.uuid4(), subject_key="scene:5"
+    )
+
+    assert second.asset_id == first.asset_id
+    assert gen.calls == 1
+    assert second.session_id is None, "归属落在剧本上，不是发起它的那个会话"
+
+
+async def test_generation_failure_reason_is_recorded():
+    """失败原因不止进日志：`assets.reason` 要能支撑失败率归因。"""
+    designer = _designer(gen=FakeGen(error=True), search=FakeSearch(candidates=[]))
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.FAILED
+    assert record.reason

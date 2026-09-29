@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from app.domain.game.media import (
     AssetKind,
@@ -67,6 +68,9 @@ class NullAssetRepository:
         status: AssetStatus | None = None,
     ) -> AssetRecord | None:
         return None
+
+    async def fail_stale_pending(self, *, before: datetime) -> int:
+        return 0
 
 
 class NullMediaMeter:

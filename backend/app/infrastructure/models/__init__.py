@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from app.infrastructure.models.asset import Asset
+from app.infrastructure.models.asset_job import AssetJob
 from app.infrastructure.models.auth_session import AuthSession
 from app.infrastructure.models.command import CommandRecord, CommandStatus
 from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
@@ -24,6 +25,7 @@ from app.infrastructure.models.user import User
 
 __all__ = [
     "Asset",
+    "AssetJob",
     "Session",
     "Material",
     "Script",
@@ -45,6 +47,7 @@ __all__ = [
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
 _ = (
     Asset,
+    AssetJob,
     Session,
     Material,
     Script,

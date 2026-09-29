@@ -154,6 +154,10 @@ def test_routes_llm_factory_fallback_logs_warning():
 
     class _StubSettings:
         llm_api_key = "sk-test"
+        # session_application 的构造会顺带装配运行期配图调度（#56/#57），
+        # 那里要读每会话生图上限与任务 TTL——这两个属性不能省。
+        media_max_images_per_session = 0
+        media_asset_job_ttl_seconds = 900
 
         @staticmethod
         def llm_model_config():
@@ -184,7 +188,8 @@ def test_scripts_llm_fallback_logs_warning():
         llm_model = ""
         rag_search_provider = "null"
         # #48 后 ScriptLibrary 的 scene_designer 经 lambda 延迟构建，
-        # 构造期不再触碰媒体配置；stub 无需 media_* 属性。
+        # 构造期不再触碰媒体配置；stub 无需 media_* 属性（与上面那条不同：
+        # session_application 会在构造期装配配图调度，所以那边必须给）。
 
         @staticmethod
         def llm_model_config():

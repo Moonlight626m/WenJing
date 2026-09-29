@@ -84,6 +84,9 @@ class Settings(BaseSettings):
     media_image_search_user_agent: str = "Wenjing/1.0 media-search"
     # 每会话运行期生图上限（ADR-0005 §7 成本控制）。
     media_max_images_per_session: int = 20
+    # 崩溃后仍愿意重排的在途配图任务年龄上限（秒，ADR-0005 §5）。超龄判死而不重排：
+    # 崩溃循环会把同一场景一次次重排队列，那份产出多半没人看得到。
+    media_asset_job_ttl_seconds: int = 900
 
     # org 级媒体配额预算（付费调用前 check+consume，ADR-0005 §12）；0=不限额。
     media_org_image_budget: int = 0

@@ -1,6 +1,6 @@
 """媒体端口骨架形状测试（issue #39 M0）。
 
-覆盖：六个端口的形状（方法与参数名）+ 空实现满足协议 + 去重键与 tee 缓冲语义。
+覆盖：七个端口的形状（方法与参数名）+ 空实现满足协议 + 去重键与 tee 缓冲语义。
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ import inspect
 import uuid
 
 from app.domain.game.media import (
+    AssetJobPort,
     AssetKind,
     AssetRecord,
     AssetRepositoryPort,
@@ -37,6 +38,7 @@ PORTS = (
     ObjectStoragePort,
     ImageGenPort,
     ImageSearchPort,
+    AssetJobPort,
     AssetRepositoryPort,
     MediaMeterPort,
     MediaQuotaPort,
@@ -61,7 +63,13 @@ def test_port_method_shapes():
     assert set(_methods(ObjectStoragePort)) == {"put", "presign"}
     assert set(_methods(ImageGenPort)) == {"generate"}
     assert set(_methods(ImageSearchPort)) == {"search"}
-    assert set(_methods(AssetRepositoryPort)) == {"save", "get_by_id", "find_by_dedup_key"}
+    assert set(_methods(AssetRepositoryPort)) == {
+        "save",
+        "get_by_id",
+        "find_by_dedup_key",
+        "fail_stale_pending",
+    }
+    assert set(_methods(AssetJobPort)) == {"open", "finish", "pending", "expire"}
     assert set(_methods(MediaMeterPort)) == {"record"}
     assert set(_methods(MediaQuotaPort)) == {"try_acquire", "check", "consume"}
 
@@ -83,6 +91,14 @@ def test_port_keyword_only_params():
         "dedup_key",
         "status",
     }
+    assert set(_methods(AssetJobPort)["finish"].parameters) == {
+        "self",
+        "job_id",
+        "status",
+        "asset_id",
+        "reason",
+    }
+    assert set(_methods(AssetJobPort)["pending"].parameters) == {"self", "since"}
     for method in ("try_acquire", "check", "consume"):
         assert set(_methods(MediaQuotaPort)[method].parameters) == {
             "self",

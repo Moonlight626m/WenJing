@@ -33,7 +33,11 @@ from app.contracts.script import ScriptPackage
 from app.domain.access import Actor, require_session_access, script_visible_to
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.game_runtime import GameRuntime, StepResult
-from app.domain.game.media import AssetRecord
+from app.domain.game.media import (
+    AssetRecord,
+    AssetRepositoryPort,
+    SceneAssetRequest,
+)
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.llm import LLMService
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
@@ -42,7 +46,7 @@ from app.infrastructure.errx import codes, match_code, new
 from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.session import Session as SessionRecord
-from app.services.scene_assets import SceneAssetRequest, SceneAssetScheduler
+from app.services.scene_assets import RecoveryReport, SceneAssetScheduler
 from app.services.session_events import SessionEventHub
 from app.services.session_projection import (
     messages_from_update,
@@ -75,6 +79,7 @@ class SessionApplication:
         store: SessionStore | None = None,
         asset_scheduler: SceneAssetScheduler | None = None,
         event_hub: SessionEventHub | None = None,
+        assets: AssetRepositoryPort | None = None,
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
@@ -85,6 +90,8 @@ class SessionApplication:
         self._asset_scheduler = asset_scheduler
         # WS 广播（#56）：命令外事件没有请求上下文可回，只能经它投递
         self._event_hub = event_hub
+        # 资产仓库（#57）：启动恢复要拿它把崩溃留下的 pending 票据判死
+        self._assets = assets
 
     # ===== 创建 =====
 
@@ -383,6 +390,20 @@ class SessionApplication:
                 "status": status,
             },
         )
+
+    async def recover_asset_jobs(self) -> RecoveryReport:
+        """启动时的在途配图恢复（ADR-0005 §5 / issue #57）。
+
+        进程崩溃会留下两样东西：`assets` 里一行永远 `pending` 的票据，和 `asset_jobs`
+        里一行永远 `pending` 的任务。**启动这一刻进程内没有任何在途生成**，所以此刻
+        还是 pending 的票据必然是上一个进程写的——先全部判死，让表不再挂僵尸；
+        任务则交给调度器按 TTL 决定重排还是判死（见 `SceneAssetScheduler.recover`）。
+        """
+        if self._assets is not None:
+            await self._assets.fail_stale_pending(before=datetime.now(UTC))
+        if self._asset_scheduler is None:
+            return RecoveryReport()
+        return await self._asset_scheduler.recover(on_ready=self._apply_asset_ready)
 
     async def _schedule_asset_requests(
         self,
