@@ -24,9 +24,15 @@ from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
 from app.contracts.generation import DoubterIssue, DoubterVerdict
 from app.contracts.review import AssetOp, GateEdits
-from app.contracts.script import AssetRef, CharacterProfile, ScriptPackage
+from app.contracts.script import AssetCredit, AssetRef, CharacterProfile, ScriptPackage
 from app.contracts.script_library import GenerationResumeRequest
-from app.domain.game.media import AssetKind, AssetStatus, SceneDesigner, to_asset_ref
+from app.domain.game.media import (
+    AssetKind,
+    AssetStatus,
+    SceneDesigner,
+    to_asset_ref,
+    to_contract_credit,
+)
 from app.domain.generation.json_text import extract_json
 from app.domain.generation.stage1 import Stage1Generator
 from app.domain.generation.workflow.state import WorkflowState, state_web_evidence
@@ -96,17 +102,27 @@ def _apply_assets(
     package: ScriptPackage,
     scenes: dict[int, AssetRef],
     profiles: dict[str, AssetRef],
+    scene_credits: dict[int, AssetCredit | None] | None = None,
+    profile_credits: dict[str, AssetCredit | None] | None = None,
 ) -> ScriptPackage:
-    """把 AssetRef 写回剧本包（不可变契约：model_copy 重建受影响条目）。
+    """把 AssetRef/AssetCredit 写回剧本包（不可变契约：model_copy 重建受影响条目）。
 
     打回重写后 write_script 产出全新场景集，此函数只在 design_assets 的
     返回 delta 上生效，不存在「旧轮 AssetRef 粘到新场景」的通道污染。
+    credit 只对检索件非 None（#51：教师端完整展示署名；学生端过滤在展示侧）。
     """
     if not scenes and not profiles:
         return package
+    scene_credits = scene_credits or {}
+    profile_credits = profile_credits or {}
     new_scenes = [
         (
-            scene.model_copy(update={"background_asset": scenes[scene.scene_id]})
+            scene.model_copy(
+                update={
+                    "background_asset": scenes[scene.scene_id],
+                    "background_credit": scene_credits.get(scene.scene_id),
+                }
+            )
             if scene.scene_id in scenes
             else scene
         )
@@ -114,7 +130,12 @@ def _apply_assets(
     ]
     new_characters = [
         (
-            c.model_copy(update={"avatar_asset": profiles[c.name]})
+            c.model_copy(
+                update={
+                    "avatar_asset": profiles[c.name],
+                    "avatar_credit": profile_credits.get(c.name),
+                }
+            )
             if c.name in profiles
             else c
         )
@@ -558,6 +579,8 @@ class WorkflowNodes:
 
         updated_scenes: dict[int, AssetRef] = {}
         updated_profiles: dict[str, AssetRef] = {}
+        scene_credits: dict[int, AssetCredit | None] = {}
+        profile_credits: dict[str, AssetCredit | None] = {}
         total = len(package.scenes) + len(package.characters)
         done = 0
         for scene in package.scenes:
@@ -565,7 +588,7 @@ class WorkflowNodes:
             await self._report(
                 "design_assets", f"配图 {done}/{total}：场景「{scene.title}」"
             )
-            ref = await self._design_one(
+            picked = await self._design_one(
                 designer,
                 subject_key=f"scene:{scene.scene_id}",
                 scene_key=f"script:{script_id}:scene:{scene.scene_id}",
@@ -576,13 +599,15 @@ class WorkflowNodes:
                 user_id=user_id,
                 label=f"场景「{scene.title}」",
             )
-            if ref is not None:
+            if picked is not None:
                 # 降级：失败主体不进剧本包，该场景以纯文本游玩
+                ref, credit = picked
                 updated_scenes[scene.scene_id] = ref
+                scene_credits[scene.scene_id] = credit
         for profile in package.characters:
             done += 1
             await self._report("design_assets", f"配图 {done}/{total}：人物「{profile.name}」")
-            ref = await self._design_one(
+            picked = await self._design_one(
                 designer,
                 subject_key=f"character:{profile.name}",
                 scene_key=f"script:{script_id}:character:{profile.name}",
@@ -593,11 +618,15 @@ class WorkflowNodes:
                 user_id=user_id,
                 label=f"人物「{profile.name}」",
             )
-            if ref is not None:
+            if picked is not None:
+                ref, credit = picked
                 updated_profiles[profile.name] = ref
+                profile_credits[profile.name] = credit
 
         out: dict[str, Any] = {
-            "package": _apply_assets(package, updated_scenes, updated_profiles),
+            "package": _apply_assets(
+                package, updated_scenes, updated_profiles, scene_credits, profile_credits
+            ),
             "asset_summary": {
                 "scenes_ready": len(updated_scenes),
                 "scenes_total": len(package.scenes),
@@ -626,11 +655,12 @@ class WorkflowNodes:
         script_id: int,
         user_id: uuid.UUID | None,
         label: str,
-    ) -> AssetRef | None:
-        """单个主体的配图：READY → AssetRef；FAILED/异常 → None（降级为无图）。
+    ) -> tuple[AssetRef, AssetCredit | None] | None:
+        """单个主体的配图：READY → (AssetRef, 契约署名)；FAILED/异常 → None。
 
         场景循环与人物循环的差异只在键与回填目标，此处收拢「调用 → 判状态 →
         异常兜底」这一共享形状；失败主体记 warning 后返回 None，剧本照常可用。
+        署名只对检索件非 None（#51，生成/上传件无许可语义）。
         """
         try:
             record = await designer.design_scene(
@@ -650,7 +680,7 @@ class WorkflowNodes:
             )
             return None
         if record.status is AssetStatus.READY:
-            return to_asset_ref(record)
+            return to_asset_ref(record), to_contract_credit(record)
         logger.warning(
             "[script-gen][design_assets] asset failed %s subject=%s status=%s",
             label,
@@ -687,6 +717,8 @@ class WorkflowNodes:
 
         scene_ops: dict[int, AssetRef | None] = {}
         profile_ops: dict[str, AssetRef | None] = {}
+        scene_credit_ops: dict[int, AssetCredit | None] = {}
+        profile_credit_ops: dict[str, AssetCredit | None] = {}
         scenes_by_id = {s.scene_id: s for s in package.scenes}
         profiles_by_name = {c.name: c for c in package.characters}
         for (subject_key, kind_raw), op in last_by_subject.items():
@@ -705,7 +737,7 @@ class WorkflowNodes:
                 except (KeyError, ValueError):
                     logger.warning("asset_op unknown subject=%r ignored", subject_key)
                     continue
-                ref = await self._resolve_op(
+                ref, credit = await self._resolve_op(
                     op,
                     kind,
                     designer=self._scene_designer,
@@ -718,8 +750,10 @@ class WorkflowNodes:
                         if scene.background_asset
                         else None
                     ),
+                    current_credit=scene.background_credit,
                 )
                 scene_ops[scene.scene_id] = ref
+                scene_credit_ops[scene.scene_id] = credit
             elif subject_key.startswith("character:"):
                 if kind is not AssetKind.AVATAR:
                     logger.warning(
@@ -731,7 +765,7 @@ class WorkflowNodes:
                 if profile is None:
                     logger.warning("asset_op unknown subject=%r ignored", subject_key)
                     continue
-                ref = await self._resolve_op(
+                ref, credit = await self._resolve_op(
                     op,
                     kind,
                     designer=self._scene_designer,
@@ -742,14 +776,21 @@ class WorkflowNodes:
                     current_asset_id=(
                         profile.avatar_asset.asset_id if profile.avatar_asset else None
                     ),
+                    current_credit=profile.avatar_credit,
                 )
                 profile_ops[name] = ref
+                profile_credit_ops[name] = credit
             else:
                 logger.warning("asset_op unknown subject=%r ignored", subject_key)
 
         new_scenes = [
             (
-                scene.model_copy(update={"background_asset": scene_ops[scene.scene_id]})
+                scene.model_copy(
+                    update={
+                        "background_asset": scene_ops[scene.scene_id],
+                        "background_credit": scene_credit_ops[scene.scene_id],
+                    }
+                )
                 if scene.scene_id in scene_ops
                 else scene
             )
@@ -757,7 +798,12 @@ class WorkflowNodes:
         ]
         new_characters = [
             (
-                c.model_copy(update={"avatar_asset": profile_ops[c.name]})
+                c.model_copy(
+                    update={
+                        "avatar_asset": profile_ops[c.name],
+                        "avatar_credit": profile_credit_ops[c.name],
+                    }
+                )
                 if c.name in profile_ops
                 else c
             )
@@ -778,22 +824,24 @@ class WorkflowNodes:
         script_id: int,
         description: str,
         current_asset_id: uuid.UUID | None,
-    ) -> AssetRef | None:
-        """单条操作 → 槽位新值；返回 None 的语义随 op 而定。
+        current_credit: AssetCredit | None,
+    ) -> tuple[AssetRef | None, AssetCredit | None]:
+        """单条操作 → 槽位新值 (ref, credit)；ref=None 的语义随 op 而定。
 
-        - remove：None 即「清空」（教师明确意图）；
-        - regenerate/search_replace 失败：返回旧图引用保留原状——检索替换的
-          契约是「失败不丢图」；槽位本来无图时失败返回 None（维持无图）。
+        - remove：None 即「清空」（教师明确意图，署名一并清）；
+        - regenerate/search_replace 失败：返回旧图引用与旧署名保留原状——
+          检索替换的契约是「失败不丢图」；槽位本来无图时失败返回 (None, None)。
+        - bind_upload：上传件非检索来源，署名为 None（#51 展示语义）。
         """
         if op.op == "remove":
-            return None
+            return None, None
         if designer is None:
             logger.warning("asset_op %s without designer ignored", op.op)
-            return None
+            return None, None
         if op.op == "bind_upload":
             if op.asset_id is None:
                 logger.warning("bind_upload without asset_id ignored")
-                return None
+                return None, None
             record = await designer.find_bindable_upload(
                 asset_id=op.asset_id, org_id=org_id, kind=kind
             )
@@ -803,10 +851,18 @@ class WorkflowNodes:
                     op.asset_id,
                     kind.value,
                 )
-                return None
-            return to_asset_ref(record)
+                return None, None
+            return to_asset_ref(record), to_contract_credit(record)
 
         # regenerate / search_replace：排除旧图，按同键重新设计
+        def keep_old() -> tuple[AssetRef | None, AssetCredit | None]:
+            # 失败保留旧图与旧署名（None 会把槽位清空，那是 remove 的语义）
+            return (
+                (_asset_ref_of(current_asset_id, kind), current_credit)
+                if current_asset_id
+                else (None, None)
+            )
+
         try:
             record = await designer.design_scene(
                 org_id=org_id,
@@ -826,18 +882,16 @@ class WorkflowNodes:
                 op.subject_key,
                 str(exc).replace("\n", " ")[:200],
             )
-            return None
+            return keep_old()
         if record.status is AssetStatus.READY:
-            return to_asset_ref(record)
+            return to_asset_ref(record), to_contract_credit(record)
         logger.warning(
             "asset_op %s degraded subject=%s status=%s (slot keeps old image)",
             op.op,
             op.subject_key,
             record.status.value,
         )
-        # 重生成/检索替换失败：保留旧图（None 会把槽位清空，那是 remove 的语义）
-        return _asset_ref_of(current_asset_id, kind) if current_asset_id else None
-
+        return keep_old()
 
     # ===== 事件/情景划分 =====
 

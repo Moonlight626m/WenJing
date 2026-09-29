@@ -1,7 +1,104 @@
-import type { ScriptPackage } from "@/lib/contracts/types";
+import type { AssetCredit, ScriptPackage } from "@/lib/contracts/types";
+import { requiresAttribution } from "@/lib/labels";
+
+/**
+ * 署名/来源展示（#51，ADR-0005 §6 修订 Q22/Q26）：
+ * - 教师端（audience="teacher"）：完整展示作者/许可/来源链接；
+ * - 学生端（audience="student"）：免署名许可（CC0/PD）不展示，不破坏沉浸；
+ *   需署名许可（CC BY/BY-SA）必须展示——折叠为 <details>，默认收起。
+ */
+function CreditSlot({
+  label,
+  credit,
+  audience,
+}: {
+  label: string;
+  credit: AssetCredit;
+  audience: "teacher" | "student";
+}) {
+  if (audience === "student" && !requiresAttribution(credit.license)) {
+    return null;
+  }
+  if (audience === "teacher") {
+    return (
+      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+        {label}来源：
+        {credit.source_url ? (
+          <a
+            href={credit.source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="underline"
+          >
+            {credit.author || "未知作者"}
+          </a>
+        ) : (
+          credit.author || "未知作者"
+        )}
+        {credit.license && <> · {credit.license}</>}
+        {credit.license_url && (
+          <>
+            {" "}
+            <a
+              href={credit.license_url}
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              许可全文
+            </a>
+          </>
+        )}
+      </p>
+    );
+  }
+  return (
+    <details className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
+      <summary className="cursor-pointer select-none">
+        图片来源与许可（{label}）
+      </summary>
+      <span className="text-zinc-500 dark:text-zinc-400">
+        {credit.author || "未知作者"}
+        {credit.license && <> · {credit.license}</>}
+        {credit.source_url && (
+          <>
+            {" "}
+            <a
+              href={credit.source_url}
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              来源
+            </a>
+          </>
+        )}
+        {credit.license_url && (
+          <>
+            {" "}
+            <a
+              href={credit.license_url}
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              许可全文
+            </a>
+          </>
+        )}
+      </span>
+    </details>
+  );
+}
 
 /** 剧本包只读预览（教师发布前核对角色/场景/关键事件）。 */
-export function ScriptPreview({ scriptPackage }: { scriptPackage: ScriptPackage }) {
+export function ScriptPreview({
+  scriptPackage,
+  audience = "teacher",
+}: {
+  scriptPackage: ScriptPackage;
+  audience?: "teacher" | "student";
+}) {
   return (
     <section className="flex flex-col gap-6">
       <div className="flex flex-col gap-1">
@@ -48,6 +145,9 @@ export function ScriptPreview({ scriptPackage }: { scriptPackage: ScriptPackage 
                   </span>
                 )}
               </div>
+              {character.avatar_credit && (
+                <CreditSlot label="头像" credit={character.avatar_credit} audience={audience} />
+              )}
               {character.public_background && (
                 <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
                   {character.public_background}
@@ -78,6 +178,9 @@ export function ScriptPreview({ scriptPackage }: { scriptPackage: ScriptPackage 
                 <div className="mt-0.5 text-xs text-zinc-400">
                   出场：{scene.participants.join("、")}
                 </div>
+              )}
+              {scene.background_credit && (
+                <CreditSlot label="背景" credit={scene.background_credit} audience={audience} />
               )}
               <ol className="mt-2 flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
                 {scene.beats.map((beat) => (

@@ -27,6 +27,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from app.contracts.script import AssetCredit as AssetCreditContract
 from app.contracts.script import AssetRef
 from app.domain.game.media_safety import MAX_PROMPT_CHARS
 from app.infrastructure.errx import Error
@@ -847,6 +848,40 @@ def to_asset_ref(record: AssetRecord) -> AssetRef:
         kind=record.kind.value,
         status=record.status.value,
     )
+
+
+def to_contract_credit(record: AssetRecord) -> AssetCreditContract | None:
+    """`AssetRecord.credit` → 契约署名（#51 来源/许可展示）。
+
+    教师端需要**完整**的来源/许可信息（含检索原始许可字符串），故过滤不在
+    数据层做——「免署名许可学生端不展示」由展示侧按 `requires_attribution`
+    判定（domain/game/image_review.evaluate_license 同一白名单）。生成件
+    （provider 无许可元数据）与教师上传返回 None：署名语义只对检索件成立。
+    """
+    if record.source is not AssetSource.SEARCH:
+        return None
+    credit = record.credit
+    if not (credit.license or credit.author or credit.source_url):
+        return None
+    return AssetCreditContract(
+        author=credit.author,
+        license=credit.license,
+        source_url=credit.source_url,
+        license_url=credit.license_url,
+    )
+
+
+def requires_attribution(license_str: str) -> bool:
+    """契约侧署名判定（#51）：许可字符串是否要求向最终用户署名。
+
+    复用审核 agent 的许可白名单（`evaluate_license`）：ATTRIBUTION_REQUIRED
+    → 学生端必须展示折叠署名（ADR-0005 §6 修订 Q22/Q26）；免署名档（CC0/PD）
+    学生端无需展示。空/未知串按免署名处理（数据层已保证检索件带合法许可，
+    这里只兜底不让空值误触发学生端署名 UI）。
+    """
+    from app.domain.game.image_review import LicenseStatus, evaluate_license
+
+    return evaluate_license(license_str) is LicenseStatus.ATTRIBUTION_REQUIRED
 
 
 def _ownership_scope(*, script_id: int | None, session_id: uuid.UUID | None) -> str:

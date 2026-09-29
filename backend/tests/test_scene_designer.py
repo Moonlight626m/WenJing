@@ -29,7 +29,9 @@ from app.domain.game.media import (
     SceneDesigner,
     build_dedup_key,
     build_generation_prompt,
+    requires_attribution,
     to_asset_ref,
+    to_contract_credit,
 )
 from app.domain.game.media_safety import MAX_PROMPT_CHARS
 from app.infrastructure.errx import codes, new
@@ -895,3 +897,61 @@ async def test_publish_upload_invalid_bytes_fail_not_raise():
     )
 
     assert record.status is AssetStatus.FAILED
+
+
+# ===== #51 来源/许可展示 =====
+
+
+def test_to_contract_credit_rules():
+    """署名规则（#51）：检索件带完整许可元数据；生成/上传件与空 credit → None。
+
+    展示侧过滤（免署名学生端不显示）不做在数据层——教师端要完整信息。
+    """
+    search_record = AssetRecord(
+        asset_id=uuid.uuid4(),
+        object_key="o/s.webp",
+        kind=AssetKind.BACKGROUND,
+        status=AssetStatus.READY,
+        source=AssetSource.SEARCH,
+        org_id=_ORG,
+        credit=AssetCredit(
+            author="摄影师甲",
+            license="CC BY-SA 4.0",
+            source_url="https://commons.example.org/x",
+            license_url="https://creativecommons.org/licenses/by-sa/4.0/",
+        ),
+    )
+    credit = to_contract_credit(search_record)
+    assert credit is not None
+    assert credit.license == "CC BY-SA 4.0"
+    assert credit.author == "摄影师甲"
+
+    # 生成件 / 上传件：无署名语义
+    assert to_contract_credit(
+        AssetRecord(
+            asset_id=uuid.uuid4(), object_key="o/g.webp", kind=AssetKind.BACKGROUND,
+            status=AssetStatus.READY, source=AssetSource.GENERATED, org_id=_ORG,
+        )
+    ) is None
+    assert to_contract_credit(
+        AssetRecord(
+            asset_id=uuid.uuid4(), object_key="o/u.webp", kind=AssetKind.BACKGROUND,
+            status=AssetStatus.READY, source=AssetSource.UPLOADED, org_id=_ORG,
+        )
+    ) is None
+    # 检索件但 credit 全空：退回 None
+    assert to_contract_credit(
+        AssetRecord(
+            asset_id=uuid.uuid4(), object_key="o/s2.webp", kind=AssetKind.BACKGROUND,
+            status=AssetStatus.READY, source=AssetSource.SEARCH, org_id=_ORG,
+        )
+    ) is None
+
+
+def test_requires_attribution_follows_license_whitelist():
+    """学生端署名判定（#51）：CC BY/BY-SA → True；CC0/PD → False；空串 → False。"""
+    assert requires_attribution("CC BY 4.0") is True
+    assert requires_attribution("CC BY-SA 4.0") is True
+    assert requires_attribution("CC0 1.0") is False
+    assert requires_attribution("Public domain") is False
+    assert requires_attribution("") is False

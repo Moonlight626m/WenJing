@@ -121,7 +121,7 @@ export function StudentScriptDetail({ scriptId }: { scriptId: number }) {
       </header>
 
       {pkg ? (
-        <ScriptPreview scriptPackage={pkg} />
+        <ScriptPreview scriptPackage={pkg} audience="student" />
       ) : (
         <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
           剧本内容暂不可用，无法开局。

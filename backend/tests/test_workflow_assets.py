@@ -12,7 +12,14 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.domain.game.media import AssetKind, AssetRecord, AssetSource, AssetStatus
+from app.domain.game.media import (
+    AssetCredit,
+    AssetKind,
+    AssetRecord,
+    AssetSource,
+    AssetStatus,
+    requires_attribution,
+)
 from app.domain.generation.workflow.nodes import WorkflowNodes
 from app.domain.generation.workflow.runner import WorkflowRunner
 from app.domain.generation.workflow.state import initial_state
@@ -606,3 +613,148 @@ async def test_final_gate_ignores_kind_slot_mismatch() -> None:
     assert bg is not None and bg.asset_id == uuid.UUID(old_ref["asset_id"]), (
         "错位 kind 的 op 被忽略，背景槽保持原值"
     )
+
+
+async def test_search_asset_credit_flows_into_package() -> None:
+    """#51：检索采纳件（需署名许可）的 credit 随 AssetRef 回填剧本包槽位。"""
+
+    analysis = make_analysis()
+    license_str = "CC BY-SA 4.0"
+
+    class _SearchDesigner(_RecordingDesigner):
+        async def design_scene(self, **kwargs: Any) -> AssetRecord:
+            self.calls.append((kwargs["subject_key"], kwargs["kind"].value))
+            return AssetRecord(
+                asset_id=uuid.uuid4(),
+                object_key=f"o/{kwargs['subject_key']}.webp",
+                kind=kwargs["kind"],
+                status=AssetStatus.READY,
+                source=AssetSource.SEARCH,
+                org_id=kwargs["org_id"],
+                credit=AssetCredit(
+                    author="摄影师甲", license=license_str, source_url="https://x.example/1",
+                ),
+            )
+
+    designer = _SearchDesigner()
+    nodes = WorkflowNodes(ScriptedWorkflowLLM(analysis), scene_designer=designer)
+    from langgraph.checkpoint.memory import MemorySaver as _MS
+
+    runner = WorkflowRunner(nodes, checkpointer=_MS())
+    final = await runner.run(_state(), thread_id="t51-credit")
+
+    pkg = final["package"]
+    for scene in pkg.scenes:
+        assert scene.background_asset is not None
+        assert scene.background_credit is not None
+        assert scene.background_credit.license == license_str
+        assert scene.background_credit.author == "摄影师甲"
+        # 学生端署名判定与许可一致（需署名档）
+        assert requires_attribution(scene.background_credit.license) is True
+
+
+async def test_asset_ops_credit_consistency() -> None:
+    """#51（Spec 审查补）：ops 路径 credit 与 ref 同步——remove 清署名、
+    失败保留旧署名、bind_upload 无署名。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("pass", "pass", "pass"))
+    upload_id = uuid.uuid4()
+
+    class _CreditDesigner:
+        """首轮检索件（带署名）；regenerate 永远 FAILED；可绑定上传件。"""
+
+        def __init__(self) -> None:
+            self.first_ref = uuid.uuid4()
+
+        async def design_scene(self, **kwargs: Any) -> AssetRecord:
+            exhausted = bool(kwargs.get("exclude_asset_ids"))
+            return AssetRecord(
+                asset_id=self.first_ref if not exhausted else uuid.uuid4(),
+                object_key="o/x.webp",
+                kind=kwargs["kind"],
+                status=AssetStatus.FAILED if exhausted else AssetStatus.READY,
+                source=AssetSource.UPLOADED if exhausted else AssetSource.SEARCH,
+                org_id=kwargs["org_id"],
+                credit=(
+                    AssetCredit()
+                    if exhausted
+                    else AssetCredit(author="摄影师甲", license="CC BY-SA 4.0")
+                ),
+            )
+
+        async def find_bindable_upload(self, **kwargs: Any) -> AssetRecord | None:
+            return AssetRecord(
+                asset_id=upload_id,
+                object_key="o/up.webp",
+                kind=kwargs["kind"],
+                status=AssetStatus.READY,
+                source=AssetSource.UPLOADED,
+                org_id=kwargs["org_id"],
+            )
+
+    designer = _CreditDesigner()
+    checkpointer = MemorySaver()
+    runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    await runner.run(_state(), thread_id="t51-ops")
+    for gate in ("materials", "pre_write"):
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+            checkpointer=checkpointer,
+        )
+        await runner.resume(
+            thread_id="t51-ops", resume_payload={"directives": []}, gate=gate
+        )
+    package = runner.review["package"]
+    scene = package["scenes"][0]
+    chars = package["characters"]
+
+    final_runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    final = await final_runner.resume(
+        thread_id="t51-ops",
+        resume_payload={
+            "edits": {
+                "asset_ops": [
+                    # 场景 regenerate → FAILED → 旧图旧署名保留
+                    {
+                        "op": "regenerate",
+                        "subject_key": f"scene:{scene['scene_id']}",
+                        "kind": "background",
+                    },
+                    # 人物1 remove → ref 与 credit 一起清
+                    {
+                        "op": "remove",
+                        "subject_key": f"character:{chars[0]['name']}",
+                        "kind": "avatar",
+                    },
+                    # 人物2 bind_upload → 上传件无署名（None）
+                    {
+                        "op": "bind_upload",
+                        "subject_key": f"character:{chars[1]['name']}",
+                        "kind": "avatar",
+                        "asset_id": str(upload_id),
+                    },
+                ]
+            },
+            "action": "approve",
+        },
+        gate="final",
+    )
+
+    pkg = final["package"]
+    bg = pkg.scenes[0]
+    assert bg.background_asset.asset_id == uuid.UUID(scene["background_asset"]["asset_id"])
+    assert bg.background_credit is not None
+    assert bg.background_credit.license == "CC BY-SA 4.0", "重生成失败 → 旧署名保留"
+    assert pkg.characters[0].avatar_asset is None
+    assert pkg.characters[0].avatar_credit is None, "remove 清 ref 的同时清署名"
+    assert pkg.characters[1].avatar_asset is not None
+    assert pkg.characters[1].avatar_asset.asset_id == upload_id
+    assert pkg.characters[1].avatar_credit is None, "上传件无署名语义"

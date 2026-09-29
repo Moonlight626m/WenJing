@@ -83,3 +83,17 @@ export const USAGE_PURPOSE_LABELS: Record<UsagePurpose, string> = {
 export function usagePurposeLabel(purpose: UsagePurpose): string {
   return USAGE_PURPOSE_LABELS[purpose] ?? purpose;
 }
+
+/**
+ * 需署名许可判定（#51，ADR-0005 §6 署名合规）：与后端 `evaluate_license`
+ * 白名单同一 token 语义的前端镜像——需署名档 tokens 恰为 {BY, ATTRIBUTION}
+ * （image_review._ATTRIBUTION_TOKENS）；CC0 / Public Domain 免署名；
+ * NC/ND 在数据层已拦截不会出现在署名位，这里照后端「含 NC/ND → incompatible
+ * → 不署名」的口径排除。
+ */
+export function requiresAttribution(license: string): boolean {
+  const tokens = new Set((license || "").toUpperCase().match(/[A-Z0-9]+/g) ?? []);
+  if (tokens.size === 0) return false;
+  if (["NC", "ND"].some((t) => tokens.has(t))) return false;
+  return tokens.has("BY") || tokens.has("ATTRIBUTION");
+}
