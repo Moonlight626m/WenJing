@@ -4,9 +4,9 @@
 由一个 `ModelRegistry` 管理已知 provider 的默认端点，通过 `ChatLLMService` 构造
 对应 provider 的客户端。
 
-当前支持 OpenAI、DeepSeek 与 OpenCode Go，三者均走 OpenAI-compatible chat
-completions，仅 base_url 与默认 model 不同；新增 provider（Qwen/GLM 等）只需在
-`KNOWN_PROVIDERS` 登记即可。
+当前支持 OpenAI、DeepSeek、OpenCode Go 与 ECNU（华东师大 chat.ecnu.edu.cn），
+四者均走 OpenAI-compatible chat completions，仅 base_url 与默认 model 不同；
+新增 provider（Qwen/GLM 等）只需在 `KNOWN_PROVIDERS` 登记即可。
 
 用法::
 
@@ -31,6 +31,13 @@ KNOWN_PROVIDERS: Mapping[str, Any] = {
     "openai": {"base_url": None, "default_model": "gpt-4o-mini"},
     "deepseek": {"base_url": "https://api.deepseek.com", "default_model": "deepseek-chat"},
     "opencodego": {"base_url": "https://opencode.ai/zen/go/v1", "default_model": "glm-5.3-flash"},
+    # 华东师大开放平台（OpenAI 格式）。模型可选 `ecnu-max`（DeepSeek-V4-Flash，
+    # 512K 上下文）与 `ecnu-plus`（Qwen3.8-27B，256K）——本仓结构化输出重，
+    # 默认取一档更稳的 plus；要更强推理就显式设 WENJING_LLM_MODEL=ecnu-max。
+    "ecnu": {
+        "base_url": "https://chat.ecnu.edu.cn/open/api/v1",
+        "default_model": "ecnu-plus",
+    },
 }
 
 
