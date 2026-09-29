@@ -196,6 +196,7 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
       {awaitingReview && (
         <GateReviewPanel
           key={detail.review ? detail.review.gate : "legacy"}
+          scriptId={scriptId}
           review={detail.review}
           busy={busy}
           onResume={(payload) => void handleResume(payload)}

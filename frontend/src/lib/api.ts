@@ -1,6 +1,8 @@
 import { apiBaseUrl } from "@/lib/config";
 import { logger } from "@/lib/logger";
 import type {
+  AssetRef,
+  AssetUrlResponse,
   AuthSessionInfo,
   ErrorEnvelope,
   GenerationResumeRequest,
@@ -54,8 +56,10 @@ export function formatApiError(err: unknown): string {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
+  const isFormData = init?.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    // FormData 由浏览器自设 Content-Type（含 multipart boundary），不能覆盖
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(init?.headers as Record<string, string> | undefined),
   };
   if (MUTATING_METHODS.has(method)) {
@@ -243,6 +247,28 @@ export function unpublishScript(scriptId: number): Promise<ScriptSummary> {
 
 export function deleteScript(scriptId: number): Promise<void> {
   return request(`/api/scripts/${scriptId}`, { method: "DELETE" });
+}
+
+// ===== 资产（#49/#50，backend/app/controllers/assets.py 镜像）=====
+
+/** 预签名 URL 物化（短时效）：教师审阅面板按 asset_id 换取可显示的图片地址。 */
+export function fetchAssetUrl(assetId: string): Promise<AssetUrlResponse> {
+  return request(`/api/assets/${assetId}/url`);
+}
+
+/** 教师自有素材上传（#49）：multipart；成功返回 READY 的稳定引用。 */
+export function uploadScriptAsset(
+  scriptId: number,
+  input: { subjectKey: string; kind: "background" | "avatar" | "fullbody"; file: File }
+): Promise<AssetRef> {
+  const form = new FormData();
+  form.set("subject_key", input.subjectKey);
+  form.set("kind", input.kind);
+  form.set("image", input.file);
+  return request(`/api/scripts/${scriptId}/assets/upload`, {
+    method: "POST",
+    body: form,
+  });
 }
 
 // ===== 运营后台（super_admin 只读，backend/app/api/admin.py 镜像）=====
