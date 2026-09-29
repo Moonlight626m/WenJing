@@ -43,16 +43,18 @@
 
 ### 事件溯源
 
-事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）——注意生产侧目前无人调用它，接线在 #48。
+事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）——注意生产侧目前无人调用它，接线在 #56（命令外事件路径）。
 
 ### 剧本生成 workflow（ADR-0003）
 
 ```
 collect_materials → verify_materials → [materials_gate] → divide_events
   → design_characters ⇉ Send 扇出 N → design_one_character×N → merge_characters(join)
-  → [pre_write_gate] → write_script → final_audit → [final_gate] → END
+  → [pre_write_gate] → write_script → final_audit → design_assets → [final_gate] → END
   （reject 按重试预算打回；耗尽 → fail）
 ```
+
+配图在总审**之后**（#48 选项 A：不为一篇可能被打回的剧本付图片钱）；教师对配图槽位的四操作（重新生成/检索替换/上传/删除）经 `GateEdits.asset_ops` 随 final_gate 的 approve 生效（#49）——reject 路径忽略 ops，重写后 design_assets 重跑。
 
 教师闸门靠 `interrupt()` 暂停、`Command(resume=directives)` 恢复，**必须**有 AsyncPostgresSaver checkpointer 才启用。注意这层耦合：没有 `WENJING_LLM_API_KEY` 就没有 checkpointer，`workflow_enabled=False`、闸门不启用，生成退回旧确定性合成路径（仅测试/E2E 依赖，随 #33 退役）——生产链路只走 workflow + 真实 LLM。
 
