@@ -1,11 +1,12 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
+import { useAssetUrl } from "@/lib/asset-url";
 import { useGameChannel } from "@/lib/ws";
-import { fetchAssetUrl, getStatus } from "@/lib/api";
+import { getStatus } from "@/lib/api";
 import { stageLabel } from "@/lib/labels";
 import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
@@ -46,23 +47,8 @@ function GameContent() {
   const push = useUiStore((s) => s.push);
 
   // 背景稳定引用 → 预签名 URL（#53）：按 current_asset 变化现取（短时效），
-  // 失败降级为无图渐变，不阻塞游玩。
-  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    setBackgroundUrl(null);
-    if (!currentAsset || currentAsset.status !== "ready") return;
-    fetchAssetUrl(currentAsset.asset_id)
-      .then((res) => {
-        if (active) setBackgroundUrl(res.url);
-      })
-      .catch(() => {
-        if (active) setBackgroundUrl(null);
-      });
-    return () => {
-      active = false;
-    };
-  }, [currentAsset]);
+  // 取不到就交给 GameStage 降级为无图渐变，不阻塞游玩。
+  const { url: backgroundUrl } = useAssetUrl(currentAsset);
 
   useGameChannel(sessionId);
 

@@ -1,3 +1,4 @@
+import { ASSET_IMAGE_BG, AssetImage } from "@/components/asset-image";
 import type { AssetCredit, ScriptPackage } from "@/lib/contracts/types";
 import { requiresAttribution } from "@/lib/labels";
 
@@ -137,27 +138,53 @@ export function ScriptPreview({
               key={character.name}
               className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900"
             >
-              <div className="flex items-center gap-2">
-                <span className="font-medium">{character.name}</span>
-                {character.is_player_playable.value && (
-                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                    可扮演
-                  </span>
+              <div className="flex gap-3">
+                {/* 无图角色不占位（纯文本卡片），有图才撑出版面 */}
+                {(character.avatar_asset || character.fullbody_asset) && (
+                  <div className="flex shrink-0 flex-col gap-1">
+                    {character.avatar_asset && (
+                      <AssetImage
+                        asset={character.avatar_asset}
+                        alt={`${character.name} 头像`}
+                        className={`h-16 w-16 rounded-full ${ASSET_IMAGE_BG}`}
+                      />
+                    )}
+                    {character.fullbody_asset && (
+                      <AssetImage
+                        asset={character.fullbody_asset}
+                        alt={`${character.name} 立绘`}
+                        className={`h-24 w-16 rounded ${ASSET_IMAGE_BG}`}
+                      />
+                    )}
+                  </div>
                 )}
+                <div className="flex flex-1 flex-col">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{character.name}</span>
+                    {character.is_player_playable.value && (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                        可扮演
+                      </span>
+                    )}
+                  </div>
+                  {character.avatar_credit && (
+                    <CreditSlot label="头像" credit={character.avatar_credit} audience={audience} />
+                  )}
+                  {character.fullbody_credit && (
+                    <CreditSlot label="立绘" credit={character.fullbody_credit} audience={audience} />
+                  )}
+                  {character.public_background && (
+                    <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                      {character.public_background}
+                    </p>
+                  )}
+                  {character.personality_traits.length > 0 && (
+                    <p className="mt-1 text-xs text-zinc-400">
+                      性格：{character.personality_traits.map((t) => t.label).join("、")}
+                    </p>
+                  )}
+                </div>
               </div>
-              {character.avatar_credit && (
-                <CreditSlot label="头像" credit={character.avatar_credit} audience={audience} />
-              )}
-              {character.public_background && (
-                <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
-                  {character.public_background}
-                </p>
-              )}
-              {character.personality_traits.length > 0 && (
-                <p className="mt-1 text-xs text-zinc-400">
-                  性格：{character.personality_traits.map((t) => t.label).join("、")}
-                </p>
-              )}
             </li>
           ))}
         </ul>
@@ -173,6 +200,13 @@ export function ScriptPreview({
               key={scene.scene_id}
               className="rounded-lg border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900"
             >
+              {scene.background_asset && (
+                <AssetImage
+                  asset={scene.background_asset}
+                  alt={`场景「${scene.title}」背景`}
+                  className={`mb-2 aspect-video w-full rounded ${ASSET_IMAGE_BG}`}
+                />
+              )}
               <div className="font-medium">{scene.title}</div>
               {scene.participants.length > 0 && (
                 <div className="mt-0.5 text-xs text-zinc-400">

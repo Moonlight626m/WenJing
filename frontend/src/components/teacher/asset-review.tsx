@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 
-import { fetchAssetUrl, uploadScriptAsset } from "@/lib/api";
+import { AssetImage } from "@/components/asset-image";
+import { formatApiError, uploadScriptAsset } from "@/lib/api";
+import { useUiStore } from "@/stores/uiStore";
 import type { AssetOp, AssetRef, CharacterProfile, Scene } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
@@ -60,34 +62,10 @@ function AssetSlotCard({
   onChange: (op: AssetOp | null) => void;
   disabled: boolean;
 }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const push = useUiStore((s) => s.push);
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // 待生效意图可能把「刚上传的图」合成进缩略图；URL 换取与降级由 AssetImage 负责
   const shown = pendingRef(asset, op);
-  // 渲染期间重置派生状态（React「props 变化时调整 state」模式）：意图或
-  // 资产变化时旧的 URL/错误态立刻失效，再由 effect 异步拉取新地址。
-  const [lastShown, setLastShown] = useState<AssetRef | null>(shown);
-  if (shown !== lastShown) {
-    setLastShown(shown);
-    setUrl(null);
-    setLoadFailed(false);
-  }
-
-  // 预签名 URL 短时效：意图/资产变化后现取，不做跨会话缓存
-  useEffect(() => {
-    let active = true;
-    if (!shown || shown.status !== "ready") return;
-    fetchAssetUrl(shown.asset_id)
-      .then((res) => {
-        if (active) setUrl(res.url);
-      })
-      .catch(() => {
-        if (active) setLoadFailed(true); // 无图降级：占位文案
-      });
-    return () => {
-      active = false;
-    };
-  }, [shown]);
 
   if (op?.op === "remove") {
     return (
@@ -107,21 +85,13 @@ function AssetSlotCard({
 
   return (
     <div className={CARD}>
-      <div className="h-20 w-32 shrink-0 overflow-hidden rounded bg-amber-100/60 dark:bg-amber-900/30">
-        {url ? (
-          // 预签名 URL 含凭证查询参数且短时效，仅本次审阅显示
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={url} alt={label} className="h-full w-full object-cover" />
-        ) : (
-          <div className="flex h-full items-center justify-center px-1 text-center text-[10px] text-amber-700/60 dark:text-amber-300/60">
-            {loadFailed
-              ? "图片暂不可用"
-              : shown
-                ? "加载中…"
-                : "无图（纯文本游玩）"}
-          </div>
-        )}
-      </div>
+      <AssetImage
+        asset={shown}
+        alt={label}
+        className="h-20 w-32 shrink-0 rounded bg-amber-100/60 dark:bg-amber-900/30"
+        emptyLabel="无图（纯文本游玩）"
+        placeholderClassName="text-[10px] text-amber-700/60 dark:text-amber-300/60"
+      />
       <div className="flex flex-1 flex-col gap-1">
         <span className="text-xs font-medium">{label}</span>
         <div className="flex flex-wrap gap-1">
@@ -214,7 +184,13 @@ function AssetSlotCard({
                 asset_id: ref.asset_id,
               })
             )
-            .catch(() => setLoadFailed(true));
+            .catch((err) =>
+              push({
+                kind: "error",
+                title: "上传配图失败",
+                description: formatApiError(err),
+              })
+            );
         }}
       />
     </div>
