@@ -100,7 +100,12 @@ class Container:
         if report.requeued or report.expired:
             logger.info(
                 "asset_jobs_recovery_done",
-                extra={"requeued": report.requeued, "expired": report.expired},
+                extra={
+                    "wj_extra": {
+                        "requeued": report.requeued,
+                        "expired": report.expired,
+                    }
+                },
             )
 
     async def close(self) -> None:

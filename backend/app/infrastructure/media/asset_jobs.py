@@ -18,6 +18,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.game.media import (
+    _REASON_MAX_CHARS,
     AssetJob,
     AssetJobStatus,
     SceneAssetRequest,
@@ -25,10 +26,6 @@ from app.domain.game.media import (
 from app.infrastructure.models.asset_job import AssetJob as AssetJobRow
 
 logger = logging.getLogger("wenjing.media.asset_jobs")
-
-#: 失败原因入库前的长度上限（与模型列宽一致）。
-_REASON_MAX_CHARS = 200
-
 
 def _to_job(row: AssetJobRow) -> AssetJob:
     return AssetJob(
@@ -61,23 +58,41 @@ class SqlAssetJobStore:
     ) -> AssetJob | None:
         async with self._lock:
             async with self._factory() as session:
-                dup = (
+                existing = (
                     await session.execute(
-                        select(AssetJobRow.job_id).where(
+                        select(AssetJobRow).where(
                             AssetJobRow.session_id == request.session_id,
                             AssetJobRow.scene_key == request.scene_key,
                         )
                     )
                 ).scalar_one_or_none()
-                if dup is not None:
+                if existing is not None:
+                    if existing.status != AssetJobStatus.ABANDONED.value:
+                        logger.info(
+                            "asset_job_deduped",
+                            extra={
+                                "session_id": str(request.session_id),
+                                "wj_extra": {
+                                    "scene_key": request.scene_key,
+                                    "status": existing.status,
+                                },
+                            },
+                        )
+                        return None
+                    # 崩溃恢复替上次进程放弃的那条：唯一允许重来的情形（ADR §5）
+                    existing.status = AssetJobStatus.PENDING.value
+                    existing.reason = ""
+                    existing.asset_id = None
+                    await session.commit()
+                    await session.refresh(existing)
                     logger.info(
-                        "asset_job_deduped",
+                        "asset_job_retried",
                         extra={
                             "session_id": str(request.session_id),
-                            "scene_key": request.scene_key,
+                            "wj_extra": {"scene_key": request.scene_key},
                         },
                     )
-                    return None
+                    return _to_job(existing)
                 if limit > 0:
                     used = (
                         await session.execute(
@@ -91,8 +106,10 @@ class SqlAssetJobStore:
                             "asset_job_session_cap_reached",
                             extra={
                                 "session_id": str(request.session_id),
-                                "scene_key": request.scene_key,
-                                "limit": limit,
+                                "wj_extra": {
+                                    "scene_key": request.scene_key,
+                                    "limit": limit,
+                                },
                             },
                         )
                         return None
@@ -147,12 +164,15 @@ class SqlAssetJobStore:
                     AssetJobRow.status == AssetJobStatus.PENDING.value,
                     AssetJobRow.created_at < before,
                 )
-                .values(status=AssetJobStatus.FAILED.value, reason="stale pending job")
+                .values(
+                    status=AssetJobStatus.ABANDONED.value,
+                    reason="abandoned by crash recovery (stale pending job)",
+                )
             )
             await session.commit()
         count = int(result.rowcount or 0)
         if count:
-            logger.warning("asset_jobs_expired", extra={"count": count})
+            logger.warning("asset_jobs_expired", extra={"wj_extra": {"count": count}})
         return count
 
 

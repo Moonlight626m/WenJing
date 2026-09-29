@@ -37,15 +37,16 @@ from app.domain.game.media import (
     SceneAssetRequest,
     SceneDesigner,
 )
+from app.infrastructure.config import MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT
 
 logger = logging.getLogger("wenjing.session.scene_assets")
 
 #: 就绪回调：把已落库的资产交给 Session 层（写事件 + 推 WS）。
 OnReady = Callable[[SceneAssetRequest, AssetRecord], Awaitable[None]]
 
-#: 崩溃后仍愿意重排的在途任务年龄上限（秒）。生成本身 10–40s，给足余量；
-#: 再久就没人等着看了，重排等于为一张没人看的图付费。
-DEFAULT_JOB_TTL_SECONDS = 900
+#: 崩溃后仍愿意重排的在途任务年龄上限（秒）。唯一来源在 config：调度器不该有
+#: 自己的第二份出厂值，否则「配置默认」与「代码默认」会各改各的。
+DEFAULT_JOB_TTL_SECONDS = MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT
 
 
 def _brief(exc: BaseException, *, limit: int = 200) -> str:
@@ -107,9 +108,9 @@ class SceneAssetScheduler:
     async def recover(self, *, on_ready: OnReady) -> RecoveryReport:
         """启动重排（#57）：把上次进程崩溃时留在 `pending` 的任务收掉。
 
-        - **TTL 之外**：判死。崩溃循环（起来就挂）会把同一个场景一次次重排、
-          一次次付费，而那份产出多半没人看得到；判死留下原因，也让 `assets` 表
-          里那行永远 `pending` 的票据有了解释。
+        - **TTL 之外**：判为放弃（`ABANDONED`）。崩溃循环会把同一个场景一次次重排、
+          一次次付费，而那份产出多半没人看得到。**放弃 ≠ 失败**：这次尝试没有结论，
+          玩家下次走到这个场景时允许重来一次（ADR §5「降级 failed 允许重试」）。
         - **TTL 之内**：重新派发。进程刚刚重启，玩家很可能还等着这张图。
         """
         now = datetime.now(UTC)
@@ -125,7 +126,7 @@ class SceneAssetScheduler:
         if requeued or expired:
             logger.warning(
                 "scene_asset_jobs_recovered",
-                extra={"requeued": requeued, "expired": expired},
+                extra={"wj_extra": {"requeued": requeued, "expired": expired}},
             )
         return RecoveryReport(requeued=requeued, expired=expired)
 
@@ -160,8 +161,9 @@ class SceneAssetScheduler:
                 request, limit=self._max_images_per_session
             )
             if job is None:
-                # 同一场景已发起过，或这个会话的生成张数已达上限：两种原因由台账
-                # 实现各自记日志（`asset_job_deduped` / `asset_job_session_cap_reached`）。
+                # 同一场景已发起过（且不是被崩溃恢复放弃的那条），或这个会话的生成
+                # 张数已达上限：原因由台账实现各自记日志（`asset_job_deduped` /
+                # `asset_job_session_cap_reached`）。
                 return
         designer = self._designer()
         if designer is None:
@@ -189,8 +191,10 @@ class SceneAssetScheduler:
                 "scene_asset_design_error",
                 extra={
                     "session_id": str(request.session_id),
-                    "scene_key": request.scene_key,
-                    "reason": _brief(exc),
+                    "wj_extra": {
+                        "scene_key": request.scene_key,
+                        "reason": _brief(exc),
+                    },
                 },
             )
             await self._finish(job, AssetJobStatus.FAILED, reason=_brief(exc))
@@ -202,8 +206,10 @@ class SceneAssetScheduler:
                 "scene_asset_not_ready",
                 extra={
                     "session_id": str(request.session_id),
-                    "scene_key": request.scene_key,
-                    "status": record.status.value,
+                    "wj_extra": {
+                        "scene_key": request.scene_key,
+                        "status": record.status.value,
+                    },
                 },
             )
             await self._finish(
@@ -222,8 +228,10 @@ class SceneAssetScheduler:
                 "scene_asset_report_error",
                 extra={
                     "session_id": str(request.session_id),
-                    "scene_key": request.scene_key,
-                    "reason": _brief(exc),
+                    "wj_extra": {
+                        "scene_key": request.scene_key,
+                        "reason": _brief(exc),
+                    },
                 },
             )
         # 产出已是 READY 就算这次尝试成功：投递是否被采纳（分支已被回溯放弃、
@@ -246,7 +254,7 @@ class SceneAssetScheduler:
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "asset_job_finish_failed",
-                extra={"job_id": str(job.job_id), "reason": _brief(exc)},
+                extra={"wj_extra": {"job_id": str(job.job_id), "reason": _brief(exc)}},
             )
 
 

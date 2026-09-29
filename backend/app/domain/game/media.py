@@ -291,11 +291,21 @@ class SceneAssetRequest:
 
 
 class AssetJobStatus(StrEnum):
-    """运行期配图任务的生命周期：pending（已发起、未收口）→ ready / failed。"""
+    """运行期配图任务的生命周期。
+
+    `pending`（已发起、未收口）→ `ready` / `failed` / `abandoned`。
+
+    `failed` 与 `abandoned` 必须分开，否则 ADR-0005 §5 的「pending 超 TTL 降级
+    failed **允许重试**」兑现不了：这次尝试**跑过而且失败了**（provider 报错、
+    prompt 被拦），再发一次只是再付一次注定失败的钱，所以拦；而 `abandoned` 是
+    崩溃恢复**替上次进程放弃**的——那次尝试没有任何结论，重来一次是合理的。
+    """
 
     PENDING = "pending"
     READY = "ready"
     FAILED = "failed"
+    #: 崩溃恢复判死：上次进程没能给出结论，允许重试（见上）
+    ABANDONED = "abandoned"
 
 
 @dataclass(frozen=True)
@@ -328,7 +338,12 @@ class AssetJobPort(Protocol):
     """
 
     async def open(self, request: SceneAssetRequest, *, limit: int = 0) -> AssetJob | None:
-        """登记一次尝试并返回任务；去重命中或超上限时返回 None（不生成）。"""
+        """登记一次尝试并返回任务；不该再发起时返回 None（不生成）。
+
+        三条「不该再发起」：同一 `(session_id, scene_key)` 已有过尝试、该会话已达
+        上限、以及——唯一的例外——已有尝试是 `abandoned`（崩溃恢复替上次进程放弃的
+        那条）时**可以重来**，此时把原行复位成 `pending` 再返回。
+        """
         ...
 
     async def finish(
@@ -343,11 +358,11 @@ class AssetJobPort(Protocol):
         ...
 
     async def pending(self, *, since: datetime | None = None) -> list[AssetJob]:
-        """未收口的任务（可选按创建时间下界过滤），启动重排用。"""
+        """`pending` 的任务（可选按创建时间下界过滤），启动重排用。"""
         ...
 
     async def expire(self, *, before: datetime) -> int:
-        """把 `before` 之前仍未收口的任务判死，返回处理行数（TTL 兜底）。"""
+        """把 `before` 之前仍未收口的任务判为 `abandoned`，返回处理行数（TTL 兜底）。"""
         ...
 
 

@@ -600,8 +600,87 @@ async def test_recover_expires_job_past_ttl(factory, actor):
     assert harness.designer.calls == []
     async with harness.app._factory() as s:
         row = await s.get(AssetJobRow, job.job_id)
-    assert row.status == AssetJobStatus.FAILED.value
+    # 放弃而不是失败：这次尝试没有结论，所以它不该按「失败即不再试」处理
+    assert row.status == AssetJobStatus.ABANDONED.value
     assert row.reason
+
+
+async def test_abandoned_scene_can_be_retried(factory, actor):
+    """ADR §5「pending 超 TTL 降级 failed **允许重试**」：放弃的那条必须能重来。
+
+    与「失败不再试」的区别正是这一条的全部意义——被放弃的尝试**没有结论**
+    （上次进程崩了），而 provider 报错那种失败是有结论的，再发一次只是再付一次
+    注定失败的钱。
+    """
+    harness, scene_key, branch_id = await _playable_harness(
+        factory, actor, job_ttl_seconds=60
+    )
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    job = await harness.jobs.open(request)
+    assert job is not None
+    async with harness.app._factory() as s:
+        row = await s.get(AssetJobRow, job.job_id)
+        row.created_at = datetime.now(UTC) - timedelta(seconds=120)
+        await s.commit()
+    assert (await harness.app.recover_asset_jobs()).expired == 1
+
+    # 玩家还停在这个场景：下一条命令重新发起，这次真的生成出来
+    assert await _schedule(harness.app, request) is True
+    await harness.drain()
+
+    assert len(harness.designer.calls) == 1
+    init = await harness.app.session_init(harness.sid, actor=actor)
+    assert init["current_asset"] is not None
+    async with harness.app._factory() as s:
+        row = await s.get(AssetJobRow, job.job_id)
+    assert row.status == AssetJobStatus.READY.value
+
+
+async def test_failed_attempt_is_not_retried(factory, actor):
+    """与上一条对照：跑过且失败的尝试不再重试（否则每条命令都为同一场景付费）。"""
+    harness, scene_key, branch_id = await _playable_harness(factory, actor)
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+    assert await _schedule(harness.app, request) is True
+    await harness.drain()
+    assert len(harness.designer.calls) == 1
+
+    # 换一个调度器（重启后进程内去重集合为空），仍不该重试
+    fresh = SceneAssetScheduler(designer=lambda: harness.designer, jobs=harness.jobs)
+    assert fresh.schedule(request, on_ready=harness.app._apply_asset_ready) is True
+    await fresh.drain()
+
+    assert len(harness.designer.calls) == 1
+
+
+async def test_failed_attempt_still_counts_against_cap(factory, actor):
+    """上限的计数口径是**发起次数**，不是「成功的张数」。
+
+    偏保守是有意的：这个闸门要能同时兜住「花了多少钱」和「发了多少次生成请求」。
+    代价是缓存命中（免费）也会占一个名额——它只在会话已经问过 N 个场景时才可能
+    触发，此时那 N 个场景早已付过费。
+    """
+    harness, scene_key, branch_id = await _playable_harness(
+        factory, actor, max_images_per_session=1
+    )
+    request = await _request_for(harness, actor, scene_key=scene_key, branch_id=branch_id)
+
+    original = harness.designer.design_scene
+
+    async def _boom(**kwargs):
+        raise RuntimeError("provider 503")
+
+    harness.designer.design_scene = _boom
+    assert await _schedule(harness.app, request) is True
+    await harness.drain()
+    harness.designer.design_scene = original
+
+    other = await _request_for(
+        harness, actor, scene_key=f"{scene_key}+1", branch_id=branch_id
+    )
+    assert await _schedule(harness.app, other) is True
+    await harness.drain()
+
+    assert harness.designer.calls == []
 
 
 async def test_failed_attempt_is_recorded_with_reason(factory, actor):

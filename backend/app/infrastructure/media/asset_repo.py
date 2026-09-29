@@ -139,7 +139,9 @@ class SqlAssetRepository:
             await session.commit()
         count = int(result.rowcount or 0)
         if count:
-            logger.warning("stale_pending_assets_failed count=%d", count)
+            logger.warning(
+                "stale_pending_assets_failed", extra={"wj_extra": {"count": count}}
+            )
         return count
 
 
