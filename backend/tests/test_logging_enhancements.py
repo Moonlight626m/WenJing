@@ -183,6 +183,8 @@ def test_scripts_llm_fallback_logs_warning():
         llm_api_key = "sk-test"
         llm_model = ""
         rag_search_provider = "null"
+        # #48 后 ScriptLibrary 的 scene_designer 经 lambda 延迟构建，
+        # 构造期不再触碰媒体配置；stub 无需 media_* 属性。
 
         @staticmethod
         def llm_model_config():

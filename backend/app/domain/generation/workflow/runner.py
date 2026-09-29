@@ -50,6 +50,7 @@ _NODE_MAP: dict[str, GenerationNode] = {
     "write_script": GenerationNode.WRITE_SCRIPT,
     "final_audit": GenerationNode.FINAL_AUDIT,
     FINAL_GATE_NODE: GenerationNode.FINAL_AUDIT,
+    "design_assets": GenerationNode.DESIGN_ASSETS,
 }
 
 _NODE_ORDER: list[GenerationNode] = [
@@ -59,6 +60,7 @@ _NODE_ORDER: list[GenerationNode] = [
     GenerationNode.DESIGN_CHARACTERS,
     GenerationNode.WRITE_SCRIPT,
     GenerationNode.FINAL_AUDIT,
+    GenerationNode.DESIGN_ASSETS,
 ]
 
 
@@ -244,6 +246,8 @@ class WorkflowRunner:
         elif gate == "final":
             self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.SUCCEEDED)
             self._set(GenerationNode.FINAL_AUDIT, GenerationNodeStatus.SUCCEEDED)
+            # #48：配图在总审之后、终审闸之前，恢复时已产出
+            self._set(GenerationNode.DESIGN_ASSETS, GenerationNodeStatus.SUCCEEDED)
         else:
             self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.SUCCEEDED)
             self._set(GenerationNode.VERIFY_MATERIALS, GenerationNodeStatus.SUCCEEDED)

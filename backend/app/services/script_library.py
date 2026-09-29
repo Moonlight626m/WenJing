@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 
 from pydantic import ValidationError
 from sqlalchemy import or_, select
@@ -34,6 +35,7 @@ from app.contracts.review import GateReview
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor, script_visible_to
 from app.domain.content.pipeline import ContentPipeline
+from app.domain.game.media import SceneDesigner
 from app.domain.generation.stage1 import (
     PROMPT_VERSION,
     GenerationTelemetry,
@@ -140,6 +142,7 @@ class ScriptLibrary:
         usage_recorder=None,
         workflow_checkpointer=None,
         workflow_enabled: bool = False,
+        scene_designer=None,
     ) -> None:
         self._factory = session_factory
         self._script_llm = script_llm
@@ -149,6 +152,13 @@ class ScriptLibrary:
         self._usage_recorder = usage_recorder
         self._workflow_checkpointer = workflow_checkpointer
         self._workflow_enabled = workflow_enabled
+        # 场景资产编排（#48）：组合根注入；None = 无媒体配置，生成期不出图。
+        # 可传零参 callable（组合根的延迟构建）：**首次生成**时才调用求值，
+        # 避免构造 ScriptLibrary 就急切建起整套媒体栈（测试桩 settings 无媒体字段）。
+        # 从 DomainGame media 的 SceneDesigner 导入仅作类型/文档用途。
+        self._scene_designer: SceneDesigner | Callable[[], SceneDesigner | None] | None = (
+            scene_designer
+        )
         self._tasks: dict[int, asyncio.Task] = {}
 
     # ===== 素材导入 =====
@@ -420,6 +430,9 @@ class ScriptLibrary:
                 session_id=f"script-{script.id}",
                 analysis=analysis,
                 web_evidence=web,
+                # 资产归属（#48）：配图计量/配额/预生成走发起教师，字符串通道见 state.py
+                org_id=str(script.org_id) if script.org_id is not None else "",
+                user_id=str(script.owner_user_id) if script.owner_user_id is not None else "",
             ),
             thread_id=thread_id,
         )
@@ -427,11 +440,17 @@ class ScriptLibrary:
 
     def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
         """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
+        designer = (
+            self._scene_designer() if callable(self._scene_designer)
+            else self._scene_designer
+        )
         return WorkflowNodes(
             self._stage1_llm(script),
             model_name=self._model_name,
             teacher_gates=self._workflow_checkpointer is not None,
             prompts=PromptManager(DbPromptStore(self._factory)),
+            # 配图编排（#48）：None 时 design_assets 节点直接跳过（无媒体配置降级）
+            scene_designer=designer,
         )
 
     def _attempt_sink(self, attempt_id: int):

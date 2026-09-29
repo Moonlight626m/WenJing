@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.4.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.5.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -129,7 +129,8 @@ export type GenerationNode =
   | "divide_events"
   | "design_characters"
   | "write_script"
-  | "final_audit";
+  | "final_audit"
+  | "design_assets";
 
 export type GenerationNodeStatusValue =
   | "pending"

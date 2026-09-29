@@ -5,7 +5,7 @@
       "description": "素材署名/许可元数据（ADR-0005 §6）：供教师端展示与学生端折叠署名。\n\n默认仅采用免署名许可（CC0/PD）；采用需署名许可时向最终用户展示。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -38,7 +38,7 @@
       "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -79,7 +79,7 @@
       "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -186,7 +186,7 @@
       "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -279,7 +279,7 @@
       "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -404,7 +404,7 @@
       "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -493,7 +493,7 @@
       "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -576,7 +576,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -642,7 +642,7 @@
       "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -665,7 +665,7 @@
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -769,7 +769,7 @@
       "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -862,7 +862,7 @@
       "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -907,7 +907,7 @@
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -957,7 +957,7 @@
   "description": "教师闸门恢复（#34）：指导指令 + 结构化编辑随恢复注入 workflow。\n\n- directives：自然语言指导，原样透传下游 agent（教学判断优先）。\n- edits：教师直接编辑后的中间产物（覆盖对应 state 通道，不重新考证）。\n- action：仅终审闸门有意义——approve=通过落库；reject=打回剧本书写重做。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "title": "Schema Version",
       "type": "string"
     },

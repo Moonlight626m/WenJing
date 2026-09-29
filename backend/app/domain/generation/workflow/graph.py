@@ -6,7 +6,7 @@
         │         → design_characters（条件边返回 Send，人物并行）
         │           → design_one_character×N → merge_characters(join)
         │           → write_script → final_audit(doubter 总审)
-        │             ├ pass → END
+        │             ├ pass → design_assets(配图，#48) → (final_gate) → END
         │             └ reject → write_script（≤MAX_WRITE_RETRIES）→ fail
         ├ reject → collect_materials（带打回意见，≤MAX_DOUBTER_ROUNDS）
         └ 耗尽 → fail（显式失败终点，异常上抛）
@@ -184,6 +184,9 @@ def build_workflow(
         graph.add_node(PRE_WRITE_GATE_NODE, _logged(PRE_WRITE_GATE_NODE)(nodes.pre_write_gate))
     graph.add_node("write_script", _logged("write_script")(nodes.write_script))
     graph.add_node("final_audit", _logged("final_audit")(nodes.final_audit))
+    # #48 场景/角色配图：总审通过后为定稿包配图（先审计再花钱；无 designer
+    # 注入时节点内部直接跳过，拓扑不变——resume/checkpoint 兼容性依赖于此）。
+    graph.add_node("design_assets", _logged("design_assets")(nodes.design_assets))
     if gate_on:
         # #34 终审闸门：总审通过后教师终审（通过落库 / 打回重写）
         graph.add_node(FINAL_GATE_NODE, _logged(FINAL_GATE_NODE)(nodes.final_gate))
@@ -212,21 +215,25 @@ def build_workflow(
     else:
         graph.add_edge("merge_characters", "write_script")
     graph.add_edge("write_script", "final_audit")
-    audit_targets: dict[str, Any] = {"write_script": "write_script", "fail": "fail"}
-    if gate_on:
-        audit_targets[FINAL_GATE_NODE] = FINAL_GATE_NODE
-    else:
-        audit_targets["END"] = END
+    # 配图在总审通过后：reject → 重写（不白付配图钱）；pass → design_assets → 终审/END
+    audit_targets: dict[str, Any] = {
+        "write_script": "write_script",
+        "fail": "fail",
+        "design_assets": "design_assets",
+    }
     graph.add_conditional_edges(
         "final_audit",
         _logged_route("final_audit")(nodes.route_after_audit),
         audit_targets,
     )
     if gate_on:
+        graph.add_edge("design_assets", FINAL_GATE_NODE)
         graph.add_conditional_edges(
             FINAL_GATE_NODE,
             _logged_route(FINAL_GATE_NODE)(nodes.route_after_final_gate),
             {"write_script": "write_script", "END": END},
         )
+    else:
+        graph.add_edge("design_assets", END)
     graph.add_edge("fail", END)
     return graph.compile(checkpointer=checkpointer)

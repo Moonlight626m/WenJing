@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.4.0",
+  "schema_version": "2.5.0",
   "status": "running",
   "nodes": [
     {
@@ -29,6 +29,11 @@
     },
     {
       "node": "final_audit",
+      "status": "pending",
+      "detail": null
+    },
+    {
+      "node": "design_assets",
       "status": "pending",
       "detail": null
     }
