@@ -103,3 +103,150 @@ async def test_project_interaction_options(make_runtime):
     assert ix.mode.value == "options"
     assert ix.options, "交互点应带选项"
     assert all(o.option_id and o.label for o in ix.options)
+
+
+# ===== #53 scene_key / current_asset 投影与重放 =====
+
+
+def _bg():
+    from app.contracts.script import AssetRef
+
+    return AssetRef(asset_id=uuid.uuid4(), kind="background", status="ready")
+
+
+def _attach_backgrounds(rt, bg1, bg2) -> None:
+    """给前两个场景挂背景（测试剧本两场景；无 DB，直接挂引擎 script）。"""
+    rt.script.scenes[0].background_asset = bg1
+    rt.script.scenes[1].background_asset = bg2
+
+
+async def _start_and_select(rt) -> None:
+    """start + 选角（走真实命令路径）：推进到第 1 拍。"""
+    await rt.start()
+    await rt.submit(command_id="c0", kind="select_role", payload={"role_name": "李白"})
+
+
+async def _choose(rt, *option_ids: int) -> None:
+    """继续推进若干拍（每次 choose_option 播一拍）。命令 id 用随机 UUID 防重放命中。"""
+    for opt in option_ids:
+        await rt.submit(
+            command_id=str(uuid.uuid4()),
+            kind="choose_option",
+            payload={"option_id": str(opt)},
+        )
+
+
+async def test_project_state_scene_key_and_asset_follow_commands(make_runtime):
+    """验收「切场景背景变化」：经命令路径推进，跨场景时 scene_key 与
+    current_asset 在投影状态里同步换到新场景。"""
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+
+    await _start_and_select(rt)  # 播第 1 拍（场景1）
+    s1 = project_state(_SID, rt.event_store, rt.export_state())
+    assert s1.scene_key == "scene:1"
+    assert s1.scene_id == 1
+    assert s1.scene_title == "相遇"
+    assert s1.current_asset is not None and s1.current_asset.asset_id == bg1.asset_id
+
+    # 再推两拍跨入场景2（场景1 两拍：beat1、beat2）
+    await _choose(rt, 1, 1)
+    s2 = project_state(_SID, rt.event_store, rt.export_state())
+    assert s2.scene_key == "scene:2"
+    assert s2.scene_id == 2
+    assert s2.scene_title == "送别"
+    assert s2.current_asset is not None
+    assert s2.current_asset.asset_id == bg2.asset_id, "跨场景后背景换图"
+
+
+async def test_no_current_scene_before_first_beat(make_runtime):
+    """开播前（游标 0）没有「当前场景」：scene_key 与 current_asset 同为 None。
+
+    （避免「有背景却无场景键」的字段互斥——两字段推导规则必须一致）
+    """
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+
+    await rt.start()  # 停在 stage1_complete，尚未播任何拍
+    state = project_state(_SID, rt.event_store, rt.export_state())
+    assert state.beat_cursor == 0
+    assert state.scene_key is None
+    assert state.scene_title is None
+    assert state.current_asset is None
+
+
+async def test_replay_rebuilds_scene_key_without_snapshot_key(make_runtime):
+    """验收「重放不丢背景」：快照**不含** scene_key 时，靠事件 payload 重建
+    （真正覆盖 `_replay_event` 的重建分支——快照已带 key 的用例覆盖不到它）。"""
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+    await _start_and_select(rt)
+    await _choose(rt, 1, 1)  # 推进到场景2
+
+    snapshot = rt.export_state()
+    assert snapshot["scene_key"] == "scene:2"
+    del snapshot["scene_key"]  # 模拟不含该字段的旧快照
+
+    rt2 = make_runtime(session_id=str(_SID))
+    _attach_backgrounds(rt2, bg1, bg2)
+    rt2.replay_from(snapshot, [e.to_dict() for e in rt.event_store.active_events()])
+
+    assert rt2.state.scene_key == "scene:2", "由 plot_advancement payload 重建"
+    state = project_state(_SID, rt2.event_store, rt2.export_state())
+    assert state.scene_key == "scene:2"
+    assert state.current_asset is not None
+    assert state.current_asset.asset_id == bg2.asset_id, "重放后背景不丢"
+
+
+async def test_replay_legacy_events_without_scene_key_payload(make_runtime):
+    """旧事件流（payload 无 scene_key）重放不炸：scene_key 保持 None（向后兼容）。"""
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+    await _start_and_select(rt)
+    await _choose(rt, 1)
+
+    legacy = [
+        {
+            **e.to_dict(),
+            "payload": {
+                k: v
+                for k, v in (e.payload or {}).items()
+                if k not in ("scene_key", "scene_title", "current_asset")
+            },
+        }
+        for e in rt.event_store.active_events()
+        if e.event_type == "plot_advancement"
+    ]
+    assert legacy, "前置：应有 plot_advancement 事件"
+
+    rt2 = make_runtime(session_id=str(_SID))
+    _attach_backgrounds(rt2, bg1, bg2)
+    rt2.replay_from(None, legacy)  # 无快照、无 scene_key payload
+
+    assert rt2.state.scene_key is None, "旧流无 payload → 保持 None"
+
+
+async def test_narrative_message_carries_scene_switch_info(make_runtime):
+    """实时切场景（验收 2 的真实链路）：narrative WS 消息必须带
+    scene_key/scene_title/current_asset——否则前端只能等重连才换图。"""
+    from app.services.session_projection import project_messages
+
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+    await _start_and_select(rt)
+    await _choose(rt, 1, 1)  # 推进到场景2
+
+    msgs = project_messages(_SID, rt.event_store)
+    narratives = [m for m in msgs if m["type"] == "narrative"]
+    assert narratives, "应有 narrative 消息"
+    # 跨场景那条（第二条 plot_advancement）必须携带新场景信息
+    last = narratives[-1]["payload"]
+    assert last.get("scene_key") == "scene:2"
+    assert last.get("scene_title") == "送别"
+    asset = last.get("current_asset")
+    assert asset is not None and asset["asset_id"] == str(bg2.asset_id)

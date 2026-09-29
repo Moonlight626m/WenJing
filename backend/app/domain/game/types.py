@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.contracts.script import AssetRef
 from app.domain.game.state_machine import GameStage, InteractionPhase
 
 # ===== 剧本（Stage1 产物，MVP 由 mock 提供，不测生成链路）=====
@@ -45,6 +46,9 @@ class Scene:
     title: str
     participants: list[str] = field(default_factory=list)
     beats: list[Beat] = field(default_factory=list)
+    # 场景背景稳定引用（#53 / ADR-0005 §3）：URL-free，URL 由鉴权端点签发；
+    # 无图（纯文本游玩）为 None。
+    background_asset: AssetRef | None = None
 
 
 @dataclass

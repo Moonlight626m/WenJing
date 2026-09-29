@@ -19,6 +19,7 @@ from app.contracts.runtime import (
     RuntimeState,
     RuntimeUpdate,
 )
+from app.contracts.script import AssetRef
 from app.domain.game.game_runtime import StepResult
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
 
@@ -85,18 +86,25 @@ def project_state(
     """
     if path is None:
         path = store.active_events()
+    current_asset = export.get("current_asset")
     return RuntimeState(
         session_id=session_id,
         branch_id=branch_uuid(session_id, store.active_branch_id),
         last_sequence=max(0, len(path) - 1),
         stage=StageValue(export["stage"]),
         phase=export.get("phase"),
-        scene_id=None,
+        scene_id=_scene_id_from_key(export.get("scene_key")),
+        scene_key=export.get("scene_key"),
+        scene_title=export.get("scene_title"),
         beat_cursor=export.get("beat_cursor"),
         plot_context={
             "plot_log": list(export.get("plot_log", [])),
             "player_role": export.get("player_role"),
         },
+        # 引擎已解析的背景稳定引用（#53）：投影只透传，URL 由鉴权端点签发
+        current_asset=(
+            AssetRef.model_validate(current_asset) if current_asset else None
+        ),
         character_memories={
             name: _flatten_memory(mem)
             for name, mem in (export.get("character_memories") or {}).items()
@@ -107,6 +115,15 @@ def project_state(
         ),
         stage3_goals=[],
     )
+
+
+def _scene_id_from_key(scene_key: str | None) -> int | None:
+    """`scene:{id}` → id；运行期单调键（非脚本场景）返回 None。"""
+    if scene_key and scene_key.startswith("scene:"):
+        rest = scene_key.split(":", 1)[1]
+        if rest.isdigit():
+            return int(rest)
+    return None
 
 
 def project_update(
@@ -196,6 +213,14 @@ def project_messages(
             payload["text"] = str(p.get("text", ""))
         elif category == "narrative":
             payload["text"] = str(p.get("summary", ""))
+            # 场景切换信息（#53）：前端据此更新背景/场景标题。
+            # current_asset 也随事件下发——实时跨场景时不必等重连的 session_init
+            if p.get("scene_key"):
+                payload["scene_key"] = p["scene_key"]
+            if p.get("scene_title"):
+                payload["scene_title"] = p["scene_title"]
+            if p.get("current_asset") is not None:
+                payload["current_asset"] = p["current_asset"]
         else:
             payload["text"] = _system_text(ev.event_type, p)
         msgs.append({"type": category, "seq": seq, "payload": payload})

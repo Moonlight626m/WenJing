@@ -302,6 +302,14 @@ class SessionApplication:
             "last_sequence": state.last_sequence,
             "plot_log": state.plot_context.get("plot_log", []),
             "player_role": state.plot_context.get("player_role"),
+            # 场景切换背景（#53）：稳定引用 + 键 + 标题，前端据此签 URL / 判淡入
+            "scene_key": state.scene_key,
+            "scene_title": state.scene_title,
+            "current_asset": (
+                state.current_asset.model_dump(mode="json")
+                if state.current_asset is not None
+                else None
+            ),
             "active_interaction": (
                 state.active_interaction.model_dump(mode="json")
                 if state.active_interaction is not None

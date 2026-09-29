@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.contracts.enums import ALLOWED_COMMANDS, StageValue
+from app.contracts.script import AssetRef
 from app.domain.agents.character import CharacterAgentManager
 from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
 from app.domain.agents.verifier import VerifierAgent
@@ -33,6 +34,7 @@ from app.domain.game.types import (
     InteractionPoint,
     PlayerAction,
     Proposal,
+    Scene,
     Script,
 )
 from app.domain.game.world_view import RuntimeWorldView
@@ -61,6 +63,9 @@ class _RState:
     plot_log: list[str] = field(default_factory=list)
     # 当前矛盾/关键处境（D5 方向确认产物；供角色 Agent 的 view_current_direction 工具）
     direction: dict[str, str] = field(default_factory=dict)
+    # 当前场景稳定键（#53 / ADR-0005 §8）：脚本场景 `scene:{scene_id}`。
+    # 进显式状态与 plot_advancement payload——否则重连/重放会丢背景。
+    scene_key: str | None = None
     ended: bool = False
 
 
@@ -132,8 +137,41 @@ class GameRuntime:
 
     # ===== 显式状态导出 / 恢复 =====
 
+    def _current_background(self) -> AssetRef | None:
+        """按 beat_cursor 解析当前场景的背景稳定引用（#53）。
+
+        在引擎内解析（ADR-0005 §8）：这里同时有 script（槽位 AssetRef）与
+        events（游标），投影层保持纯函数。未开播（游标 0）或该场景无图 → None。
+        """
+        scene = self._beat_ctx(self.state.beat_cursor)
+        return scene.background_asset if scene is not None else None
+
+    def _beat_ctx(self, cursor: int) -> Scene | None:
+        """beat 游标 → 当前场景；尚未开播（cursor<=0）/空剧本返回 None。
+
+        **游标是「下一个待播 beat」，不是「当前 beat」**（`ScreenwriterAgent.advance_plot`
+        先读 `beat_index` 播报、再 `beat_index += 1`），所以刚播完的那拍是
+        `cursor - 1`——场景切换/背景解析必须用它，否则会提前跳到下一场景。
+        游标 0 表示一拍未播，此时没有「当前场景」（`scene_key` 也尚未写入），
+        返回 None 以免出现「有背景但无场景键」的字段互斥。
+        """
+        total = total_beats(self.script)
+        if total == 0 or cursor <= 0:
+            return None
+        idx = min(cursor - 1, total - 1)
+        count = 0
+        for scene in self.script.scenes:
+            for _beat in scene.beats:
+                if count == idx:
+                    return scene
+                count += 1
+        return None
+
     def export_state(self) -> dict:
         s = self.state
+        # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
+        scene = self._beat_ctx(s.beat_cursor)
+        current_asset = scene.background_asset if scene is not None else None
         return {
             "stage": s.stage,
             "phase": s.phase,
@@ -142,11 +180,19 @@ class GameRuntime:
             "stage3_round_taken": s.stage3_round_taken,
             "plot_log": list(s.plot_log),
             "direction": dict(s.direction),
+            "scene_key": s.scene_key,
+            "scene_title": scene.title if scene is not None else None,
             "ended": s.ended,
             "character_memories": self.characters.snapshot_memories(),
             "latest_event_id": self.event_store.latest_event_id,
             "active_branch_id": self.event_store.active_branch_id,
             "active_interaction": _interaction_payload(self.active_interaction),
+            # 当前背景稳定引用在导出时解析（#53）：快照/投影都从这里拿
+            "current_asset": (
+                current_asset.model_dump(mode="json")
+                if current_asset is not None
+                else None
+            ),
         }
 
     def restore(self, state_dump: dict) -> None:
@@ -159,6 +205,7 @@ class GameRuntime:
         s.stage3_round_taken = int(state_dump.get("stage3_round_taken", 0))
         s.plot_log = list(state_dump.get("plot_log", []))
         s.direction = dict(state_dump.get("direction") or {})
+        s.scene_key = state_dump.get("scene_key")
         s.ended = bool(state_dump.get("ended", False))
 
         self.screenwriter.beat_index = s.beat_cursor
@@ -227,6 +274,11 @@ class GameRuntime:
             if summary:
                 self.state.plot_log.append(summary)
                 self.characters.broadcast_plot_context(summary)
+            # 场景键重建（#53）：plot_advancement payload 携带 scene_key，
+            # 重连/重放据此恢复当前场景（背景随 export_state 按游标解析）
+            scene_key = payload.get("scene_key")
+            if isinstance(scene_key, str):
+                self.state.scene_key = scene_key
         elif etype == evt.EVENT_DIRECTION:
             direction = {
                 "conflict": payload.get("conflict", ""),
@@ -430,9 +482,24 @@ class GameRuntime:
         adv = self.screenwriter.advance_plot(self.script, stage)
         # 进度游标显式同步：state 是权威，screenwriter 游标是派生
         self.state.beat_cursor = self.screenwriter.beat_index
+        ctx = self._beat_ctx(self.state.beat_cursor)
+        self.state.scene_key = f"scene:{ctx.scene_id}" if ctx is not None else None
+        current_asset = ctx.background_asset if ctx is not None else None
         self._append(
             evt.EVENT_PLOT_ADVANCEMENT,
-            {"summary": adv.summary, "scene": adv.scene_description},
+            {
+                "summary": adv.summary,
+                "scene": adv.scene_description,
+                # #53：场景键/标题/背景进 payload——重放重建 scene_key，
+                # 前端在**实时**切换场景时即可换图（不必等重连的 session_init）
+                "scene_key": self.state.scene_key,
+                "scene_title": ctx.title if ctx is not None else None,
+                "current_asset": (
+                    current_asset.model_dump(mode="json")
+                    if current_asset is not None
+                    else None
+                ),
+            },
             sink=sink,
         )
         self.state.plot_log.append(adv.summary)

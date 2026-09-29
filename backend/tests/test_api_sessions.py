@@ -291,6 +291,11 @@ def test_ws_init_command_and_resync(client):
         init = ws.receive_json()
         assert init["payload"]["stage"] == "stage2_reenacting"
         assert init["payload"]["player_role"] == role
+        # #53：重连的权威快照携带当前场景（背景随 current_asset；
+        # 本测试剧本无配图 → None，属无图降级，但仍须有场景键与标题）
+        assert init["payload"]["scene_key"] == "scene:1"
+        assert init["payload"]["scene_title"]
+        assert init["payload"]["current_asset"] is None
 
 
 def test_ws_rejects_unknown_session(client):

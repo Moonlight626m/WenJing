@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.6.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.7.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -644,11 +644,17 @@ export interface RuntimeState {
   stage: StageValue;
   phase: string | null;
   scene_id: number | null;
+  /** 当前场景稳定键（#53）：脚本场景 `scene:{id}`；运行期新场景单调 key。 */
+  scene_key: string | null;
+  /** 当前场景标题（#53）：重连后由引擎按游标重建。 */
+  scene_title: string | null;
   beat_cursor: number | null;
   plot_context: Record<string, unknown>;
   character_memories: Record<string, string[]>;
   active_interaction: ActiveInteraction | null;
   stage3_goals: Stage3Goal[];
+  /** 当前背景图稳定引用（#53）：URL 经鉴权端点签发。 */
+  current_asset: AssetRef | null;
 }
 
 export interface GameSnapshot {

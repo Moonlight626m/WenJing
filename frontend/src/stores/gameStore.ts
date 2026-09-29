@@ -4,6 +4,7 @@ import { create } from "zustand";
 
 import type {
   ActiveInteraction,
+  AssetRef,
   CharacterProfile,
   CommandKind,
   CommandPayloadByKind,
@@ -79,6 +80,12 @@ interface GameStore {
   scriptTitle: string | null;
   playableRoles: string[];
   characters: CharacterProfile[];
+  /** 当前场景稳定键（#53）：背景切换/淡入的判定来源。 */
+  sceneKey: string | null;
+  /** 当前场景标题（#53）：随 plot_advancement 更新。 */
+  sceneTitle: string | null;
+  /** 当前背景稳定引用（#53）：页面据此经鉴权端点换预签名 URL。 */
+  currentAsset: AssetRef | null;
   selectedRole: string | null;
   messages: ChatMessage[];
   interaction: ActiveInteraction | null;
@@ -156,6 +163,9 @@ export const useGameStore = create<GameStore>((set, get) => {
     scriptTitle: null,
     playableRoles: [],
     characters: [],
+    sceneKey: null,
+    sceneTitle: null,
+    currentAsset: null,
     selectedRole: null,
     messages: [],
     interaction: null,
@@ -177,6 +187,9 @@ export const useGameStore = create<GameStore>((set, get) => {
         allowedCommands: [],
         pending: null,
         connection: "connecting",
+        sceneKey: null,
+        sceneTitle: null,
+        currentAsset: null,
       });
     },
 
@@ -232,6 +245,16 @@ export const useGameStore = create<GameStore>((set, get) => {
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
             : []) as CommandKind[],
+          // 场景背景（#53）：权威快照携带，重连即恢复当前背景与场景标题
+          sceneKey:
+            typeof payload.scene_key === "string" ? payload.scene_key : null,
+          sceneTitle:
+            typeof payload.scene_title === "string" ? payload.scene_title : null,
+          currentAsset:
+            payload.current_asset != null &&
+            typeof payload.current_asset === "object"
+              ? (payload.current_asset as AssetRef)
+              : null,
         });
         // 权威重建后按本地确认水位请求补发（首连为 0 → 服务端从 DB 全量重建）。
         // session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
@@ -260,6 +283,9 @@ export const useGameStore = create<GameStore>((set, get) => {
       let interaction = state.interaction;
       let allowedCommands = state.allowedCommands;
       let stage = state.stage;
+      let sceneKey = state.sceneKey;
+      let sceneTitle = state.sceneTitle;
+      let currentAsset = state.currentAsset;
 
       // 终局批次可能多条消息共享同一 seq（如"进入阶段：ended"+"已结束"），
       // 去重键需包含文本，否则第二条会被误判重复
@@ -288,6 +314,22 @@ export const useGameStore = create<GameStore>((set, get) => {
             speaker: typeof payload.speaker === "string" ? payload.speaker : null,
           },
         ];
+        if (msg.type === "narrative") {
+          // 场景切换（#53）：narrative 消息携带 scene_key/scene_title/current_asset，
+          // GameStage 按 sceneKey 变化触发淡入、按 currentAsset 换背景
+          const nextSceneKey =
+            typeof payload.scene_key === "string" ? payload.scene_key : null;
+          if (nextSceneKey) {
+            sceneKey = nextSceneKey;
+            sceneTitle =
+              typeof payload.scene_title === "string" ? payload.scene_title : null;
+            if (payload.current_asset != null && typeof payload.current_asset === "object") {
+              currentAsset = payload.current_asset as AssetRef;
+            } else {
+              currentAsset = null; // 该场景无图 → 降级为渐变
+            }
+          }
+        }
         if (msg.type === "system") {
           const stageMatch = /进入阶段：(\S+)/.exec(text);
           if (stageMatch) stage = asStage(stageMatch[1]);
@@ -298,7 +340,15 @@ export const useGameStore = create<GameStore>((set, get) => {
         }
       }
 
-      set({ messages, interaction, allowedCommands, stage });
+      set({
+        messages,
+        interaction,
+        allowedCommands,
+        stage,
+        sceneKey,
+        sceneTitle,
+        currentAsset,
+      });
 
       // 确认水位推进：通知服务端修剪本连接 outbox
       get()

@@ -1,11 +1,11 @@
 "use client";
 
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
 import { useGameChannel } from "@/lib/ws";
-import { getStatus, } from "@/lib/api";
+import { fetchAssetUrl, getStatus } from "@/lib/api";
 import { stageLabel } from "@/lib/labels";
 import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
@@ -37,10 +37,32 @@ function GameContent() {
   const playerRole = useGameStore((s) => s.playerRole);
   const connection = useGameStore((s) => s.connection);
   const pending = useGameStore((s) => s.pending);
+  const sceneKey = useGameStore((s) => s.sceneKey);
+  const sceneTitle = useGameStore((s) => s.sceneTitle);
+  const currentAsset = useGameStore((s) => s.currentAsset);
   const resetSession = useGameStore((s) => s.resetSession);
   const setStatusInfo = useGameStore((s) => s.setStatusInfo);
 
   const push = useUiStore((s) => s.push);
+
+  // 背景稳定引用 → 预签名 URL（#53）：按 current_asset 变化现取（短时效），
+  // 失败降级为无图渐变，不阻塞游玩。
+  const [backgroundUrl, setBackgroundUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    setBackgroundUrl(null);
+    if (!currentAsset || currentAsset.status !== "ready") return;
+    fetchAssetUrl(currentAsset.asset_id)
+      .then((res) => {
+        if (active) setBackgroundUrl(res.url);
+      })
+      .catch(() => {
+        if (active) setBackgroundUrl(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentAsset]);
 
   useGameChannel(sessionId);
 
@@ -101,7 +123,11 @@ function GameContent() {
 
   return (
     <main className="flex h-screen w-full flex-col overflow-hidden">
-      <GameStage>
+      <GameStage
+        backgroundUrl={backgroundUrl}
+        sceneKey={sceneKey}
+        sceneTitle={sceneTitle}
+      >
         <header className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-black/30 px-4 py-3 text-white backdrop-blur-sm">
           <div className="flex flex-wrap items-baseline gap-3">
             <h1 className="font-semibold">文境</h1>

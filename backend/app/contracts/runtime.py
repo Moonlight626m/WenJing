@@ -14,6 +14,7 @@ from pydantic import Field
 
 from app.contracts.base import VersionedContract
 from app.contracts.enums import CommandKind, EventType, InteractionMode, StageValue
+from app.contracts.script import AssetRef
 
 
 class OptionItem(VersionedContract):
@@ -64,8 +65,17 @@ class RuntimeState(VersionedContract):
 
     # 进度游标与剧情上下文
     scene_id: int | None = None
+    # 当前场景稳定键（#53 / ADR-0005 §8）：脚本场景 `scene:{scene_id}`；
+    # 运行期新场景为 session 内单调 key——重连/重放据此找回背景。
+    scene_key: str | None = None
+    # 当前场景标题（#53）：随 plot_advancement 更新；重连后由引擎按游标重建，
+    # 避免「背景回来了但场景标题要等下一拍」的断档。
+    scene_title: str | None = None
     beat_cursor: int | None = None
     plot_context: dict = Field(default_factory=dict)
+    # 当前背景图稳定引用（#53）：由引擎 export_state 解析（那里同时有
+    # script 与 events），投影层保持纯函数、URL-free。
+    current_asset: AssetRef | None = None
 
     # 角色记忆：role_name -> memory entries（显式，不藏在对象字段里）
     character_memories: dict[str, list[str]] = Field(default_factory=dict)
