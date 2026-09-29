@@ -45,6 +45,7 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "INPUT_UNSUPPORTED_EXTENSION": (ErrorDomain.INPUT, False),
     "INPUT_INVALID_ENCODING": (ErrorDomain.INPUT, False),
     "INPUT_TOO_LARGE": (ErrorDomain.INPUT, False),
+    "INPUT_INVALID_MEDIA_INPUT": (ErrorDomain.INPUT, False),
     "INPUT_INVALID": (ErrorDomain.INPUT, False),
     # content
     "CONTENT_UNSUPPORTED_GENRE": (ErrorDomain.CONTENT, False),
@@ -72,6 +73,7 @@ STABLE_CODES: dict[str, tuple[ErrorDomain, bool]] = {
     "MEDIA_IMAGE_GEN_TIMEOUT": (ErrorDomain.MEDIA, True),
     "MEDIA_IMAGE_GEN_BLOCKED": (ErrorDomain.MEDIA, False),
     "MEDIA_IMAGE_GEN_INVALID": (ErrorDomain.MEDIA, False),
+    "MEDIA_UPLOAD_TOO_LARGE": (ErrorDomain.MEDIA, False),
     # llm
     "LLM_TIMEOUT": (ErrorDomain.LLM, True),
     "LLM_INVALID_OUTPUT": (ErrorDomain.LLM, True),

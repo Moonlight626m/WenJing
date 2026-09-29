@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.5.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.6.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -531,12 +531,22 @@ export interface GateReview {
   package: ScriptPackage | null;
 }
 
+/** 教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。 */
+export interface AssetOp {
+  schema_version: string;
+  op: "remove" | "regenerate" | "search_replace" | "bind_upload";
+  subject_key: string;
+  kind: "background" | "avatar" | "fullbody";
+  asset_id?: string | null;
+}
+
 export interface GateEdits {
   schema_version: string;
   dossier: MaterialDossier | null;
   division: EventDivisionDraft | null;
   profiles: CharacterProfile[] | null;
   package: ScriptPackage | null;
+  asset_ops: AssetOp[];
 }
 
 // ===== admin prompt 管理（PromptMgr 组件）=====

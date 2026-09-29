@@ -98,6 +98,7 @@ export function GateReviewPanel({
       division: null,
       profiles: null,
       package: null,
+      asset_ops: [],
     };
     if (gate === "materials") {
       return {

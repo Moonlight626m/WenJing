@@ -26,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
+from app.contracts.review import AssetOp, GateEdits
+from app.contracts.script import ScriptPackage
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor
 from app.main import create_app
@@ -554,3 +556,245 @@ def test_generation_materials_gate_resume_flow(client):
             await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_upload_asset_endpoint_flow(client):
+    """#49 上传端点：draft 教师 multipart 上传 → READY AssetRef；发布后拒绝。"""
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    buf = BytesIO()
+    PILImage.new("RGB", (32, 32), (10, 60, 120)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    account = _register(client, "upload-teacher@wenjing.local")
+    _act_as(client, account)
+    material_id = _import_material(client)
+    resp = _post(
+        client,
+        "/api/scripts",
+        json={
+            "schema_version": "2.6.0",
+            "material_id": material_id,
+            "name": "上传剧本",
+            "description": None,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    script_id = resp.json()["id"]
+
+    # 合法上传
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "background" and body["status"] == "ready"
+    assert body["asset_id"]
+
+    # 同文件重传命中上传缓存（幂等，不重复占存储）
+    resp2 = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp2.status_code == 201
+    assert resp2.json()["asset_id"] == body["asset_id"]
+
+    # 非法 subject_key → 422
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "bogus", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 422
+
+    # 不支持的类型 → 422（INPUT_INVALID_MEDIA_INPUT，信封单出口）
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("x.bmp", b"xx", "image/bmp")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "INPUT_INVALID_MEDIA_INPUT"
+
+    # 学生不可上传
+    student = _register(client, "upload-student@wenjing.local", role="student")
+    _act_as(client, student)
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 403
+
+    # 发布即冻结：教师发布后上传被拒（SCR_NOT_EDITABLE）
+    _act_as(client, account)
+    # 发布要求剧本已有内容：塞入合成包（绕过生成，只测冻结语义）
+    from app.domain.generation.stage1 import synthesize_script_package
+    from tests.test_workflow import make_analysis as _mk_analysis
+
+    _execute(
+        "update scripts set script_data = :d where id = :i",
+        d=synthesize_script_package(_mk_analysis()).model_dump_json(),
+        i=script_id,
+    )
+    resp = _post(
+        client,
+        f"/api/scripts/{script_id}/publish",
+        json={"schema_version": "2.6.0", "visibility": "org"},
+    )
+    assert resp.status_code == 200
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 409, resp.text  # SCR_NOT_EDITABLE
+
+
+def test_final_gate_resume_with_asset_ops_service_flow(client):
+    """#49 服务级 asset_ops 流：终审恢复携带 ops → 上传件绑定进落库剧本包。
+
+    覆盖 HTTP 契约之下的完整边界：GenerationResumeRequest（asset_id 字符串
+    经 Pydantic 转 UUID）→ resume_generation → final_gate._apply_asset_ops
+    → _persist_package 落库的 script_data 槽位值。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from test_workflow import ScriptedWorkflowLLM, make_analysis
+
+    from app.contracts.generation import GenerationStatus as GenerationStatusEnum
+    from app.contracts.material import MaterialInput, MaterialSource
+    from app.domain.game.media import AssetRecord, AssetSource, AssetStatus
+
+    account = _register(client, "ops-teacher@wenjing.local")
+    me = account["me"]
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            upload_id = uuid.uuid4()
+
+            class _OpDesigner:
+                async def design_scene(self, **kwargs):
+                    return AssetRecord(
+                        asset_id=uuid.uuid4(),
+                        object_key="o/x.webp",
+                        kind=kwargs["kind"],
+                        status=AssetStatus.READY,
+                        org_id=kwargs["org_id"],
+                    )
+
+                async def find_bindable_upload(self, **kwargs):
+                    return AssetRecord(
+                        asset_id=upload_id,
+                        object_key="o/upload.webp",
+                        kind=kwargs["kind"],
+                        status=AssetStatus.READY,
+                        source=AssetSource.UPLOADED,
+                        org_id=kwargs["org_id"],
+                    )
+
+            llm = ScriptedWorkflowLLM(make_analysis())
+            library = ScriptLibrary(
+                session_factory=factory,
+                script_llm=llm,
+                workflow_enabled=True,
+                workflow_checkpointer=MemorySaver(),
+                scene_designer=_OpDesigner(),
+            )
+            material = await library.import_material(
+                actor,
+                MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+            )
+            script = await library.create_script(
+                actor, material_id=material.id, name="资产操作流", description=None
+            )
+            await library.start_generation(script.id, actor)
+            await library.await_generation(script.id)
+            for _gate in ("materials", "pre_write"):
+                await library.resume_generation(
+                    script.id, actor, resume=GenerationResumeRequest()
+                )
+                await library.await_generation(script.id)
+
+            review = await library.review(script.id)
+            assert review is not None and review.gate == "final"
+            char_name = review.package.characters[0].name
+
+            # 终审恢复：上传件绑定到人物头像槽（asset_id 走字符串→UUID 边界）
+            await library.resume_generation(
+                script.id,
+                actor,
+                resume=GenerationResumeRequest(
+                    edits=GateEdits(
+                        asset_ops=[
+                            AssetOp(
+                                op="bind_upload",
+                                subject_key=f"character:{char_name}",
+                                kind="avatar",
+                                asset_id=str(upload_id),
+                            )
+                        ]
+                    ),
+                ),
+            )
+            await library.await_generation(script.id)
+            final = await library.progress(script.id)
+            assert final and final.status == GenerationStatusEnum.SUCCEEDED
+
+            # 落库剧本包里头像槽 = 上传件
+            row = await library.get_script(script.id, actor)
+            pkg = ScriptPackage.model_validate(row.script_data)
+            av = pkg.characters[0].avatar_asset
+            assert av is not None and av.asset_id == upload_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_upload_asset_rejects_oversize(client):
+    """#49（Standards 审查补）：超过 8MB 上限 → MEDIA_UPLOAD_TOO_LARGE 信封。"""
+    account = _register(client, "oversize-teacher@wenjing.local")
+    _act_as(client, account)
+    material_id = _import_material(client)
+    resp = _post(
+        client,
+        "/api/scripts",
+        json={
+            "schema_version": "2.6.0",
+            "material_id": material_id,
+            "name": "超限",
+            "description": None,
+        },
+    )
+    assert resp.status_code == 201
+    script_id = resp.json()["id"]
+
+    big = b"x" * (8 * 1024 * 1024 + 1)
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("big.png", big, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 413
+    assert resp.json()["code"] == "MEDIA_UPLOAD_TOO_LARGE"

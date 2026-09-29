@@ -26,6 +26,7 @@ dependencies = [
     "ddgs>=9.16.0",
     "boto3>=1.43.103",
     "pillow>=12.3.0",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

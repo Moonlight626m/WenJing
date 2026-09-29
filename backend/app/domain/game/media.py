@@ -258,6 +258,11 @@ class MediaQuotaPort(Protocol):
     async def consume(self, *, org_id: uuid.UUID, kind: MediaKind, units: int = 1) -> None: ...
 
 
+def content_hash(data: bytes) -> str:
+    """字节内容哈希（sha256 hex）：缓存排除集比对与 `assets.content_hash` 共用。"""
+    return hashlib.sha256(data).hexdigest()
+
+
 def build_dedup_key(
     *,
     org_id: uuid.UUID,
@@ -413,8 +418,20 @@ class SceneDesigner:
         script_id: int | None = None,
         session_id: uuid.UUID | None = None,
         user_id: uuid.UUID | None = None,
+        exclude_asset_ids: Sequence[uuid.UUID] = (),
+        exclude_content_hashes: Sequence[str] = (),
+        search_only: bool = False,
     ) -> AssetRecord:
-        """为某个场景/角色产出资产记录（`READY` 可签发 URL；`FAILED` 由上层降级）。"""
+        """为某个场景/角色产出资产记录（`READY` 可签发 URL；`FAILED` 由上层降级）。
+
+        `exclude_asset_ids` / `exclude_content_hashes`（#49 教师重生成/检索替换）：
+        把教师明确否掉的旧图排除在缓存命中与检索候选之外——同一去重键下教师
+        「重新生成」要求换一张图；排除旧 id 后 `find_by_dedup_key`（取最新行）
+        自然落到重生成产物，崩溃重放仍是幂等的。
+
+        `search_only`（#49 检索替换）：只用开放版权检索，无采纳候选时直接 FAILED，
+        不回退付费生成（教师明确要求检索来源时，替他生成一张是越权花钱）。
+        """
         del scene_key  # 保留在签名里给审计/日志用；去重键由 subject_key 承担
         resolved_style = self.style if style is None else style
         dedup_key = build_dedup_key(
@@ -430,39 +447,58 @@ class SceneDesigner:
         cached = await self.assets.find_by_dedup_key(
             org_id=org_id, dedup_key=dedup_key, status=AssetStatus.READY
         )
-        if cached is not None:
+        if cached is not None and cached.asset_id not in exclude_asset_ids:
             logger.info(
                 "scene_asset_cache_hit subject=%s asset=%s", subject_key, cached.asset_id
             )
             return cached
 
-        asset_id = uuid.uuid4()
-        record = AssetRecord(
-            asset_id=asset_id,
-            object_key=_rendition_key(org_id, asset_id, "original.webp"),
-            kind=kind,
-            status=AssetStatus.PENDING,
+        record = await self._new_ticket(
             org_id=org_id,
-            script_id=script_id,
-            session_id=session_id,
+            kind=kind,
             dedup_key=dedup_key,
+            script_id=script_id,
+            source=AssetSource.GENERATED,
+            provider="",
         )
-        await self.assets.save(record)
+
+        # 教师重生成/检索替换（#49）：调用方只有稳定引用（AssetRef），拿不到
+        # 内容哈希——在这里按 id 反查补齐，检索候选的排除集才完整。
+        hash_exclusions = set(exclude_content_hashes)
+        for old_id in exclude_asset_ids:
+            old = await self.assets.get_by_id(old_id)
+            if old is not None and old.content_hash:
+                hash_exclusions.add(old.content_hash)
+
 
         # 免费侧：逐个试已被审核采纳的候选。候选字节可能不可解码（图库截断/超像素），
         # 那个候选不采用、继续下一个，而不是让整次编排以 FAILED 收场。
-        async for picked in self._accepted_candidates(description=description, kind=kind):
+        async for picked in self._accepted_candidates(
+            description=description,
+            kind=kind,
+            exclude_content_hashes=hash_exclusions,
+        ):
             try:
                 return await self._publish(
                     record, picked, org_id=org_id, user_id=user_id
                 )
             except _UnusableCandidate as exc:
                 logger.info(
-                    "scene_asset_candidate_unusable asset=%s reason=%s", asset_id, exc
+                    "scene_asset_candidate_unusable asset=%s reason=%s",
+                    record.asset_id,
+                    exc,
                 )
 
-        picked = await self._generate(
-            org_id=org_id, description=description, kind=kind, style=resolved_style
+        picked = (
+            await self._generate(
+                org_id=org_id,
+                description=description,
+                kind=kind,
+                style=resolved_style,
+                exclude_content_hashes=hash_exclusions,
+            )
+            if not search_only
+            else None
         )
         if picked is None:
             return await self._fail(record, reason="no usable image (search+review+generate)")
@@ -483,7 +519,11 @@ class SceneDesigner:
     # ===== 免费侧：检索 → 审核 =====
 
     async def _accepted_candidates(
-        self, *, description: str, kind: AssetKind
+        self,
+        *,
+        description: str,
+        kind: AssetKind,
+        exclude_content_hashes: Sequence[str] = (),
     ) -> AsyncIterator[_Picked]:
         """产出被审核采纳的候选；审核链路本身挂掉时立即收束（别再逐条白问）。"""
         try:
@@ -495,7 +535,14 @@ class SceneDesigner:
             logger.info("scene_asset_search_unavailable reason=%s", exc.msg)
             return
 
+        excluded = set(exclude_content_hashes)
         for candidate in candidates:
+            if excluded and self._content_hash(candidate) in excluded:
+                # 教师重生成/检索替换（#49）：旧图字节原样回来了不算「换了一张」。
+                logger.info(
+                    "scene_asset_candidate_excluded source=%s", candidate.source_url
+                )
+                continue
             verdict = await self.reviewer.review(
                 candidate, scene_description=description, kind=kind
             )
@@ -526,8 +573,21 @@ class SceneDesigner:
     # ===== 付费侧：原子配额闸 → 生成 → 计量 =====
 
     async def _generate(
-        self, *, org_id: uuid.UUID, description: str, kind: AssetKind, style: str
+        self,
+        *,
+        org_id: uuid.UUID,
+        description: str,
+        kind: AssetKind,
+        style: str,
+        exclude_content_hashes: Sequence[str] = (),
     ) -> _Picked | None:
+        """付费回退生成。
+
+        `exclude_content_hashes`（#49）语义：文生图无法保证「与旧图不同」——同
+        prompt 同模型完全可能产出相近图。这里的防线是**生成后比对**：命中排除集
+        视为本次编排失败（返回 None → 上层记 FAILED），由教师再次重试；不悄悄
+        放行旧字节，也不为换图无限重烧配额。
+        """
         # 原子预扣：check+consume 两步在并发下会双双通过而超额（quota.py 明确要求
         # 付费方走 try_acquire）。
         if self.quota is not None and not await self.quota.try_acquire(
@@ -544,6 +604,14 @@ class SceneDesigner:
             return None
         if not image.image_bytes:
             logger.warning("scene_asset_generation_empty prompt=%r", prompt[:80])
+            return None
+        if (
+            exclude_content_hashes
+            and content_hash(image.image_bytes) in set(exclude_content_hashes)
+        ):
+            logger.warning(
+                "scene_asset_generation_duplicate subject_desc=%r", description[:60]
+            )
             return None
 
         return _Picked(
@@ -592,7 +660,7 @@ class SceneDesigner:
         record.credit = picked.credit
         record.width = picked.width or primary.width
         record.height = picked.height or primary.height
-        record.content_hash = hashlib.sha256(picked.image_bytes).hexdigest()
+        record.content_hash = content_hash(picked.image_bytes)
         await self.assets.save(record)
         if picked.source is AssetSource.SEARCH:
             # 免费来源：补一条溯源计量，但 units=0 —— 否则会把 org 的**付费**预算白吃
@@ -618,6 +686,122 @@ class SceneDesigner:
         logger.warning("scene_asset_failed asset=%s reason=%s", record.asset_id, reason)
         record.status = AssetStatus.FAILED
         await self.assets.save(record)
+        return record
+
+    async def _new_ticket(
+        self,
+        *,
+        org_id: uuid.UUID,
+        kind: AssetKind,
+        dedup_key: str,
+        script_id: int | None,
+        source: AssetSource,
+        provider: str,
+        session_id: uuid.UUID | None = None,
+    ) -> AssetRecord:
+        """付费/发布前先落 `PENDING` 票据（ADR-0005 §4 固定顺序），崩溃留痕。"""
+        asset_id = uuid.uuid4()
+        record = AssetRecord(
+            asset_id=asset_id,
+            object_key=_rendition_key(org_id, asset_id, "original.webp"),
+            kind=kind,
+            status=AssetStatus.PENDING,
+            source=source,
+            provider=provider,
+            org_id=org_id,
+            script_id=script_id,
+            session_id=session_id,
+            dedup_key=dedup_key,
+        )
+        await self.assets.save(record)
+        return record
+
+    async def publish_upload(
+        self,
+        *,
+        org_id: uuid.UUID,
+        subject_key: str,
+        scene_key: str,
+        description: str,
+        kind: AssetKind,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+        script_id: int | None = None,
+        user_id: uuid.UUID | None = None,
+    ) -> AssetRecord:
+        """教师自有素材上传（#49）：复用转码/多规格/落库管线，不计费、不走审核。
+
+        - `AssetSource.UPLOADED`：来源标记供署名合规（教师上传需审核的内容
+          责任在教师侧，ADR-0005 §6）与 #51 来源展示区分；
+        - 编排契约与其他来源一致：失败**不抛**，返回 `FAILED` 记录（转码不可
+          解码等）。上传是教师同步操作，调用方（服务层）须检查 status 并把
+          FAILED 转成即时错误反馈，不能像 workflow 那样静默降级；
+        - 去重键与生成同构（同 subject 同文件命中缓存，防重复占存储）。
+        """
+        dedup_key = build_dedup_key(
+            org_id=org_id,
+            subject_key=subject_key,
+            description_summary=description,
+            style="upload",
+            provider_version="teacher_upload",
+            kind=kind,
+            scope=_ownership_scope(script_id=script_id, session_id=None),
+        )
+        record = await self._new_ticket(
+            org_id=org_id,
+            kind=kind,
+            dedup_key=dedup_key,
+            script_id=script_id,
+            source=AssetSource.UPLOADED,
+            provider="teacher_upload",
+        )
+        cached = await self.assets.find_by_dedup_key(
+            org_id=org_id, dedup_key=dedup_key, status=AssetStatus.READY
+        )
+        if cached is not None:
+            logger.info(
+                "scene_asset_upload_cache_hit subject=%s asset=%s",
+                subject_key,
+                cached.asset_id,
+            )
+            return cached
+
+        picked = _Picked(
+            image_bytes=image_bytes,
+            content_type=content_type,
+            source=AssetSource.UPLOADED,
+            provider="teacher_upload",
+        )
+        try:
+            return await self._publish(record, picked, org_id=org_id, user_id=user_id)
+        except _UnusableCandidate as exc:
+            return await self._fail(record, reason=f"teacher upload unusable: {exc}")
+
+    @staticmethod
+    def _content_hash(candidate: ImageCandidate) -> str:
+        """检索候选的字节哈希（#49 排除集比对）。"""
+        return content_hash(candidate.image_bytes)
+
+    async def find_bindable_upload(
+        self, *, asset_id: uuid.UUID, org_id: uuid.UUID, kind: AssetKind
+    ) -> AssetRecord | None:
+        """校验并取出可绑定的教师上传件（#49 bind_upload）。
+
+        绑定前必须确认三件事，缺一不可（防越权/防错位绑定）：
+        - 资产存在且 `status=READY`；
+        - 归属同一 org（上传端点按剧本归属落库，org 匹配即同一租户）；
+        - `source=UPLOADED` 且 kind 与槽位一致——生成/检索件走各自的
+          设计/替换语义，不允许经 bind_upload 冒充上传。
+        """
+        record = await self.assets.get_by_id(asset_id)
+        if (
+            record is None
+            or record.status is not AssetStatus.READY
+            or record.org_id != org_id
+            or record.source is not AssetSource.UPLOADED
+            or record.kind is not kind
+        ):
+            return None
         return record
 
     async def _meter(

@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
 from app.contracts.generation import DoubterIssue, DoubterVerdict
-from app.contracts.review import GateEdits
+from app.contracts.review import AssetOp, GateEdits
 from app.contracts.script import AssetRef, CharacterProfile, ScriptPackage
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.game.media import AssetKind, AssetStatus, SceneDesigner, to_asset_ref
@@ -81,6 +81,15 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
 def _scene_visual_description(scene: Any) -> str:
     """场景 → 配图描述：节拍文本拼接（SceneDesigner 会再套构图尾巴并截断）。"""
     return "；".join(beat.description for beat in scene.beats if beat.description)
+
+
+def _asset_ref_of(asset_id: uuid.UUID, kind: AssetKind) -> AssetRef:
+    """旧图引用重建（#49 重生成失败保图用）：status 按 READY 语义回填。
+
+    槽位上既然挂着这张图（#48 只回填 READY），重建为 ready 与其持久化状态
+    一致；真正的状态以 `GET /api/assets/{id}/url` 的鉴权检查为准。
+    """
+    return AssetRef(asset_id=asset_id, kind=kind.value, status="ready")
 
 
 def _apply_assets(
@@ -418,9 +427,12 @@ class WorkflowNodes:
     async def final_gate(self, state: WorkflowState) -> dict[str, Any]:
         """终审闸门（#34）：总审通过后暂停，教师通过落库或打回重写。
 
-        - approve：编辑后的剧本包直接生效，流程结束落库。
+        - approve：编辑后的剧本包直接生效，流程结束落库；教师配图操作
+          （#49 asset_ops）在此一并生效——终审是唯一能同时看到剧本与配图
+          的闸门（#48 选项 A 把配图放在总审之后）。
         - reject：把指导作为打回意见送回 write_script 重写一轮；
-          教师也可同时直接编辑剧本字段（编辑稿作为重写基线）。
+          教师也可同时直接编辑剧本字段（编辑稿作为重写基线）。reject 时
+          **忽略 asset_ops**：重写产出全新场景集，旧槽位上的操作必然失效。
         """
         package = state.get("package")
         payload: dict[str, Any] = {
@@ -444,6 +456,40 @@ class WorkflowNodes:
                 "[script-gen][final_gate] package edited by teacher (scenes=%d)",
                 len(edits.package.scenes),
             )
+        if edits.asset_ops:
+            if action == "reject":
+                logger.info(
+                    "[script-gen][final_gate] asset_ops=%d ignored on reject (rewrite "
+                    "produces a fresh package)",
+                    len(edits.asset_ops),
+                )
+            else:
+                target = out.get("package") or state.get("package")
+                org_raw = state.get("org_id") or ""
+                try:
+                    org_id = uuid.UUID(org_raw)
+                except ValueError:
+                    org_id = None
+                    logger.warning(
+                        "[script-gen][final_gate] asset_ops skipped (bad org_id %r)",
+                        org_raw,
+                    )
+                if target is not None and org_id is not None:
+                    try:
+                        user_id = uuid.UUID(state.get("user_id") or "")
+                    except ValueError:
+                        user_id = None
+                    out["package"] = await self._apply_asset_ops(
+                        target,
+                        edits.asset_ops,
+                        org_id=org_id,
+                        user_id=user_id,
+                        script_id=int(state.get("script_id") or 0),
+                    )
+                    logger.info(
+                        "[script-gen][final_gate] asset_ops applied (%d)",
+                        len(edits.asset_ops),
+                    )
         if action == "reject":
             feedback_parts: list[str] = [
                 str(d) for d in directives if str(d).strip()
@@ -612,6 +658,186 @@ class WorkflowNodes:
             record.status.value,
         )
         return None
+
+    # ===== 教师配图操作（#49）：final_gate approve 路径生效 =====
+
+    async def _apply_asset_ops(
+        self,
+        package: ScriptPackage,
+        ops: list[AssetOp],
+        *,
+        org_id: uuid.UUID,
+        user_id: uuid.UUID | None,
+        script_id: int,
+    ) -> ScriptPackage:
+        """对终审剧本包应用教师配图操作（GateEdits.asset_ops）。
+
+        - 语义见 `AssetOp` 契约；同一 subject 多条时**最后一条胜出**；
+        - 重生成/检索替换的描述与旧图 id 都取自**终审包的槽位本身**（场景
+          节拍文本 / 人物 public_background、background_asset/avatar_asset），
+          与 #48 首次配图同源——描述一致才命中 SceneDesigner 的既有语义
+          （排除集保证换图）；
+        - 单条操作失败（找不到槽位/上传件不可绑定/重生成 FAILED）只让该条
+          不生效并记 warning，绝不拖垮已通过总审的剧本（与 #48 降级同构）；
+        - remove 资产行留存（ADR-0005：删除/回收暂不立项），只是槽位清空。
+        """
+        last_by_subject: dict[tuple[str, str], AssetOp] = {}
+        for op in ops:
+            last_by_subject[(op.subject_key, op.kind)] = op
+
+        scene_ops: dict[int, AssetRef | None] = {}
+        profile_ops: dict[str, AssetRef | None] = {}
+        scenes_by_id = {s.scene_id: s for s in package.scenes}
+        profiles_by_name = {c.name: c for c in package.characters}
+        for (subject_key, kind_raw), op in last_by_subject.items():
+            kind = AssetKind(kind_raw)
+            # kind↔槽位校验：本阶段只产出 background（场景）与 avatar（人物），
+            # fullbody 通道未接线；错位操作（如对头像槽发 background）忽略，
+            # 否则 fullbody 引用会被写进 avatar 槽、其失败回退也会串 kind。
+            if subject_key.startswith("scene:"):
+                if kind is not AssetKind.BACKGROUND:
+                    logger.warning(
+                        "asset_op kind=%s on scene subject ignored", kind.value
+                    )
+                    continue
+                try:
+                    scene = scenes_by_id[int(subject_key.split(":", 1)[1])]
+                except (KeyError, ValueError):
+                    logger.warning("asset_op unknown subject=%r ignored", subject_key)
+                    continue
+                ref = await self._resolve_op(
+                    op,
+                    kind,
+                    designer=self._scene_designer,
+                    org_id=org_id,
+                    user_id=user_id,
+                    script_id=script_id,
+                    description=_scene_visual_description(scene),
+                    current_asset_id=(
+                        scene.background_asset.asset_id
+                        if scene.background_asset
+                        else None
+                    ),
+                )
+                scene_ops[scene.scene_id] = ref
+            elif subject_key.startswith("character:"):
+                if kind is not AssetKind.AVATAR:
+                    logger.warning(
+                        "asset_op kind=%s on character subject ignored", kind.value
+                    )
+                    continue
+                name = subject_key.split(":", 1)[1]
+                profile = profiles_by_name.get(name)
+                if profile is None:
+                    logger.warning("asset_op unknown subject=%r ignored", subject_key)
+                    continue
+                ref = await self._resolve_op(
+                    op,
+                    kind,
+                    designer=self._scene_designer,
+                    org_id=org_id,
+                    user_id=user_id,
+                    script_id=script_id,
+                    description=profile.public_background,
+                    current_asset_id=(
+                        profile.avatar_asset.asset_id if profile.avatar_asset else None
+                    ),
+                )
+                profile_ops[name] = ref
+            else:
+                logger.warning("asset_op unknown subject=%r ignored", subject_key)
+
+        new_scenes = [
+            (
+                scene.model_copy(update={"background_asset": scene_ops[scene.scene_id]})
+                if scene.scene_id in scene_ops
+                else scene
+            )
+            for scene in package.scenes
+        ]
+        new_characters = [
+            (
+                c.model_copy(update={"avatar_asset": profile_ops[c.name]})
+                if c.name in profile_ops
+                else c
+            )
+            for c in package.characters
+        ]
+        return package.model_copy(
+            update={"scenes": new_scenes, "characters": new_characters}
+        )
+
+    @staticmethod
+    async def _resolve_op(
+        op: AssetOp,
+        kind: AssetKind,
+        *,
+        designer: SceneDesigner | None,
+        org_id: uuid.UUID,
+        user_id: uuid.UUID | None,
+        script_id: int,
+        description: str,
+        current_asset_id: uuid.UUID | None,
+    ) -> AssetRef | None:
+        """单条操作 → 槽位新值；返回 None 的语义随 op 而定。
+
+        - remove：None 即「清空」（教师明确意图）；
+        - regenerate/search_replace 失败：返回旧图引用保留原状——检索替换的
+          契约是「失败不丢图」；槽位本来无图时失败返回 None（维持无图）。
+        """
+        if op.op == "remove":
+            return None
+        if designer is None:
+            logger.warning("asset_op %s without designer ignored", op.op)
+            return None
+        if op.op == "bind_upload":
+            if op.asset_id is None:
+                logger.warning("bind_upload without asset_id ignored")
+                return None
+            record = await designer.find_bindable_upload(
+                asset_id=op.asset_id, org_id=org_id, kind=kind
+            )
+            if record is None:
+                logger.warning(
+                    "bind_upload not bindable asset=%s kind=%s",
+                    op.asset_id,
+                    kind.value,
+                )
+                return None
+            return to_asset_ref(record)
+
+        # regenerate / search_replace：排除旧图，按同键重新设计
+        try:
+            record = await designer.design_scene(
+                org_id=org_id,
+                subject_key=op.subject_key,
+                scene_key=f"script:{script_id}:{op.subject_key}",
+                description=description,
+                kind=kind,
+                script_id=script_id,
+                user_id=user_id,
+                exclude_asset_ids=(current_asset_id,) if current_asset_id else (),
+                search_only=op.op == "search_replace",
+            )
+        except Exception as exc:  # noqa: BLE001 - 单条操作失败不拖垮剧本
+            logger.warning(
+                "asset_op %s error subject=%s reason=%s",
+                op.op,
+                op.subject_key,
+                str(exc).replace("\n", " ")[:200],
+            )
+            return None
+        if record.status is AssetStatus.READY:
+            return to_asset_ref(record)
+        logger.warning(
+            "asset_op %s degraded subject=%s status=%s (slot keeps old image)",
+            op.op,
+            op.subject_key,
+            record.status.value,
+        )
+        # 重生成/检索替换失败：保留旧图（None 会把槽位清空，那是 remove 的语义）
+        return _asset_ref_of(current_asset_id, kind) if current_asset_id else None
+
 
     # ===== 事件/情景划分 =====
 

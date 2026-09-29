@@ -31,11 +31,12 @@ from app.contracts.generation import (
     NodeProgress,
 )
 from app.contracts.material import MaterialInput
-from app.contracts.review import GateReview
+from app.contracts.review import GateReview, validate_subject_key
+from app.contracts.script import AssetRef
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor, script_visible_to
 from app.domain.content.pipeline import ContentPipeline
-from app.domain.game.media import SceneDesigner
+from app.domain.game.media import AssetKind, AssetStatus, SceneDesigner, to_asset_ref
 from app.domain.generation.stage1 import (
     PROMPT_VERSION,
     GenerationTelemetry,
@@ -438,12 +439,16 @@ class ScriptLibrary:
         )
         await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
 
-    def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
-        """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
-        designer = (
+    def _designer(self) -> SceneDesigner | None:
+        """解析组合根延迟注入的编排（callable → 首次生成时求值，#48）。"""
+        return (
             self._scene_designer() if callable(self._scene_designer)
             else self._scene_designer
         )
+
+    def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
+        """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
+        designer = self._designer()
         return WorkflowNodes(
             self._stage1_llm(script),
             model_name=self._model_name,
@@ -477,6 +482,56 @@ class ScriptLibrary:
         telemetry["doubter_rounds"] = len(runner.snapshot().doubter_events)
         telemetry["prompt_versions"] = _prompt_versions()
         await self._persist_package(script.id, package, telemetry)
+
+    async def upload_asset(
+        self,
+        script_id: int,
+        actor: Actor,
+        *,
+        subject_key: str,
+        kind: str,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+    ) -> AssetRef:
+        """教师自有素材上传（#49）：落库为 READY 资产，返回稳定引用。
+
+        - **仅草稿可上传**（`_require_editable`）：发布即冻结资产（ADR-0005 §4），
+          上传是内容变更，与编辑剧本字段同一冻结语义；
+        - 上传件在 resume 时经 `bind_upload` 绑进配图槽位——两步分离是因为
+          上传发生在审阅界面（multipart），生效发生在闸门恢复（原子、可审计）；
+        - 转 FAILED（字节不可解码等）转为同步错误立即反馈（上传不是生成期
+          后台任务，静默降级会让教师面对一个「成功但没图」的假象）。
+        """
+        script = await self._load_owned(script_id, actor)
+        self._require_editable(script)
+        designer = self._designer()
+        if designer is None:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "media stack not configured"},
+            )
+        try:
+            parsed_kind = AssetKind(kind)
+            validate_subject_key(subject_key)
+        except ValueError as exc:
+            raise new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)}) from exc
+        record = await designer.publish_upload(
+            org_id=script.org_id,
+            subject_key=subject_key,
+            scene_key=f"script:{script_id}:{subject_key}",
+            description=f"教师上传：{subject_key}",
+            kind=parsed_kind,
+            image_bytes=image_bytes,
+            content_type=content_type,
+            script_id=script_id,
+            user_id=actor.user_id,
+        )
+        if record.status is not AssetStatus.READY:
+            raise new(
+                codes.MEDIA_IMAGE_INVALID,
+                extra={"asset_id": str(record.asset_id), "status": record.status.value},
+            )
+        return to_asset_ref(record)
 
     async def resume_generation(
         self, script_id: int, actor: Actor, *, resume: GenerationResumeRequest

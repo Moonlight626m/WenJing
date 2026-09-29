@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.5.0",
+  "schema_version": "2.6.0",
   "asset_id": "33333333-3333-4333-8333-333333333333",
   "url": "http://localhost:9000/wenjing-media/org/scene-1.webp?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=deadbeef",
   "expires_at": "2026-09-28T10:15:00Z"

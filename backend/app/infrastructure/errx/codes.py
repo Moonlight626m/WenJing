@@ -45,6 +45,7 @@ INP_EMPTY_MATERIAL = 7001           # 课文内容为空
 INP_UNSUPPORTED_EXTENSION = 7002    # 上传文件扩展名不支持
 INP_INVALID_ENCODING = 7003         # 上传字节无法按受支持编码解码
 INP_TOO_LARGE = 7004                # 课文超出大小上限
+INP_INVALID_MEDIA_INPUT = 7005      # 配图上传表单字段非法（subject_key/kind/类型，#49）
 
 # ===== 检索（SEARCH，issue #10 安全 RAG）=====
 SEARCH_UNAVAILABLE = 8001           # 搜索 provider 不可用/失败
@@ -67,6 +68,7 @@ MEDIA_IMAGE_GEN_FAILED = 13008      # 生图 provider 不可用/响应异常
 MEDIA_IMAGE_GEN_TIMEOUT = 13009     # 生图请求连接/读取超时
 MEDIA_IMAGE_GEN_BLOCKED = 13010     # 本地安全闸门拒绝（prompt 过滤 / 产物 URL 被 SSRF 拦）
 MEDIA_IMAGE_GEN_INVALID = 13011     # provider 返回的图片无效（解码/内容类型/尺寸）
+MEDIA_UPLOAD_TOO_LARGE = 13012      # 教师上传图片超过大小上限（#49）
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -164,6 +166,11 @@ def register_all() -> None:
         is_affect_stability=False,
     )
     register(INP_TOO_LARGE, "material exceeds size limit {max_chars}", is_affect_stability=False)
+    register(
+        INP_INVALID_MEDIA_INPUT,
+        "invalid media upload input: {reason}",
+        is_affect_stability=False,
+    )
 
     register(SEARCH_UNAVAILABLE, "search unavailable: {reason}", is_affect_stability=False)
     register(
@@ -209,6 +216,11 @@ def register_all() -> None:
     register(
         MEDIA_IMAGE_GEN_INVALID,
         "invalid generated image: {reason}",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_UPLOAD_TOO_LARGE,
+        "uploaded image too large: {size} bytes (limit {limit})",
         is_affect_stability=False,
     )
 

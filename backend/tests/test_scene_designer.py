@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from io import BytesIO
 
@@ -723,5 +724,174 @@ async def test_non_error_transcode_crash_is_degraded_not_propagated():
     designer = _designer(search=FakeSearch(candidates=[]), transcode=Crasher())
 
     record = await _design(designer)
+
+    assert record.status is AssetStatus.FAILED
+
+
+# ===== #49 教师配图操作 =====
+
+
+async def test_exclude_asset_ids_misses_cache_and_rebuilds():
+    """重生成（#49）：排除旧 id 后缓存未命中 → 重新生成，新行时间戳最新。"""
+    old = AssetRecord(
+        asset_id=uuid.uuid4(),
+        object_key="o/old.webp",
+        kind=AssetKind.BACKGROUND,
+        status=AssetStatus.READY,
+        org_id=_ORG,
+        dedup_key=_dedup_key(),
+        content_hash=hashlib.sha256(b"old-bytes").hexdigest(),
+    )
+    designer = _designer(
+        assets=FakeAssets(seed=[old]),
+        search=FakeSearch(candidates=[]),  # 无检索候选 → 直接回退生成
+    )
+
+    record = await _design(designer, exclude_asset_ids=[old.asset_id])
+
+    assert record.status is AssetStatus.READY
+    assert record.asset_id != old.asset_id, "重生成产出新资产"
+
+
+async def test_exclude_content_hashes_skips_identical_search_candidate():
+    """检索替换（#49）：候选字节与旧图相同不算换图，跳过后走下一候选。"""
+    same_bytes = _png()
+    old_hash = hashlib.sha256(same_bytes).hexdigest()
+    candidate_same = ImageCandidate(image_bytes=same_bytes, title="同图")
+    candidate_fresh = ImageCandidate(image_bytes=_png(width=80, height=45), title="新图")
+    old = AssetRecord(
+        asset_id=uuid.uuid4(),
+        object_key="o/old.webp",
+        kind=AssetKind.BACKGROUND,
+        status=AssetStatus.READY,
+        org_id=_ORG,
+        dedup_key=_dedup_key(),
+        content_hash=old_hash,
+    )
+    designer = _designer(assets=FakeAssets(seed=[old]), search=FakeSearch(
+        candidates=[candidate_same, candidate_fresh]
+    ))
+
+    # exclude_asset_ids 里给旧 id：design_scene 内部反查 content_hash 补齐排除集
+    record = await _design(designer, exclude_asset_ids=[old.asset_id])
+
+    assert record.status is AssetStatus.READY
+    assert record.content_hash != old_hash, "检索替换不得原样返回旧字节"
+
+
+async def test_search_only_does_not_fall_back_to_generation():
+    """检索替换（#49）：教师点名检索来源时无候选 → FAILED，不悄悄替他生成。"""
+    gen_calls: list[int] = []
+
+    class CountingGen(FakeGen):
+        async def generate(self, **kwargs):
+            gen_calls.append(1)
+            return await super().generate(**kwargs)
+
+    designer = _designer(search=FakeSearch(candidates=[]), gen=CountingGen())
+
+    record = await _design(designer, search_only=True)
+
+    assert record.status is AssetStatus.FAILED
+    assert gen_calls == [], "search_only 不得触发付费生成"
+
+
+async def test_publish_upload_roundtrip_and_dedup():
+    """教师上传（#49）：READY 落库 + 同文件重传命中缓存不重复占存储。"""
+    assets = FakeAssets()
+    designer = _designer(assets=assets)
+
+    first = await designer.publish_upload(
+        org_id=_ORG,
+        subject_key="scene:1",
+        scene_key="script:7:scene:1",
+        description="教师上传",
+        kind=AssetKind.BACKGROUND,
+        image_bytes=_png(),
+        content_type="image/png",
+        script_id=7,
+    )
+    assert first.status is AssetStatus.READY
+    assert first.source is AssetSource.UPLOADED
+    assert first.provider == "teacher_upload"
+
+    second = await designer.publish_upload(
+        org_id=_ORG,
+        subject_key="scene:1",
+        scene_key="script:7:scene:1",
+        description="教师上传",
+        kind=AssetKind.BACKGROUND,
+        image_bytes=_png(),
+        content_type="image/png",
+        script_id=7,
+    )
+    assert second.asset_id == first.asset_id, "同 subject 同文件命中上传缓存"
+
+
+async def test_find_bindable_upload_rejects_mismatch():
+    """bind_upload 校验（#49）：不存在/非上传件/kind 不符/非 READY 都不可绑定。"""
+    upload = AssetRecord(
+        asset_id=uuid.uuid4(),
+        object_key="o/up.webp",
+        kind=AssetKind.BACKGROUND,
+        status=AssetStatus.READY,
+        source=AssetSource.UPLOADED,
+        org_id=_ORG,
+        dedup_key="k",
+    )
+    generated = AssetRecord(
+        asset_id=uuid.uuid4(),
+        object_key="o/gen.webp",
+        kind=AssetKind.BACKGROUND,
+        status=AssetStatus.READY,
+        source=AssetSource.GENERATED,
+        org_id=_ORG,
+        dedup_key="k2",
+    )
+    designer = _designer(assets=FakeAssets(seed=[upload, generated]))
+
+    ok = await designer.find_bindable_upload(
+        asset_id=upload.asset_id, org_id=_ORG, kind=AssetKind.BACKGROUND
+    )
+    assert ok is not None
+
+    missing = await designer.find_bindable_upload(
+        asset_id=uuid.uuid4(), org_id=_ORG, kind=AssetKind.BACKGROUND
+    )
+    assert missing is None, "不存在的资产不可绑定"
+
+    not_upload = await designer.find_bindable_upload(
+        asset_id=generated.asset_id, org_id=_ORG, kind=AssetKind.BACKGROUND
+    )
+    assert not_upload is None, "生成/检索件不得经 bind_upload 冒充上传"
+
+    wrong_kind = await designer.find_bindable_upload(
+        asset_id=upload.asset_id, org_id=_ORG, kind=AssetKind.AVATAR
+    )
+    assert wrong_kind is None, "kind 与槽位不符不可绑定"
+
+    other_org = await designer.find_bindable_upload(
+        asset_id=upload.asset_id, org_id=uuid.uuid4(), kind=AssetKind.BACKGROUND
+    )
+    assert other_org is None, "跨 org 越权不可绑定"
+
+
+async def test_publish_upload_invalid_bytes_fail_not_raise():
+    """教师上传无效字节（#49）：转码抛 MEDIA_IMAGE_INVALID → 降级 FAILED 不抛。
+
+    上传与检索/生成共用「编排不抛媒体失败」契约；同步错误反馈由服务层检查
+    status 转换（upload_asset → MEDIA_IMAGE_INVALID）。
+    """
+    designer = _designer(transcode=BoomTranscode())
+
+    record = await designer.publish_upload(
+        org_id=_ORG,
+        subject_key="scene:2",
+        scene_key="script:7:scene:2",
+        description="教师上传",
+        kind=AssetKind.BACKGROUND,
+        image_bytes=b"not-an-image",
+        script_id=7,
+    )
 
     assert record.status is AssetStatus.FAILED

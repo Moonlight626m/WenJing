@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.domain.game.media import AssetKind, AssetRecord, AssetStatus
+from app.domain.game.media import AssetKind, AssetRecord, AssetSource, AssetStatus
 from app.domain.generation.workflow.nodes import WorkflowNodes
 from app.domain.generation.workflow.runner import WorkflowRunner
 from app.domain.generation.workflow.state import initial_state
@@ -300,3 +300,309 @@ async def test_design_assets_progress_reports() -> None:
     snap = runner.snapshot()
     da = next(n for n in snap.nodes if n.node is GenerationNode.DESIGN_ASSETS)
     assert da.status is GenerationNodeStatus.SUCCEEDED
+
+
+# ===== #49 教师配图操作（final_gate approve 路径生效）=====
+
+
+class _PausingDesigner(_RecordingDesigner):
+    """每次调用产出新 READY 资产的假件：regenerate 前后 id 必然不同。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asset_seq = 0
+
+    async def design_scene(self, **kwargs: Any) -> AssetRecord:
+        self.calls.append((kwargs["subject_key"], kwargs["kind"].value))
+        self.asset_seq += 1
+        return AssetRecord(
+            asset_id=uuid.uuid5(uuid.NAMESPACE_OID, f"asset-{self.asset_seq}"),
+            object_key=f"o/{kwargs['subject_key']}.webp",
+            kind=kwargs["kind"],
+            status=AssetStatus.READY,
+            org_id=kwargs["org_id"],
+        )
+
+
+async def test_final_gate_resume_applies_remove_and_regenerate() -> None:
+    """#49 验收：resume 携带 asset_ops —— remove 清槽、regenerate 换新图。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    designer = _PausingDesigner()
+    checkpointer = MemorySaver()
+    nodes = WorkflowNodes(llm, teacher_gates=True, scene_designer=designer)
+
+    # 先无闸跑到终审：需要闸门开启，逐闸恢复（与 _pause_at 同构）
+    runner = WorkflowRunner(nodes, checkpointer=checkpointer)
+    state = _state()
+    await runner.run(state, thread_id="t49-final")
+
+    for gate in ("materials", "pre_write"):
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+            checkpointer=checkpointer,
+        )
+        await runner.resume(
+            thread_id="t49-final", resume_payload={"directives": []}, gate=gate
+        )
+
+    # 终审：此时 design_assets 已跑过（audit pass → design_assets → final_gate）
+    review = runner.review
+    assert review is not None and review["gate"] == "final"
+    package = review["package"]
+    scene = package["scenes"][0]
+    old_ref = scene.get("background_asset")
+    assert old_ref is not None, "前置：终审载荷应带配图"
+
+    resume_runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    final = await resume_runner.resume(
+        thread_id="t49-final",
+        resume_payload={
+            "edits": {
+                "asset_ops": [
+                    {
+                        "op": "regenerate",
+                        "subject_key": f"scene:{scene['scene_id']}",
+                        "kind": "background",
+                    },
+                    {
+                        "op": "remove",
+                        "subject_key": f"character:{package['characters'][0]['name']}",
+                        "kind": "avatar",
+                    },
+                ]
+            },
+            "action": "approve",
+        },
+        gate="final",
+    )
+
+    new_pkg = final["package"]
+    bg = next(
+        s.background_asset for s in new_pkg.scenes if s.scene_id == scene["scene_id"]
+    )
+    assert bg is not None and bg.asset_id != uuid.UUID(old_ref["asset_id"]), (
+        "regenerate 换上新图"
+    )
+    av = new_pkg.characters[0].avatar_asset
+    assert av is None, "remove 清空头像槽位"
+    assert resume_runner.snapshot().status == "succeeded"
+
+
+async def test_final_gate_bind_upload_and_failed_regen_keeps_old() -> None:
+    """#49：bind_upload 绑定上传件；regenerate 失败保留旧图（检索替换契约）。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+
+    class _MixedDesigner:
+        """首轮配图成功；带排除集的 regenerate 调用失败（FAILED）。
+
+        排除集是 regenerate 的调用特征：#49 节点只在操作路径传
+        exclude_asset_ids，首轮 design_assets 不传——以此区分两个阶段。
+        """
+
+        def __init__(self) -> None:
+            self.upload_asset_id = uuid.uuid4()
+
+        async def design_scene(self, **kwargs: Any) -> AssetRecord:
+            if kwargs.get("exclude_asset_ids"):
+                return AssetRecord(
+                    asset_id=uuid.uuid4(),
+                    object_key="o/x.webp",
+                    kind=kwargs["kind"],
+                    status=AssetStatus.FAILED,
+                    org_id=kwargs["org_id"],
+                )
+            return AssetRecord(
+                asset_id=uuid.uuid4(),
+                object_key="o/x.webp",
+                kind=kwargs["kind"],
+                status=AssetStatus.READY,
+                org_id=kwargs["org_id"],
+            )
+
+        async def find_bindable_upload(self, **kwargs: Any) -> AssetRecord | None:
+            return AssetRecord(
+                asset_id=self.upload_asset_id,
+                object_key="o/upload.webp",
+                kind=kwargs["kind"],
+                status=AssetStatus.READY,
+                source=AssetSource.UPLOADED,
+                org_id=kwargs["org_id"],
+            )
+
+    designer = _MixedDesigner()
+    checkpointer = MemorySaver()
+    runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    await runner.run(_state(), thread_id="t49-bind")
+    for gate in ("materials", "pre_write"):
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+            checkpointer=checkpointer,
+        )
+        await runner.resume(
+            thread_id="t49-bind", resume_payload={"directives": []}, gate=gate
+        )
+    package = runner.review["package"]
+    scene = package["scenes"][0]
+    old_ref = scene["background_asset"]
+
+    resume_runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    final = await resume_runner.resume(
+        thread_id="t49-bind",
+        resume_payload={
+            "edits": {
+                "asset_ops": [
+                    {
+                        "op": "regenerate",
+                        "subject_key": f"scene:{scene['scene_id']}",
+                        "kind": "background",
+                    },
+                    {
+                        "op": "bind_upload",
+                        "subject_key": f"character:{package['characters'][0]['name']}",
+                        "kind": "avatar",
+                        "asset_id": str(designer.upload_asset_id),
+                    },
+                ]
+            },
+            "action": "approve",
+        },
+        gate="final",
+    )
+
+    new_pkg = final["package"]
+    bg = next(s.background_asset for s in new_pkg.scenes if s.scene_id == scene["scene_id"])
+    assert bg is not None and bg.asset_id == uuid.UUID(old_ref["asset_id"]), (
+        "regenerate FAILED → 保留旧图（不丢图、不清槽）"
+    )
+    av = new_pkg.characters[0].avatar_asset
+    assert av is not None and av.asset_id == designer.upload_asset_id, (
+        "bind_upload 绑定教师上传件"
+    )
+    assert resume_runner.snapshot().status == "succeeded"
+
+
+async def test_final_gate_reject_ignores_asset_ops() -> None:
+    """#49：reject 路径忽略 asset_ops——重写产出全新场景集，旧槽位操作失效。"""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("pass", "pass", "pass"))
+    designer = _PausingDesigner()
+    checkpointer = MemorySaver()
+    runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    await runner.run(_state(), thread_id="t49-reject")
+    for gate in ("materials", "pre_write"):
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+            checkpointer=checkpointer,
+        )
+        await runner.resume(
+            thread_id="t49-reject", resume_payload={"directives": []}, gate=gate
+        )
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    await resumed.resume(
+        thread_id="t49-reject",
+        resume_payload={
+            "directives": ["结尾改一下"],
+            "edits": {
+                "asset_ops": [
+                    {"op": "remove", "subject_key": "scene:1", "kind": "background"}
+                ]
+            },
+            "action": "reject",
+        },
+        gate="final",
+    )
+
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "final"
+    # 重写后的包重新配图（design_assets 再次执行），scene:1 槽位仍有新图
+    pkg = resumed.review["package"]
+    assert all(s["background_asset"] is not None for s in pkg["scenes"]), (
+        "reject 忽略 asset_ops：重写后重新配图"
+    )
+
+
+async def test_final_gate_ignores_kind_slot_mismatch() -> None:
+    """#49（Spec 审查补）：kind 与 subject 类型错位的 op 忽略，不串槽。
+
+    本阶段只有 背景←场景、头像←人物 两条接线；fullbody 与对场景发 avatar
+    类操作都会被丢弃——否则 fullbody 引用会写进 avatar 槽（或失败回退串 kind）。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    designer = _PausingDesigner()
+    checkpointer = MemorySaver()
+    runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    await runner.run(_state(), thread_id="t49-kind")
+    for gate in ("materials", "pre_write"):
+        runner = WorkflowRunner(
+            WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+            checkpointer=checkpointer,
+        )
+        await runner.resume(
+            thread_id="t49-kind", resume_payload={"directives": []}, gate=gate
+        )
+    package = runner.review["package"]
+    scene = package["scenes"][0]
+    old_ref = scene["background_asset"]
+
+    resume_runner = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True, scene_designer=designer),
+        checkpointer=checkpointer,
+    )
+    final = await resume_runner.resume(
+        thread_id="t49-kind",
+        resume_payload={
+            "edits": {
+                "asset_ops": [
+                    # 对场景槽发 avatar 类操作 → 忽略
+                    {
+                        "op": "remove",
+                        "subject_key": f"scene:{scene['scene_id']}",
+                        "kind": "avatar",
+                    },
+                    # fullbody 通道未接线 → 忽略
+                    {
+                        "op": "remove",
+                        "subject_key": f"scene:{scene['scene_id']}",
+                        "kind": "fullbody",
+                    },
+                ]
+            },
+            "action": "approve",
+        },
+        gate="final",
+    )
+
+    bg = final["package"].scenes[0].background_asset
+    assert bg is not None and bg.asset_id == uuid.UUID(old_ref["asset_id"]), (
+        "错位 kind 的 op 被忽略，背景槽保持原值"
+    )
