@@ -317,6 +317,32 @@ _KIND_TAILS: dict[AssetKind, str] = {
 _DEFAULT_SEARCH_LIMIT = 4
 
 
+class _Described(Protocol):
+    """只要求 `description`——同时兼容 domain 与 contracts 两侧的 Beat。"""
+
+    description: str
+
+
+class _SceneLike(Protocol):
+    """只要求 `beats`——让本函数对 domain `Scene` 与契约 `Scene` 都成立。
+
+    剧本生成侧（`nodes.py`）拿的是契约 `Scene`，运行期（`game_runtime.py`）拿的是
+    domain `Scene`；两侧字段同名，用结构化 Protocol 才能共用同一段配图描述规则，
+    而不必在其中一侧复制一份。
+    """
+
+    beats: Sequence[_Described]
+
+
+def scene_visual_description(scene: _SceneLike) -> str:
+    """场景 → 配图描述：节拍文本拼接（`build_generation_prompt` 会再套构图尾巴并截断）。
+
+    Stage2 离线预生成（#48）与 Stage3 运行期实时生成（#56）**必须是同一套描述**，
+    否则去重键不同、同一场景在两处各付一次费。
+    """
+    return "；".join(beat.description for beat in scene.beats if beat.description)
+
+
 def build_generation_prompt(
     *,
     description: str,

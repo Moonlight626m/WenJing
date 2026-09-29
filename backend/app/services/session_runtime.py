@@ -32,14 +32,18 @@ from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.domain.access import Actor, require_session_access, script_visible_to
 from app.domain.game.engine_config import EngineConfig
-from app.domain.game.game_runtime import GameRuntime
+from app.domain.game.game_runtime import GameRuntime, StepResult
+from app.domain.game.media import AssetRecord
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.llm import LLMService
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
-from app.infrastructure.errx import codes, new
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.errx import codes, match_code, new
 from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.session import Session as SessionRecord
+from app.services.scene_assets import SceneAssetRequest, SceneAssetScheduler
+from app.services.session_events import SessionEventHub
 from app.services.session_projection import (
     messages_from_update,
     project_messages,
@@ -50,6 +54,12 @@ from app.services.session_projection import (
 from app.services.session_store import SessionStore
 
 logger = logging.getLogger("wenjing.session.application")
+
+#: 命令外事件落库的 CAS 重试次数。冲突只可能来自「后台任务与玩家命令撞在同一
+#: 版本上」，重试即重放一次（restore → append → commit）；仍冲突就放弃这一次
+#: 投递——事件流是权威，配图下次会由后续命令或 #57 的恢复路径补上，不值得为它
+#: 阻塞或反复抢锁。
+_RUNTIME_EVENT_MAX_ATTEMPTS = 3
 
 
 class SessionApplication:
@@ -63,12 +73,18 @@ class SessionApplication:
         config: EngineConfig | None = None,
         usage_recorder=None,
         store: SessionStore | None = None,
+        asset_scheduler: SceneAssetScheduler | None = None,
+        event_hub: SessionEventHub | None = None,
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
         self._config = config or EngineConfig()
         self._usage_recorder = usage_recorder
         self._store = store or SessionStore(session_factory=session_factory)
+        # 运行期配图（#56）：None = 该环境不做运行期生成（测试桩 / 未装配媒体栈）
+        self._asset_scheduler = asset_scheduler
+        # WS 广播（#56）：命令外事件没有请求上下文可回，只能经它投递
+        self._event_hub = event_hub
 
     # ===== 创建 =====
 
@@ -231,6 +247,9 @@ class SessionApplication:
             result,
             expected_version=version,
         )
+        # 配图意图在**命令事务提交后**才派发：事务回滚时不得留下在途生成，
+        # 否则会为一次没落库的场景切换付费。
+        await self._schedule_asset_requests(session_id, store, result)
         return project_update(session_id, store, result), store
 
     async def _persist_command(
@@ -266,6 +285,164 @@ class SessionApplication:
             stage=stage,
             expected_version=None,
             op="commit_system_events",
+        )
+
+    # ===== 命令之外的领域事件（ADR-0005 §5，#56）=====
+
+    async def report_runtime_event(
+        self,
+        session_id: uuid.UUID,
+        *,
+        branch_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> list[dict]:
+        """把一条**不带 player command** 的领域事件落进事件流，返回应推送的 WS 消息。
+
+        复用 `SessionStore.commit()` 的同一套 CAS 拼写（ADR-0005 §5、ADR-0006），
+        不另起事务形状；区别只有两点：不带 `command`（幂等闸是命令的语义，配图
+        就绪不是命令）、不带 `runtime_state`（没有运行时可导出快照，下一次命令
+        照常在旧快照 + 重放上重建）。
+
+        `branch_id` 是请求期绑定的分支：落库前校验它仍是活动分支，否则 **no-op**
+        ——回溯放弃的分支上补图会让资产挂到已被抛弃的历史上（§9 事件是资产继承的
+        唯一权威，错了会静默显示错图）。
+
+        CAS 冲突（与并发命令撞版本）不视为错误：重试到落库或次数耗尽。
+
+        新增事件类型时别忘了两处登记（漏了都不报错、只静默降级）：要推给前端就得
+        进 `session_projection._MESSAGE_CATEGORY_MAP`，要影响运行时状态就得进
+        `GameRuntime._replay_event`。
+        """
+        for attempt in range(1, _RUNTIME_EVENT_MAX_ATTEMPTS + 1):
+            loaded = await self._store.restore(session_id)
+            active = branch_uuid(session_id, loaded.store.active_branch_id)
+            if active != branch_id:
+                logger.info(
+                    "runtime_event_branch_inactive",
+                    extra={
+                        "session_id": str(session_id),
+                        "event_type": event_type,
+                        "expected_branch": str(branch_id),
+                        "active_branch": str(active),
+                    },
+                )
+                return []
+            loaded.store.append(event_type, payload, session_id=str(session_id))
+            try:
+                await self._store.commit(
+                    session_id=session_id,
+                    store=loaded.store,
+                    stage=loaded.session.current_stage,
+                    expected_version=loaded.version,
+                    op="report_runtime_event",
+                )
+            except WJError as exc:
+                # match_code 而非 `exc.code ==`：沿 cause 链匹配（errx 的指定用法），
+                # commit 哪天把冲突包一层也不会让重试静默失效。
+                if not match_code(exc, codes.SESS_CONFLICT):
+                    raise
+                if attempt < _RUNTIME_EVENT_MAX_ATTEMPTS:
+                    continue
+                logger.warning(
+                    "runtime_event_conflict_give_up",
+                    extra={
+                        "session_id": str(session_id),
+                        "event_type": event_type,
+                    },
+                )
+                return []
+            # 刚追加的事件就是活动分支的最后一条：seq 即它在分支路径上的序号
+            seq = len(loaded.store.active_events()) - 1
+            return project_messages(session_id, loaded.store, after_seq=seq - 1)
+        return []  # 不可达（上面每条路径都 return），仅为类型检查保留
+
+    async def report_asset_ready(
+        self,
+        session_id: uuid.UUID,
+        *,
+        branch_id: uuid.UUID,
+        scene_key: str,
+        asset_id: uuid.UUID,
+        kind: str = "background",
+        status: str = "ready",
+    ) -> list[dict]:
+        """运行期配图就绪（ADR-0005 §5）：`asset_ready` 事件 + 应推送的 WS 消息。
+
+        `scene_key` 用**运行时的场景键**（`scene:{scene_id}`）：事件索引按它归属
+        （`RuntimeAssets.by_scene`），键不一致的话前端会拿到一张永远匹配不上的图。
+        """
+        return await self.report_runtime_event(
+            session_id,
+            branch_id=branch_id,
+            event_type="asset_ready",
+            payload={
+                "scene_key": scene_key,
+                "asset_id": str(asset_id),
+                "kind": kind,
+                "status": status,
+            },
+        )
+
+    async def _schedule_asset_requests(
+        self,
+        session_id: uuid.UUID,
+        store: PersistentEventStore,
+        result: StepResult,
+    ) -> None:
+        """命令事务提交后派发引擎提出的配图意图（#56）。"""
+        requests = list(result.asset_requests)
+        if not requests or self._asset_scheduler is None:
+            return
+        async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+        if sess is None:
+            return
+        branch_id = branch_uuid(session_id, store.active_branch_id)
+        for req in requests:
+            scheduled = self._asset_scheduler.schedule(
+                SceneAssetRequest(
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    scene_key=req.scene_key,
+                    description=req.description,
+                    org_id=sess.org_id,
+                    script_id=sess.script_id,
+                    user_id=sess.owner_user_id,
+                ),
+                on_ready=self._apply_asset_ready,
+            )
+            logger.info(
+                "scene_asset_requested",
+                extra={
+                    "session_id": str(session_id),
+                    "scene_key": req.scene_key,
+                    "scheduled": scheduled,
+                },
+            )
+
+    async def _apply_asset_ready(
+        self, request: SceneAssetRequest, record: AssetRecord
+    ) -> None:
+        """后台生成完成 → 落库 + 推送（在途任务的唯一收口）。"""
+        messages = await self.report_asset_ready(
+            request.session_id,
+            branch_id=request.branch_id,
+            scene_key=request.scene_key,
+            asset_id=record.asset_id,
+            kind=record.kind.value,
+            status=record.status.value,
+        )
+        if not messages or self._event_hub is None:
+            return
+        delivered = await self._event_hub.publish(request.session_id, messages)
+        logger.info(
+            "scene_asset_ready_published",
+            extra={
+                "session_id": str(request.session_id),
+                "scene_key": request.scene_key,
+                "connections": delivered,
+            },
         )
 
     # ===== 状态查询 =====

@@ -317,3 +317,54 @@ def test_ws_rejects_malformed_message(client):
             "PROTOCOL_MALFORMED_MESSAGE",
             "PROTOCOL_UNKNOWN_COMMAND",
         )
+
+
+def test_ws_delivers_commandless_pushed_message(client):
+    """#56：命令外事件（运行期配图就绪）经 hub 投递到已连接会话。
+
+    WS 循环原来只 await 客户端消息，推送会被永远压在队列里；这里断言的正是
+    「等收」与「等推」并行这件事。投递经 `client.portal` 在应用事件循环内执行
+    —— 跨线程操作 asyncio.Queue 既非线程安全也不保证唤醒。
+    """
+    import uuid as _uuid
+
+    from app.composition import get_container
+
+    sid = _make_playable(client)
+    hub = get_container().event_hub
+    asset_id = str(_uuid.uuid4())
+    message = {
+        "type": "asset_ready",
+        "seq": 42,
+        "session_id": sid,
+        "payload": {
+            "category": "asset_ready",
+            "scene_key": "scene:1",
+            "current_asset": {"asset_id": asset_id, "kind": "background", "status": "ready"},
+        },
+    }
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        assert ws.receive_json()["type"] == "session_init"
+        assert client.portal is not None
+        delivered = client.portal.call(hub.publish, _uuid.UUID(sid), [message])
+        assert delivered == 1
+        pushed = ws.receive_json()  # 若循环只在等客户端消息，这里会挂住
+
+    assert pushed["type"] == "asset_ready"
+    assert pushed["payload"]["scene_key"] == "scene:1"
+    assert pushed["payload"]["current_asset"]["asset_id"] == asset_id
+
+
+def test_hub_subscription_is_released_on_disconnect(client):
+    """连接关闭即注销：否则投递会攒进再也没人读的队列（每连接一次泄漏）。"""
+    import uuid as _uuid
+
+    from app.composition import get_container
+
+    sid = _make_playable(client)
+    hub = get_container().event_hub
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.receive_json()
+        assert hub.subscriber_count(_uuid.UUID(sid)) == 1
+    assert hub.subscriber_count(_uuid.UUID(sid)) == 0

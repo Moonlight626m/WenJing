@@ -687,10 +687,22 @@ export interface ServerMessage {
     | "character_speech"
     | "system"
     | "interaction"
+    | "asset_ready"
     | "error";
   session_id: string;
   seq: number;
   payload: ServerMessagePayloads;
+}
+
+/**
+ * 运行期配图就绪（#56）：命令外事件路径推送。
+ * `scene_key` 与 `RuntimeState.scene_key` 同源；`current_asset` 与 narrative
+ * 消息同形，前端复用同一套换背景逻辑。
+ */
+export interface AssetReadyPayload {
+  category: "asset_ready";
+  scene_key: string | null;
+  current_asset: AssetRef;
 }
 
 export interface ContentBlockPayload {
@@ -710,6 +722,7 @@ export interface InteractionPayload {
 export type ServerMessagePayloads =
   | ContentBlockPayload
   | InteractionPayload
+  | AssetReadyPayload
   | ErrorEnvelope
   | Record<string, unknown>;
 

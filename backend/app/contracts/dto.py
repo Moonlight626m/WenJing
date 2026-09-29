@@ -116,7 +116,10 @@ class ServerMessage(VersionedContract):
     """
 
     type: str = Field(
-        description="session_init|narrative|character_speech|system|interaction|error"
+        description=(
+            "session_init|narrative|character_speech|system|interaction"
+            "|asset_ready|error"
+        )
     )
     session_id: uuid.UUID
     seq: int = Field(ge=0)

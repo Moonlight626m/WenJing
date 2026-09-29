@@ -8,7 +8,7 @@
       "type": "string"
     },
     "type": {
-      "description": "session_init|narrative|character_speech|system|interaction|error",
+      "description": "session_init|narrative|character_speech|system|interaction|asset_ready|error",
       "title": "Type",
       "type": "string"
     },

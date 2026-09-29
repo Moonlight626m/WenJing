@@ -53,6 +53,23 @@ type Sender = (message: unknown) => void;
 /** 命令发出后无响应的等待窗口；超时用同一 command_id 重发（服务端幂等对账）。 */
 export const RESEND_DELAY_MS = 120_000;
 
+/**
+ * 运行期配图就绪（#56）的应用规则：返回应写入的状态，或 null 表示这条要丢掉。
+ *
+ * 丢掉两种情形：**场景已过期**（配图在玩家走开之后才到，换上会闪回上一幕的背景）
+ * 与载荷缺字段。纯函数，便于不起浏览器直接断言（`tests/e2e/asset-ready.spec.ts`）。
+ */
+export function applyAssetReady(
+  state: { sceneKey: string | null; currentAsset: AssetRef | null },
+  payload: Record<string, unknown>
+): { currentAsset: AssetRef } | null {
+  const sceneKey = typeof payload.scene_key === "string" ? payload.scene_key : null;
+  const asset = payload.current_asset;
+  if (!sceneKey || sceneKey !== state.sceneKey) return null;
+  if (asset == null || typeof asset !== "object") return null;
+  return { currentAsset: asset as AssetRef };
+}
+
 const STAGES: StageValue[] = [
   "init",
   "stage1_creating",
@@ -263,6 +280,15 @@ export const useGameStore = create<GameStore>((set, get) => {
             type: "resync_request",
             last_confirmed_seq: maxSeq(get().messages),
           });
+        return;
+      }
+
+      if (msg.type === "asset_ready") {
+        // 命令外事件（#56）：不是命令响应，故不 markCommandSettled，也不进消息流。
+        // 确认水位仍由 chat 消息的 maxSeq 推进——把配图的 seq 也算进去会在它与
+        // 命令消息乱序到达时把尚未收到的叙事消息一并确认掉。
+        const next = applyAssetReady(get(), payload);
+        if (next) set(next);
         return;
       }
 

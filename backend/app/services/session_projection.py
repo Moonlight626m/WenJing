@@ -21,6 +21,7 @@ from app.contracts.runtime import (
 )
 from app.contracts.script import AssetRef
 from app.domain.game.game_runtime import StepResult
+from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
 
 # 内存事件类型 → 契约 EventType
@@ -169,6 +170,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     "rollback": "system",
     "proposal": "system",
     "direction": "system",
+    # 运行期配图就绪（#56）：命令外事件路径的唯一对外出口——不列这里，
+    # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
+    "asset_ready": "asset_ready",
 }
 _SILENT_EVENTS = frozenset({"verification", "player_action"})
 
@@ -208,7 +212,18 @@ def project_messages(
             continue
         p = ev.payload or {}
         payload: dict[str, Any] = {"category": category}
-        if category == "character_speech":
+        if category == "asset_ready":
+            # 配图就绪（#56）：与 narrative 消息同形携带 current_asset，
+            # 前端复用同一套「按 AssetRef 换背景」逻辑，不另立字段语义。
+            # 缺省 kind/status 取自 media 的枚举（不另立第三份字面量副本），
+            # 与 `domain/game/assets.py::derive_scene_assets` 同一约定。
+            payload["scene_key"] = p.get("scene_key")
+            payload["current_asset"] = {
+                "asset_id": p.get("asset_id"),
+                "kind": p.get("kind") or AssetKind.BACKGROUND.value,
+                "status": p.get("status") or AssetStatus.READY.value,
+            }
+        elif category == "character_speech":
             payload["speaker"] = p.get("speaker")
             payload["text"] = str(p.get("text", ""))
         elif category == "narrative":

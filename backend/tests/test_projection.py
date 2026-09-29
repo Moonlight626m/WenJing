@@ -250,3 +250,93 @@ async def test_narrative_message_carries_scene_switch_info(make_runtime):
     assert last.get("scene_title") == "送别"
     asset = last.get("current_asset")
     assert asset is not None and asset["asset_id"] == str(bg2.asset_id)
+
+
+async def test_asset_ready_event_is_projected_as_ws_message(make_runtime):
+    """#56：`asset_ready` 必须进消息类别表——不进的话事件落了库却永远不推给前端。"""
+    from app.services.session_projection import project_messages
+
+    rt = make_runtime(session_id=str(_SID))
+    _attach_backgrounds(rt, _bg(), _bg())
+    await _start_and_select(rt)
+
+    asset_id = uuid.uuid4()
+    rt.event_store.append(
+        "asset_ready",
+        {
+            "scene_key": "scene:1",
+            "asset_id": str(asset_id),
+            "kind": "background",
+            "status": "ready",
+        },
+    )
+
+    msgs = project_messages(_SID, rt.event_store)
+    ready = [m for m in msgs if m["type"] == "asset_ready"]
+    assert len(ready) == 1
+    assert ready[0]["seq"] == len(rt.event_store.active_events()) - 1
+    payload = ready[0]["payload"]
+    assert payload["category"] == "asset_ready"
+    assert payload["scene_key"] == "scene:1"
+    # 与 narrative 消息同形携带 current_asset：前端复用同一套换背景逻辑
+    assert payload["current_asset"] == {
+        "asset_id": str(asset_id),
+        "kind": "background",
+        "status": "ready",
+    }
+    # 不是内容块：不带 text，前端不该把它塞进字幕/消息流
+    assert "text" not in payload
+
+
+async def test_asset_ready_after_seq_is_replayed_on_resync(make_runtime):
+    """断线补发（project_messages(after_seq=…)）也要能补出配图消息。"""
+    from app.services.session_projection import project_messages
+
+    rt = make_runtime(session_id=str(_SID))
+    _attach_backgrounds(rt, _bg(), _bg())
+    await _start_and_select(rt)
+    before = len(rt.event_store.active_events())
+
+    asset_id = uuid.uuid4()
+    rt.event_store.append(
+        "asset_ready",
+        {"scene_key": "scene:1", "asset_id": str(asset_id)},
+    )
+
+    replayed = project_messages(_SID, rt.event_store, after_seq=before - 1)
+    assert [m["type"] for m in replayed] == ["asset_ready"]
+    # 缺省 kind/status 由投影补齐（事件载荷允许省略，与 derive_scene_assets 同约定）
+    assert replayed[0]["payload"]["current_asset"] == {
+        "asset_id": str(asset_id),
+        "kind": "background",
+        "status": "ready",
+    }
+
+
+async def test_asset_ready_updates_current_asset_in_projection(make_runtime):
+    """运行期配图进投影 state：前端下一次 render 就能拿到新背景。"""
+    from app.services.session_projection import project_update
+
+    rt = make_runtime(session_id=str(_SID))
+    _attach_backgrounds(rt, _bg(), _bg())
+    await _start_and_select(rt)
+    result = None
+    for _ in range(4):  # 推进到第 3 拍（场景2）
+        result = await rt.submit(
+            command_id=str(uuid.uuid4()),
+            kind="choose_option",
+            payload={"option_id": "1"},
+        )
+        if result.state["scene_key"] == "scene:2":
+            break
+    assert result is not None and result.state["scene_key"] == "scene:2"
+
+    runtime_asset = uuid.uuid4()
+    rt.event_store.append(
+        "asset_ready",
+        {"scene_key": "scene:2", "asset_id": str(runtime_asset)},
+    )
+    result.state = rt.export_state()
+    update = project_update(_SID, rt.event_store, result)
+    assert update.state.current_asset is not None
+    assert update.state.current_asset.asset_id == runtime_asset

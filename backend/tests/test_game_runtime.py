@@ -302,3 +302,114 @@ async def test_rollback_overflow_rejected(make_runtime):
     with pytest.raises(WJError) as excinfo:
         await rt.rollback(command_id="r2", target_event_id=9999)
     assert excinfo.value.code == 2003  # ENG_ROLLBACK_OVERFLOW
+
+
+# ===== 运行期配图（#56）：资产权威与请求发起 =====
+
+
+async def _enter_stage3(rt: GameRuntime) -> dict:
+    """推进到 Stage3 并停在交互点，返回那一步的 StepResult。"""
+    result = await rt.start()
+    n = {"v": 0}
+
+    async def send(kind: str, payload: dict | None = None):
+        n["v"] += 1
+        return await rt.submit(
+            command_id=f"s3-{n['v']}", kind=kind, payload=payload or {}
+        )
+
+    result = await send("select_role", {"role_name": "李白"})
+    for _ in range(12):
+        if _is_ending_confirm(result.active_interaction):
+            break
+        result = await send("choose_option", {"option_id": "0"})
+    else:
+        raise AssertionError("未到达结局确认交互点")
+    await send("choose_option", {"option_id": "0"})  # 进入续写
+    return await send("enter_stage3")
+
+
+async def test_asset_ready_event_overrides_script_slot(make_runtime, minimal_script):
+    """ADR-0005 §9：事件是资产继承的唯一权威——运行期配图压过剧本槽位。
+
+    槽位里的图是 Stage2 离线预生成的；若不压过，Stage3 的实时配图永远显示不出来。
+    """
+    from app.contracts.script import AssetRef
+
+    # Stage3 停在最后一拍所属的场景（scene_id=2「送别」）
+    slot = AssetRef(asset_id=uuid.uuid4(), kind="background", status="ready")
+    minimal_script.scenes[1].background_asset = slot
+    rt = make_runtime()
+    result = await _enter_stage3(rt)
+    assert result.state["scene_key"] == "scene:2"
+    assert result.state["current_asset"]["asset_id"] == str(slot.asset_id)  # 先看槽位
+
+    runtime_asset = uuid.uuid4()
+    rt.event_store.append(
+        "asset_ready",
+        {
+            "scene_key": "scene:2",
+            "asset_id": str(runtime_asset),
+            "kind": "background",
+            "status": "ready",
+        },
+    )
+    assert rt.export_state()["current_asset"]["asset_id"] == str(runtime_asset)
+
+
+async def test_stage3_scene_without_asset_requests_generation(make_runtime):
+    rt = make_runtime()
+    result = await _enter_stage3(rt)
+
+    assert result.state["scene_key"] == "scene:2"
+    assert result.state["current_asset"] is None  # 占位：前端降级为渐变
+    assert len(result.asset_requests) == 1
+    request = result.asset_requests[0]
+    assert request.scene_key == "scene:2"
+    # 描述与 Stage2 离线配图同源（节拍文本拼接），否则去重键不同、会重复付费
+    assert request.description == "高适出发赴边塞，李白送别"
+
+
+async def test_asset_request_not_repeated_within_command(make_runtime):
+    """请求按命令重置：同一次推进里不会为一个场景攒出多条意图。"""
+    rt = make_runtime()
+    await _enter_stage3(rt)
+    assert len(rt._asset_requests) == 1  # noqa: SLF001 - 断言「重置」这一内部不变量
+
+    rt.event_store.append(
+        "asset_ready",
+        {
+            "scene_key": "scene:2",
+            "asset_id": str(uuid.uuid4()),
+            "kind": "background",
+            "status": "ready",
+        },
+    )
+    result = await rt.submit(
+        command_id="s3-after-asset", kind="choose_option", payload={"option_id": "0"}
+    )
+    # 事件索引里已有该场景的图 → 不再请求
+    assert result.asset_requests == []
+
+
+async def test_stage2_never_requests_runtime_generation(make_runtime):
+    """Stage2 的图来自剧本生成 workflow 的离线预生成（#48），游走中不发起生成。"""
+    rt = make_runtime()
+    result = await rt.start()
+    assert result.state["stage"] == "stage1_complete"
+    assert result.asset_requests == []
+
+    result = await rt.submit(
+        command_id="s2-1", kind="select_role", payload={"role_name": "李白"}
+    )
+    for _ in range(6):
+        assert result.asset_requests == []
+        if result.state["stage"] == "stage2_complete" or result.terminal:
+            break
+        if _is_ending_confirm(result.active_interaction):
+            break
+        result = await rt.submit(
+            command_id=f"s2-{result.state['beat_cursor']}",
+            kind="choose_option",
+            payload={"option_id": "0"},
+        )

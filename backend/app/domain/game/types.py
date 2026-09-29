@@ -110,6 +110,19 @@ class Direction:
     context: str
 
 
+@dataclass
+class SceneAssetIntent:
+    """运行期配图意图（ADR-0005 §5，issue #56）：引擎说「这个场景缺图」。
+
+    引擎**只发起意图**，不自己生成——生成由 Session 层在命令事务提交后派后台
+    任务（`services/scene_assets.py`）。这里只带引擎自己知道的东西；session /
+    branch / org 这些归属上下文由应用层在请求期补上，引擎拿不到也不该拿。
+    """
+
+    scene_key: str
+    description: str
+
+
 # ===== 交互与玩家 =====
 
 

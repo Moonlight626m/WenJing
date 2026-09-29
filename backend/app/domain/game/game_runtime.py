@@ -27,14 +27,17 @@ from app.domain.agents.character import CharacterAgentManager
 from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
 from app.domain.agents.verifier import VerifierAgent
 from app.domain.game import event as evt
+from app.domain.game.assets import RuntimeAssets
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
+from app.domain.game.media import scene_visual_description
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.types import (
     InteractionPoint,
     PlayerAction,
     Proposal,
     Scene,
+    SceneAssetIntent,
     Script,
 )
 from app.domain.game.world_view import RuntimeWorldView
@@ -79,6 +82,10 @@ class StepResult:
     allowed_commands: list[str]
     terminal: bool = False
     duplicate: bool = False
+    # 运行期配图请求（#56）：引擎只**发起意图**，不自己生成——Session 层在命令
+    # 事务提交后把它绑上 session/branch 派给后台任务（ADR-0005 §5：后台任务
+    # 不得持有 GameRuntime）。
+    asset_requests: list[SceneAssetIntent] = field(default_factory=list)
 
 
 def _interaction_payload(ix: InteractionPoint | None) -> dict | None:
@@ -131,19 +138,26 @@ class GameRuntime:
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
+        # 本次命令产生的运行期配图请求（#56，见 StepResult.asset_requests）
+        self._asset_requests: list[SceneAssetIntent] = []
         # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标, 该时刻的方向)
         self._memory_marks: list[tuple[int, dict[str, Any], int, dict[str, str]]] = []
         self._valid_proposals: list[Proposal] = []
 
     # ===== 显式状态导出 / 恢复 =====
 
-    def _current_background(self) -> AssetRef | None:
-        """按 beat_cursor 解析当前场景的背景稳定引用（#53）。
+    def _current_background(self, scene: Scene | None) -> AssetRef | None:
+        """当前场景的背景稳定引用：**事件索引优先，脚本槽位兜底**。
 
-        在引擎内解析（ADR-0005 §8）：这里同时有 script（槽位 AssetRef）与
-        events（游标），投影层保持纯函数。未开播（游标 0）或该场景无图 → None。
+        ADR-0005 §9：事件是资产继承的唯一权威——运行期 `asset_ready` 写下的资产
+        必须压过剧本槽位，否则续写阶段的实时配图永远显示不出来；槽位兜底覆盖
+        Stage2 的离线预生成资产（那时还没有 asset_ready 事件）。在引擎内解析
+        （ADR-0005 §8）：这里同时有 events 与 script，投影层保持纯函数。
+        未开播（游标 0）或该场景无图 → None。
         """
-        scene = self._beat_ctx(self.state.beat_cursor)
+        ref = RuntimeAssets.rebuild(self.event_store).current(self.state.scene_key)
+        if ref is not None:
+            return ref
         return scene.background_asset if scene is not None else None
 
     def _beat_ctx(self, cursor: int) -> Scene | None:
@@ -171,7 +185,7 @@ class GameRuntime:
         s = self.state
         # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
         scene = self._beat_ctx(s.beat_cursor)
-        current_asset = scene.background_asset if scene is not None else None
+        current_asset = self._current_background(scene)
         return {
             "stage": s.stage,
             "phase": s.phase,
@@ -330,6 +344,8 @@ class GameRuntime:
                 allowed_commands=list(cached.allowed_commands),
                 terminal=cached.terminal,
                 duplicate=True,
+                # 不转发 asset_requests：幂等重放不重跑调度（同进程内 `_attempted`
+                # 也拦得住），第二次以后由后续命令重新从事件派生意图。
             )
         result = await self._dispatch(key, kind, payload or {})
         self._processed_commands[key] = result
@@ -339,6 +355,7 @@ class GameRuntime:
         self, cid: str, kind: str, payload: dict[str, Any]
     ) -> StepResult:
         self._command_events = []
+        self._asset_requests = []
         stage = self.state.stage
         if kind not in _ALLOWED_BY_STAGE.get(stage, frozenset()):
             raise new(
@@ -484,7 +501,10 @@ class GameRuntime:
         self.state.beat_cursor = self.screenwriter.beat_index
         ctx = self._beat_ctx(self.state.beat_cursor)
         self.state.scene_key = f"scene:{ctx.scene_id}" if ctx is not None else None
-        current_asset = ctx.background_asset if ctx is not None else None
+        # 事件索引优先（§9）：重连/回溯重放后，已就绪的运行期配图必须随叙事一同下发，
+        # 否则前端会被 payload 里的 current_asset=null 清掉刚换上的背景。
+        current_asset = self._current_background(ctx)
+        self._request_scene_asset(stage, ctx, current_asset)
         self._append(
             evt.EVENT_PLOT_ADVANCEMENT,
             {
@@ -520,6 +540,30 @@ class GameRuntime:
         self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
 
     # ===== Agent 调度 =====
+
+    def _request_scene_asset(
+        self, stage: str, ctx: Scene | None, current_asset: AssetRef | None
+    ) -> None:
+        """新场景缺图时记下一次运行期配图意图（#56，ADR-0005 §5）。
+
+        只在 Stage3（续写）触发：Stage2 的配图由剧本生成 workflow 离线预生成
+        （#48），游走中再生成等于对已审批的剧本私自改图、且付两次费。这里**只记
+        意图**，不调用任何 provider——真正的生成由 Session 层在命令事务提交后
+        派给后台任务（后台任务不得持有 GameRuntime）。
+
+        去重交给两处：已在事件索引/剧本槽位里的场景不重复请求；同一进程内
+        在途或已失败的 scene_key 由调度器拦下（见 `services/scene_assets.py`）。
+        """
+        if stage != "stage3" or ctx is None or self.state.scene_key is None:
+            return
+        if current_asset is not None:
+            return
+        self._asset_requests.append(
+            SceneAssetIntent(
+                scene_key=self.state.scene_key,
+                description=scene_visual_description(ctx),
+            )
+        )
 
     async def _collect_proposals(
         self, stage: str, sink: list[dict]
@@ -721,6 +765,7 @@ class GameRuntime:
                 _ALLOWED_BY_STAGE[self.state.stage]
             ),
             terminal=terminal,
+            asset_requests=list(self._asset_requests),
         )
 
     async def _flush_events(self) -> None:

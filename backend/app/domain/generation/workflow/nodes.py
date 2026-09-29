@@ -30,6 +30,7 @@ from app.domain.game.media import (
     AssetKind,
     AssetStatus,
     SceneDesigner,
+    scene_visual_description,
     to_asset_ref,
     to_contract_credit,
 )
@@ -82,11 +83,6 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
     )
     lines = [f"- {_format_issue(i)}" for i in ordered]
     return "以下问题必须逐条修正：\n" + "\n".join(lines)
-
-
-def _scene_visual_description(scene: Any) -> str:
-    """场景 → 配图描述：节拍文本拼接（SceneDesigner 会再套构图尾巴并截断）。"""
-    return "；".join(beat.description for beat in scene.beats if beat.description)
 
 
 def _asset_ref_of(asset_id: uuid.UUID, kind: AssetKind) -> AssetRef:
@@ -592,7 +588,7 @@ class WorkflowNodes:
                 designer,
                 subject_key=f"scene:{scene.scene_id}",
                 scene_key=f"script:{script_id}:scene:{scene.scene_id}",
-                description=_scene_visual_description(scene),
+                description=scene_visual_description(scene),
                 kind=AssetKind.BACKGROUND,
                 org_id=org_id,
                 script_id=script_id,
@@ -744,7 +740,7 @@ class WorkflowNodes:
                     org_id=org_id,
                     user_id=user_id,
                     script_id=script_id,
-                    description=_scene_visual_description(scene),
+                    description=scene_visual_description(scene),
                     current_asset_id=(
                         scene.background_asset.asset_id
                         if scene.background_asset

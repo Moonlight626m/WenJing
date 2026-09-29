@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Annotated, Any
 
@@ -176,10 +177,13 @@ def _origin_allowed(ws: WebSocket) -> bool:
 async def session_ws(ws: WebSocket, session_id: str) -> None:
     """会话 WS（issue #5）：session_init 重建 + submit_command + confirm/resync 补发。
 
-    - seq = 活动分支路径序号；消息仅在命令事务提交后发布；
+    - seq = 活动分支路径序号；消息仅在事务提交后发布；
     - confirm_messages(last_confirmed_seq) 修剪本连接 outbox；
     - resync_request(last_confirmed_seq) 优先重发本连接 outbox 缺口，
       跨连接（重连）时经 SessionApplication.replay_after 从 DB 重建。
+    - **命令外事件**（#56 运行期配图就绪）不经本连接发起，改由
+      `SessionEventHub` 投递到本连接的队列：循环因此同时等「客户端消息」与
+      「推送消息」两件事，否则等 receive 的协程会把推送一直压在队列里。
     """
     from app.contracts.dto import client_message_adapter
     from app.infrastructure.diagnostics.errors import envelope_for
@@ -187,6 +191,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     await ws.accept()
     metrics.set_gauge("wenjing_ws_connections", metrics.get("wenjing_ws_connections") + 1)
     application = get_application()
+    hub = get_container().event_hub
     outbox: list[dict[str, Any]] = []
 
     async def _send_error(exc: WJError, seq: int = 0) -> None:
@@ -207,74 +212,98 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             }
         )
 
-    try:
+    async def _handle(data: Any) -> None:
+        """处理一条客户端消息；发出的消息同步进 outbox（补发协议依赖它）。"""
         try:
-            if not _origin_allowed(ws):
-                raise new(
-                    codes.AUTH_FORBIDDEN, extra={"reason": "origin not allowed"}
-                )
-            async with SessionLocal() as db:
-                principal, _ = await resolve_principal(ws.cookies, db)
-            actor = principal.actor
-            sid = _ensure_uuid(session_id)
-            init = await application.session_init(sid, actor=actor)
-        except WJError as exc:
-            await _send_error(exc)
-            await ws.close()
+            parsed = client_message_adapter.validate_python(data)
+        except Exception as exc:
+            await _send_error(
+                new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]})
+            )
             return
 
-        init_msg = {
-            "type": "session_init",
-            "seq": init["last_sequence"],
-            "session_id": session_id,
-            "payload": init,
-        }
-        outbox.append(init_msg)
-        await ws.send_json(init_msg)
-
-        while True:
-            data = await ws.receive_json()
-            try:
-                parsed = client_message_adapter.validate_python(data)
-            except Exception as exc:
+        if parsed.type == "submit_command":
+            command = parsed.command
+            if str(command.session_id) != session_id:
                 await _send_error(
-                    new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]})
+                    new(
+                        codes.PRT_MALFORMED_MESSAGE,
+                        extra={"reason": "command.session_id mismatch"},
+                    )
                 )
-                continue
+                return
+            try:
+                msgs = await application.submit_command_messages(
+                    sid, command, actor=actor
+                )
+            except WJError as exc:
+                await _send_error(exc)
+                return
+            for msg in msgs:
+                outbox.append(msg)
+                await ws.send_json(msg)
+        elif parsed.type == "confirm_messages":
+            last = parsed.last_confirmed_seq
+            outbox[:] = [m for m in outbox if m["seq"] > last]
+        elif parsed.type == "resync_request":
+            last = parsed.last_confirmed_seq
+            # session_init 是连接引导消息（每次连接都会重发），不参与补发
+            replay = [
+                m for m in outbox if m["seq"] > last and m["type"] != "session_init"
+            ]
+            if not replay:
+                replay = await application.replay_after(sid, last, actor=actor)
+            for msg in replay:
+                await ws.send_json(msg)
 
-            if parsed.type == "submit_command":
-                command = parsed.command
-                if str(command.session_id) != session_id:
-                    await _send_error(
-                        new(
-                            codes.PRT_MALFORMED_MESSAGE,
-                            extra={"reason": "command.session_id mismatch"},
-                        )
+    try:
+        if not _origin_allowed(ws):
+            raise new(codes.AUTH_FORBIDDEN, extra={"reason": "origin not allowed"})
+        async with SessionLocal() as db:
+            principal, _ = await resolve_principal(ws.cookies, db)
+        actor = principal.actor
+        sid = _ensure_uuid(session_id)
+
+        # 订阅先于 session_init：配图就绪是异步来的，晚订阅一秒就少一次即时换图
+        # （漏掉的也能靠随后的 resync_request 从事件流补回来，但没必要漏）。
+        with hub.subscribe(sid) as pushed:
+            init = await application.session_init(sid, actor=actor)
+            init_msg = {
+                "type": "session_init",
+                "seq": init["last_sequence"],
+                "session_id": session_id,
+                "payload": init,
+            }
+            outbox.append(init_msg)
+            await ws.send_json(init_msg)
+
+            # 两个任务常驻跨轮：等客户端消息的协程被取消会丢掉半条在途帧，
+            # 所以只在它真的完成后重建（`pending_*` 为 None 时才重建）。
+            pending_recv: asyncio.Task | None = None
+            pending_push: asyncio.Task | None = None
+            try:
+                while True:
+                    if pending_recv is None:
+                        pending_recv = asyncio.create_task(ws.receive_json())
+                    if pending_push is None:
+                        pending_push = asyncio.create_task(pushed.get())
+                    done, _ = await asyncio.wait(
+                        {pending_recv, pending_push},
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
-                    continue
-                try:
-                    msgs = await application.submit_command_messages(
-                        sid, command, actor=actor
-                    )
-                except WJError as exc:
-                    await _send_error(exc)
-                    continue
-                for msg in msgs:
-                    outbox.append(msg)
-                    await ws.send_json(msg)
-            elif parsed.type == "confirm_messages":
-                last = parsed.last_confirmed_seq
-                outbox[:] = [m for m in outbox if m["seq"] > last]
-            elif parsed.type == "resync_request":
-                last = parsed.last_confirmed_seq
-                # session_init 是连接引导消息（每次连接都会重发），不参与补发
-                replay = [
-                    m for m in outbox if m["seq"] > last and m["type"] != "session_init"
-                ]
-                if not replay:
-                    replay = await application.replay_after(sid, last, actor=actor)
-                for msg in replay:
-                    await ws.send_json(msg)
+                    if pending_push in done:
+                        pushed_msg = pending_push.result()
+                        pending_push = None
+                        outbox.append(pushed_msg)
+                        await ws.send_json(pushed_msg)
+                    if pending_recv in done:
+                        data = pending_recv.result()
+                        pending_recv = None
+                        await _handle(data)
+            finally:
+                for task in (pending_recv, pending_push):
+                    if task is not None:
+                        task.cancel()
     except (WebSocketDisconnect, RuntimeError):
         pass
     except WJError as exc:

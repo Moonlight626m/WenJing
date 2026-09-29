@@ -34,7 +34,9 @@ from app.infrastructure.usage import UsageRecorder
 from app.services.admin import AdminService
 from app.services.assets import AssetAccessService
 from app.services.auth import AuthService
+from app.services.scene_assets import SceneAssetScheduler
 from app.services.script_library import ScriptLibrary
+from app.services.session_events import SessionEventHub
 from app.services.session_runtime import SessionApplication
 
 logger = logging.getLogger("wenjing.composition")
@@ -57,6 +59,8 @@ class Container:
         self._image_gen: Any | None = None
         self._asset_access: AssetAccessService | None = None
         self._scene_designer: SceneDesigner | None = None
+        self._event_hub: SessionEventHub | None = None
+        self._asset_scheduler: SceneAssetScheduler | None = None
 
     # ===== 生命周期（lifespan 调用）=====
 
@@ -69,6 +73,10 @@ class Container:
         self._script_library = None
 
     async def close(self) -> None:
+        # 在途运行期配图先收尾：任务已经付过费，等它把 asset_ready 落库再走，
+        # 否则每次重启都会丢掉一张刚生成好的图（崩溃恢复是 #57 的 asset_jobs）。
+        if self._asset_scheduler is not None:
+            await self._asset_scheduler.drain()
         if self._checkpoint_pool is not None:
             await self._checkpoint_pool.close()
         self._checkpoint_pool = None
@@ -114,12 +122,31 @@ class Container:
     # ===== 服务（惰性 + 缓存）=====
 
     @property
+    def event_hub(self) -> SessionEventHub:
+        """命令外事件的进程内投递点（#56）；WS 路由与 SessionApplication 共用同一个。"""
+        if self._event_hub is None:
+            self._event_hub = SessionEventHub()
+        return self._event_hub
+
+    @property
+    def asset_scheduler(self) -> SceneAssetScheduler:
+        """运行期配图调度（#56）：`scene_designer` 以 lambda 延迟求值，
+        避免在没有生成任务时也构建整套媒体栈。"""
+        if self._asset_scheduler is None:
+            self._asset_scheduler = SceneAssetScheduler(
+                designer=lambda: self.scene_designer
+            )
+        return self._asset_scheduler
+
+    @property
     def session_application(self) -> SessionApplication:
         if self._session_application is None:
             self._session_application = SessionApplication(
                 session_factory=self.session_factory,
                 agent_llm=self._build_agent_llm(),
                 usage_recorder=UsageRecorder(session_factory=self.session_factory),
+                asset_scheduler=self.asset_scheduler,
+                event_hub=self.event_hub,
             )
         return self._session_application
 
