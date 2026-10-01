@@ -15,7 +15,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
-from app.domain.llm import LLMReply, Message, TokenUsage, ToolCall
+from app.domain.llm import (
+    LLMReply,
+    Message,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
+    ToolCallDelta,
+)
 from app.infrastructure.errx import codes, wrap
 
 logger = logging.getLogger("wenjing.agents.llm")
@@ -137,11 +144,32 @@ class ChatLLMService:
         session_id: str = "",
         purpose: UsagePurpose = UsagePurpose.AGENT,
     ) -> AsyncIterator[str]:
-        """OpenAI-compatible 流式：逐段 yield `delta.content`（#58 / ADR-0005 §10）。
+        """无工具流式：逐段 yield 可见 `content` 增量（#58 / ADR-0005 §10）。
 
-        只发出可见 content 增量；`tool_call_chunks`（工具轮）不产出下游 token。
-        超时按**相邻 chunk 的空闲间隔**计（不把消费者处理/背压时间算作 provider 超时）；
-        错误统一包装为 `LLM_CALL_FAILED`。
+        复用 `astream_with_tools` 的同一套取流/超时/错误处理，只把可见通道剖出来。
+        """
+        async for chunk in self.astream_with_tools(
+            messages, tools=None, session_id=session_id, purpose=purpose
+        ):
+            if chunk.content:
+                yield chunk.content
+
+    async def astream_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[StreamChunk]:
+        """带工具 schema 的流式往返（#59 / ADR-0005 §10）。
+
+        逐段产出 `StreamChunk`：`content` 是可见文本，`tool_calls` 是工具调用分片。
+        两者走**不同通道**——分片交给 LangChain 拼装 tool_calls，绝不作为可见文本
+        下发；工具轮的引导语是**临时文本**，由最终持久 `character_speech` 覆盖。
+
+        超时按**相邻 chunk 的空闲间隔**计（不把消费者处理/背压时间算作 provider
+        超时）；错误统一包装为 `LLM_CALL_FAILED`。
         """
         chunks = 0
         async with self._client(session_id) as client, self._semaphore:
@@ -153,27 +181,34 @@ class ChatLLMService:
                         "provider": self.provider,
                         "model": self.model,
                         "messages": len(messages),
+                        "tools": len(tools) if tools else 0,
                         "purpose": purpose.value,
                     },
                 },
             )
             try:
                 stream = await asyncio.wait_for(
-                    client.chat.completions.create(**self._request(messages, stream=True)),
+                    client.chat.completions.create(
+                        **self._request(messages, stream=True, tools=tools)
+                    ),
                     timeout=self._timeout,
                 )
                 iterator = stream.__aiter__()
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(
+                        raw = await asyncio.wait_for(
                             iterator.__anext__(), timeout=self._timeout
                         )
                     except StopAsyncIteration:
                         break
-                    text = _delta_content(chunk)
+                    text = _delta_content(raw)
+                    calls = _delta_tool_calls(raw)
+                    usage = _token_usage(raw)
+                    if not text and not calls and usage is None:
+                        continue
                     if text:
                         chunks += 1
-                        yield text
+                    yield StreamChunk(content=text, tool_calls=calls, usage=usage)
                 logger.info(
                     "llm_stream_end",
                     extra={
@@ -264,6 +299,33 @@ def _delta_content(chunk: Any) -> str:
     if delta is None:
         return ""
     return getattr(delta, "content", None) or ""
+
+
+def _delta_tool_calls(chunk: Any) -> tuple[ToolCallDelta, ...]:
+    """从流式 chunk 中取出工具调用分片；无分片（普通文本段）时返回空元组。
+
+    分片参数是**未完成的 JSON 片段**，只做透传，不在此处解析——拼装由 LangChain
+    的 `AIMessageChunk` 归并完成（按 `index` 归并、`arguments` 累加）。
+    """
+    choices = getattr(chunk, "choices", None) or []
+    if not choices:
+        return ()
+    delta = getattr(choices[0], "delta", None)
+    if delta is None:
+        return ()
+    raw = getattr(delta, "tool_calls", None) or []
+    out: list[ToolCallDelta] = []
+    for index, item in enumerate(raw):
+        fn = getattr(item, "function", None)
+        out.append(
+            ToolCallDelta(
+                index=int(getattr(item, "index", index) or 0),
+                id=str(getattr(item, "id", "") or ""),
+                name=str(getattr(fn, "name", "") or ""),
+                arguments=str(getattr(fn, "arguments", "") or ""),
+            )
+        )
+    return tuple(out)
 
 
 def _tool_calls(message: Any) -> tuple[ToolCall, ...]:

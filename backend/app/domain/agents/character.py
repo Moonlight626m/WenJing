@@ -13,11 +13,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 
 from app.domain.agents.chat_model import WenjingChatModel
 from app.domain.agents.tools import WorldView, build_character_tools
@@ -26,6 +27,9 @@ from app.domain.llm import LLMService
 from app.infrastructure.errx import codes, new, wrap
 
 logger = logging.getLogger("wenjing.agents.character")
+
+#: 可见文本增量回调（同步签名；WS 出口由调用方自行缓冲/下发）。
+OnDelta = Callable[[str], None]
 
 
 @dataclass
@@ -115,14 +119,29 @@ class CharacterAgent:
             description=description,
         )
 
-    async def react_to(self, player_action: PlayerAction, stage: str) -> str:
-        """对玩家操作做出反应（模式 B/C）。"""
+    async def react_to(
+        self,
+        player_action: PlayerAction,
+        stage: str,
+        *,
+        on_delta: OnDelta | None = None,
+    ) -> str:
+        """对玩家操作做出反应（模式 B/C）。
+
+        `on_delta` 非空时走流式（#59 / ADR-0005 §10）：可见文本逐段回调，TTFT 只受
+        首 token 影响；**返回值仍是最终答复**——工具轮的引导语是临时文本，不进返回值。
+        调用方用返回值持久化 `character_speech`，由终态规则覆盖前端已渲染的临时文本。
+        """
         detail = player_action.text or f"选项 {player_action.option_id}"
-        text = await self._run(
-            stage,
-            instruction="react",
-            extra=f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。",
+        extra = (
+            f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。"
         )
+        if on_delta is None:
+            text = await self._run(stage, instruction="react", extra=extra)
+        else:
+            text = await self._run_streaming(
+                stage, instruction="react", extra=extra, on_delta=on_delta
+            )
         if text:
             self.memory.working_memory.append(
                 {"role": self.identity.name, "content": text}
@@ -154,6 +173,42 @@ class CharacterAgent:
             raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
         return _final_text(result.get("messages", []))
 
+    async def _run_streaming(
+        self,
+        stage: str,
+        *,
+        instruction: str,
+        extra: str = "",
+        on_delta: OnDelta,
+    ) -> str:
+        """驱动 LangChain 执行器一轮的流式版本，返回**最终答复**。
+
+        用 `stream_mode="messages"` 拿每个节点产出的消息增量，只认模型节点给出的
+        `AIMessageChunk`（工具节点产出的是 `ToolMessage`，跳过）：
+        - 文本增量即时回调，不在本地缓冲——缓冲会把 TTFT 吃掉；
+        - 带 `tool_call_chunks` 的段不产可见文本：工具调用是机制不是台词；
+        - 按消息 id 归并增量，流末仍用 `_final_text` 取「最后一条无工具调用的 AI
+          文本」作为返回值，故工具轮的引导语不会混进持久发言。
+        """
+        message = self._build_user_message(stage, instruction=instruction, extra=extra)
+        merged: dict[str, AIMessageChunk] = {}
+        try:
+            async for chunk, _meta in self._executor.astream(
+                {"messages": [HumanMessage(content=message)]}, stream_mode="messages"
+            ):
+                if not isinstance(chunk, AIMessageChunk):
+                    continue
+                key = chunk.id or f"anon-{len(merged)}"
+                merged[key] = merged[key] + chunk if key in merged else chunk
+                if chunk.tool_call_chunks:
+                    continue
+                text = _message_text(chunk)
+                if text:
+                    on_delta(text)
+        except Exception as exc:
+            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+        return _final_text(list(merged.values()))
+
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
         stage_hint = {
             "stage2": "你处于剧情还原阶段，按课文原情节行动。",
@@ -172,21 +227,29 @@ def _final_text(messages: list[BaseMessage]) -> str:
     工具调用轮的 AIMessage 可能同时携带引导语与 tool_calls，若只取"最后一条非空
     AI 文本"，在末轮 content 为空或被 recursion_limit 截断时会误取中间引导语。
     故排除带 tool_calls 的消息，只认最终答复；找不到则返回空串。
+
+    流式路径把每段增量按消息 id 归并成 `AIMessageChunk` 后同样喂进本函数——
+    `AIMessageChunk` 是 `AIMessage` 的子类，归并时 `tool_call_chunks` 会升级成
+    `tool_calls`，故「工具轮」判据对两条路径一致。
     """
     for message in reversed(messages):
         if not isinstance(message, AIMessage):
             continue
         if getattr(message, "tool_calls", None):
             continue
-        content = message.content
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") if isinstance(part, dict) else str(part)
-                for part in content
-            )
-        if isinstance(content, str):
-            return content.strip()
+        return _message_text(message).strip()
     return ""
+
+
+def _message_text(message: BaseMessage) -> str:
+    """取出消息的纯文本内容（content 可能是分块列表）；**不裁剪**，增量拼接靠它。"""
+    content = message.content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return "" if content is None else str(content)
 
 
 class CharacterAgentManager:

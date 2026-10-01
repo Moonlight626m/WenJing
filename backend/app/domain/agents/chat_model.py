@@ -6,24 +6,28 @@
 - 本适配器是那层薄桥：`_agenerate` 把 LangChain 消息转成 provider 消息，调用
   `chat_with_tools`（若实现）或降级 `chat_with_usage`/`chat`，再把结果转回
   `AIMessage`（含 tool_calls 与 usage_metadata）。
-- 仅实现 `_agenerate`（全链路 async）；同步 `_generate` 不支持。
+- `_astream`（#59）让 agent 的流式链路可用：优先走底层 `astream_with_tools`，
+  逐段产出 `content` 增量；工具调用分片随段携带（LangChain 组装 tool_calls 的原料），
+  **绝不**作为可见文本下发。底层不支持流式工具调用时回落到 `_agenerate` 单轮产出
+  （ADR-0005 §10 允许的「工具轮非流式」降级）。
+- 仅实现 `_agenerate` / `_astream`（全链路 async）；同步 `_generate` 不支持。
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
 from app.contracts.enums import UsagePurpose
-from app.domain.llm import TokenUsage
+from app.domain.llm import StreamChunk, TokenUsage
 
 _ROLE_BY_TYPE = {
     "system": "system",
@@ -109,6 +113,94 @@ class WenjingChatModel(BaseChatModel):
             message = AIMessage(content=content, usage_metadata=_usage_metadata(usage))
 
         return ChatResult(generations=[ChatGeneration(message=message)])
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """流式路径（#59 / ADR-0005 §10）。
+
+        可见通道只发 `content`；`tool_call_chunks` 走同一段 `AIMessageChunk` 的
+        工具通道，供 LangGraph 组装工具调用并触发工具节点（丢了它工具轮永不触发，
+        ADR-0004）。工具轮里先输出的引导语会照常流给下游——ADR-0005 §10 明确它
+        是**临时文本**，由最终持久 `character_speech` 覆盖（终态规则在 #60）。
+        """
+        tools = kwargs.get("tools") or self.bound_tools
+        stream_with_tools = getattr(self.service, "astream_with_tools", None)
+        if tools and stream_with_tools is not None:
+            dict_messages = [_to_provider_message(m) for m in messages]
+            async for chunk in stream_with_tools(
+                dict_messages,
+                tools=tools,
+                session_id=self.session_id,
+                purpose=self.purpose,
+            ):
+                generation = _chunk_from_stream(chunk)
+                if generation is not None:
+                    yield generation
+            return
+
+        # 无工具或底层无流式能力：单轮一次性产出，行为与 `_agenerate` 一致。
+        result = await self._agenerate(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        )
+        yield _chunk_from_message(result.generations[0].message)
+
+
+def _tool_call_chunk(
+    *, index: int, name: str | None, arguments: str, call_id: str | None
+) -> dict[str, Any]:
+    """组装一个 `tool_call_chunk`（LangChain 增量约定的字段形状，缺项写 None）。"""
+    return {
+        "name": name or None,
+        "args": arguments,
+        "id": call_id or None,
+        "index": index,
+        "type": "tool_call_chunk",
+    }
+
+
+def _chunk_from_stream(chunk: StreamChunk) -> ChatGenerationChunk | None:
+    """`StreamChunk` → LangChain 增量：可见文本与工具分片分道装入同一消息。"""
+    if not chunk.content and not chunk.tool_calls and chunk.usage is None:
+        return None
+    return ChatGenerationChunk(
+        message=AIMessageChunk(
+            content=chunk.content,
+            tool_call_chunks=[
+                _tool_call_chunk(
+                    index=delta.index,
+                    name=delta.name,
+                    arguments=delta.arguments,
+                    call_id=delta.id,
+                )
+                for delta in chunk.tool_calls
+            ],
+            usage_metadata=_usage_metadata(chunk.usage),
+        )
+    )
+
+
+def _chunk_from_message(message: AIMessage) -> ChatGenerationChunk:
+    """整段 `AIMessage` → 单段增量（流式降级路径：工具轮非流式）。"""
+    return ChatGenerationChunk(
+        message=AIMessageChunk(
+            content=message.content,
+            tool_call_chunks=[
+                _tool_call_chunk(
+                    index=index,
+                    name=call.get("name"),
+                    arguments=json.dumps(call.get("args") or {}, ensure_ascii=False),
+                    call_id=call.get("id"),
+                )
+                for index, call in enumerate(message.tool_calls or [])
+            ],
+            usage_metadata=message.usage_metadata,
+        )
+    )
 
 
 async def _complete(

@@ -1,4 +1,4 @@
-"""LLM 流式端口测试（issue #58 / ADR-0005 §10）。
+"""LLM 流式端口测试（issue #58 / #59 / ADR-0005 §10）。
 
 无 DB 依赖：用 scripted 内层 LLM + 捕获式 recorder 验证逐段产出与一次往返一条计量。
 """
@@ -9,7 +9,15 @@ import contextlib
 import uuid
 
 from app.contracts.enums import UsagePurpose
+from app.domain.llm import (
+    LLMReply,
+    StreamChunk,
+    TokenUsage,
+    ToolCall,
+    ToolCallingLLM,
+)
 from app.infrastructure.llm.chat import ChatLLMService, _delta_content
+from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.infrastructure.usage import UsageContext, UsageRecordingLLM
 
 
@@ -168,8 +176,18 @@ def test_delta_content_ignores_non_content_chunks():
 
 
 class _StreamChunk:
-    def __init__(self, text: str) -> None:
-        self.choices = [type("C", (), {"delta": type("D", (), {"content": text})()})()]
+    def __init__(self, text: str = "", *, tool_calls: list | None = None) -> None:
+        delta = type("D", (), {"content": text, "tool_calls": tool_calls})()
+        self.choices = [type("C", (), {"delta": delta})()]
+
+
+def _tool_chunk(
+    *, name: str = "", arguments: str = "", call_id: str = "", index: int = 0
+) -> _StreamChunk:
+    """构造一个工具调用分片（真实 provider 把 tool_call 拆成 name 片 + 参数片）。"""
+    fn = type("F", (), {"name": name, "arguments": arguments})()
+    item = type("T", (), {"id": call_id, "index": index, "function": fn})()
+    return _StreamChunk(tool_calls=[item])
 
 
 class _FakeStream:
@@ -181,9 +199,10 @@ class _FakeStream:
 
     async def __anext__(self):  # noqa: ANN204
         try:
-            return _StreamChunk(next(self._chunks))
+            chunk = next(self._chunks)
         except StopIteration:
             raise StopAsyncIteration
+        return chunk if hasattr(chunk, "choices") else _StreamChunk(chunk)
 
 
 class _FakeMessage:
@@ -250,3 +269,164 @@ async def test_chatllm_chat_unpacks_request_as_keywords(monkeypatch):
     assert completions.kwargs is not None
     assert "stream" not in completions.kwargs
     assert completions.kwargs["model"] == "m"
+
+
+# ===== 工具链路的流式入口（#59）=====
+
+
+class _ScriptedToolsLLM:
+    """按脚本逐段产出的内层工具 LLM。"""
+
+    provider = "scripted"
+    model = "scripted-1"
+
+    def __init__(
+        self, chunks: list[StreamChunk], *, fail_at: int | None = None
+    ) -> None:
+        self.chunks = chunks
+        self.fail_at = fail_at
+
+    async def astream_with_tools(  # noqa: ANN201
+        self, messages, *, tools=None, session_id: str = "", purpose=None  # noqa: ANN001
+    ):
+        for i, chunk in enumerate(self.chunks):
+            if self.fail_at is not None and i == self.fail_at:
+                raise RuntimeError("boom")
+            yield chunk
+
+
+class _NoToolStreamLLM:
+    """只实现非流式 `chat_with_tools` 的内层，验证降级路径。"""
+
+    provider = "nostream"
+    model = "nostream-1"
+
+    async def chat_with_tools(  # noqa: ANN201
+        self, messages, *, tools=None, session_id: str = "", purpose=None  # noqa: ANN001
+    ) -> LLMReply:
+        return LLMReply(
+            content="整段答复",
+            tool_calls=(ToolCall(id="c1", name="view_world_progress", arguments={"k": 1}),),
+            usage=TokenUsage(prompt_tokens=3, completion_tokens=2, total_tokens=5),
+        )
+
+
+async def test_chatllm_astream_with_tools_splits_channels(monkeypatch):
+    """可见文本与工具分片分两条通道下发，工具 schema 随请求带出。"""
+    completions = _FakeCompletions(
+        stream_chunks=[
+            "让我查一下",
+            _tool_chunk(name="view_world_progress", call_id="c1"),
+            _tool_chunk(arguments="{}"),
+        ]
+    )
+    _patch_client(monkeypatch, completions)
+
+    out = [
+        c
+        async for c in _service().astream_with_tools(
+            [{"role": "user", "content": "x"}],
+            tools=[{"type": "function", "function": {"name": "view_world_progress"}}],
+        )
+    ]
+
+    assert completions.kwargs is not None
+    assert completions.kwargs["stream"] is True
+    assert completions.kwargs["tools"][0]["function"]["name"] == "view_world_progress"
+    assert "".join(c.content for c in out) == "让我查一下"
+    assert [c.tool_calls[0].name for c in out if c.tool_calls] == [
+        "view_world_progress",
+        "",
+    ]
+    assert out[1].tool_calls[0].id == "c1"
+
+
+async def test_chatllm_astream_without_tools_yields_no_tool_chunks(monkeypatch):
+    completions = _FakeCompletions(stream_chunks=["甲"])
+    _patch_client(monkeypatch, completions)
+    out = [
+        c async for c in _service().astream_with_tools([{"role": "user", "content": "x"}])
+    ]
+    assert out == [StreamChunk(content="甲")]
+    assert "tools" not in (completions.kwargs or {})
+
+
+async def test_usage_recording_astream_with_tools_records_once_at_stream_end():
+    recorder = _CaptureRecorder()
+    llm = UsageRecordingLLM(
+        _ScriptedToolsLLM(
+            [
+                StreamChunk(content="甲"),
+                StreamChunk(content="乙"),
+                StreamChunk(
+                    usage=TokenUsage(prompt_tokens=9, completion_tokens=4, total_tokens=13)
+                ),
+            ]
+        ),
+        recorder=recorder,
+        context=_ctx(),
+    )
+
+    out = [
+        c
+        async for c in llm.astream_with_tools(
+            [{"role": "user", "content": "x"}], tools=[{"type": "function"}]
+        )
+    ]
+
+    assert "".join(c.content for c in out) == "甲乙"
+    assert len(recorder.calls) == 1, "一次往返一条计量"
+    assert recorder.calls[0]["completion"] == "甲乙"
+    assert recorder.calls[0]["usage"].total_tokens == 13
+
+
+async def test_usage_recording_astream_with_tools_skips_phantom_record():
+    recorder = _CaptureRecorder()
+    llm = UsageRecordingLLM(
+        _ScriptedToolsLLM([StreamChunk(content="甲")], fail_at=0),
+        recorder=recorder,
+        context=_ctx(),
+    )
+    try:
+        [c async for c in llm.astream_with_tools([{"role": "user", "content": "x"}])]
+    except RuntimeError:
+        pass
+    else:  # pragma: no cover - 防御
+        raise AssertionError("脚本应在首段抛错")
+    assert recorder.calls == []
+
+
+async def test_usage_recording_astream_with_tools_degrades_to_single_round():
+    """内层无流式能力：折成一段产出，工具调用与用量都不丢。"""
+    recorder = _CaptureRecorder()
+    llm = UsageRecordingLLM(
+        _NoToolStreamLLM(), recorder=recorder, context=_ctx()
+    )
+
+    out = [
+        c
+        async for c in llm.astream_with_tools(
+            [{"role": "user", "content": "x"}], tools=[{"type": "function"}]
+        )
+    ]
+
+    assert len(out) == 1
+    assert out[0].content == "整段答复"
+    assert out[0].tool_calls[0].name == "view_world_progress"
+    assert out[0].tool_calls[0].arguments == '{"k": 1}'
+    assert recorder.calls[0]["usage"].total_tokens == 5
+
+
+async def test_deterministic_llm_astream_with_tools_yields_stream_chunk():
+    llm = DeterministicAgentLLM()
+    out = [c async for c in llm.astream_with_tools([{"role": "user", "content": "提议"}])]
+    assert [c.content for c in out] == [llm._proposal_text]
+    assert out[0].tool_calls == ()
+
+
+async def test_recording_decorator_satisfies_the_tool_calling_port():
+    """端口回归闸：装饰器必须补齐 `ToolCallingLLM` 的全部成员（含流式入口）。"""
+    llm = UsageRecordingLLM(
+        _NoToolStreamLLM(), recorder=_CaptureRecorder(), context=_ctx()
+    )
+    assert isinstance(llm, ToolCallingLLM)

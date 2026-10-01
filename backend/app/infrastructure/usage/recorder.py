@@ -2,8 +2,9 @@
 
 设计要点：
 - **深模块**：`UsageRecordingLLM` 暴露与 `LLMService` 相同的 `chat`（以及可选的
-  `chat_with_tools`），内部完成 token 估算 + 落库；调用方（Agent / Stage1）无需感知
-  计量细节。工具调用 Agent 一轮内多次往返时，每次往返单独计一条。
+  `chat_with_tools` / `astream_with_tools`），内部完成 token 估算 + 落库；调用方
+  （Agent / Stage1）无需感知计量细节。工具调用 Agent 一轮内多次往返时，每次往返
+  单独计一条——流式轮在**流末**计一条（ADR-0005 §10）。
 - **best-effort**：计量失败绝不影响主流程——`UsageRecorder.record` 吞掉异常并告警。
 - **无状态**：`UsageRecordingLLM` 由调用方按上下文（org/user/script/session）构造，
   不依赖全局可变状态，天然适配并发协程。
@@ -14,6 +15,7 @@ token 计数说明：底层 provider 未统一回传 usage 时，用 `estimate_t
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -23,7 +25,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.enums import UsagePurpose
-from app.domain.llm import LLMReply, TokenUsage
+from app.domain.llm import LLMReply, StreamChunk, TokenUsage, ToolCallDelta
 from app.infrastructure.models.llm_usage import LlmUsage
 
 logger = logging.getLogger("wenjing.usage.recorder")
@@ -214,6 +216,67 @@ class UsageRecordingLLM:
                     messages=messages,
                     completion="".join(parts),
                     usage=None,
+                )
+
+
+    async def astream_with_tools(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[StreamChunk]:
+        """流式工具调用的计量委托：一次往返记一条（#59 / ADR-0004 §4）。
+
+        内层未实现 `astream_with_tools` 时退化为**非流式单轮**（ADR-0005 §10 允许的
+        「工具轮非流式」降级），把 `LLMReply` 折成一段 `StreamChunk` 产出，计量语义
+        与 `chat_with_tools` 完全一致。
+        与 `astream` 同一规矩：产出任何内容前失败/被中断则不写记录，避免幻影账。
+        """
+        inner = getattr(self._inner, "astream_with_tools", None)
+        if inner is None:
+            reply = await self.chat_with_tools(
+                messages, tools=tools, session_id=session_id, purpose=purpose
+            )
+            yield StreamChunk(
+                content=reply.content,
+                tool_calls=tuple(
+                    ToolCallDelta(
+                        index=index,
+                        id=call.id,
+                        name=call.name,
+                        arguments=json.dumps(call.arguments, ensure_ascii=False),
+                    )
+                    for index, call in enumerate(reply.tool_calls)
+                ),
+                usage=reply.usage,
+            )
+            return
+
+        parts: list[str] = []
+        completed = False
+        usage: TokenUsage | None = None
+        try:
+            async for chunk in inner(
+                messages, tools=tools, session_id=session_id, purpose=purpose
+            ):
+                if chunk.content:
+                    parts.append(chunk.content)
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                yield chunk
+            completed = True
+        finally:
+            if parts or completed:
+                await self._recorder.record(
+                    self._context,
+                    provider=self.provider,
+                    model=self.model,
+                    purpose=purpose,
+                    messages=_plain_messages(messages),
+                    completion="".join(parts),
+                    usage=usage,
                 )
 
 

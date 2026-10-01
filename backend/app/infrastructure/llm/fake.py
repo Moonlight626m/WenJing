@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from typing import TypeAlias
 
 from app.contracts.enums import UsagePurpose
+from app.domain.llm import StreamChunk
 
 Message: TypeAlias = dict[str, str]
 
@@ -60,3 +61,20 @@ class DeterministicAgentLLM:
         text = await self.chat(messages, session_id=session_id, purpose=purpose)
         if text:
             yield text
+
+    async def astream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[StreamChunk]:
+        """同上，装成 `StreamChunk`；确定性实现从不调用工具（`tool_calls` 恒为空）。
+
+        保留本方法是为了让 `WenjingChatModel._astream` 在无 key 的竖切里也走流式
+        分支——否则测试与本地演示会落到另一条代码路径上。
+        """
+        text = await self.chat(messages, session_id=session_id, purpose=purpose)
+        if text:
+            yield StreamChunk(content=text)
