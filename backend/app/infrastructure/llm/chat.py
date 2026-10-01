@@ -23,9 +23,28 @@ from app.domain.llm import (
     ToolCall,
     ToolCallDelta,
 )
-from app.infrastructure.errx import codes, wrap
+from app.infrastructure.errx import Error, codes, exc_reason, wrap
 
 logger = logging.getLogger("wenjing.agents.llm")
+
+#: 流式相邻 chunk 的空闲上限（秒），与「整次调用上界」分开（#65）。
+#: `_timeout` 定的是**整次** non-streaming 调用的预算，要覆盖长 JSON 的整段生成；
+#: 拿同一个数当流式空闲间隔太宽松——学生端会对着不动的字幕干等好几分钟。
+#: 也不宜收得过紧：推理型模型思考期间本就不产 chunk。
+STREAM_IDLE_TIMEOUT_CAP = 150.0
+
+
+def is_timeout(exc: BaseException) -> bool:
+    """该异常是否为一次超时（#65）。
+
+    `asyncio.wait_for` 抛的是内建 `TimeoutError`（3.11 起 `asyncio.TimeoutError` 是它
+    的别名）；provider SDK 自带的超时类（`openai.APITimeoutError`、`httpx.ReadTimeout`）
+    **不是**它的子类，只能按类名识别——这是跨 SDK 版本唯一稳定的判据，认不出就当普通
+    失败处理（宁可归错到 `LLM_CALL_FAILED`，也不要让重试逻辑吃掉真正的 provider 报错）。
+    """
+    if isinstance(exc, TimeoutError):
+        return True
+    return "timeout" in type(exc).__name__.lower()
 
 
 class ChatLLMService:
@@ -41,7 +60,9 @@ class ChatLLMService:
         temperature: float = 0.7,
         max_tokens: int | None = None,
         max_concurrency: int = 5,
-        timeout_seconds: int = 30,
+        timeout_seconds: float = 30,
+        timeout_retries: int = 1,
+        retry_backoff_seconds: float = 2.0,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -51,6 +72,81 @@ class ChatLLMService:
         self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._timeout = timeout_seconds
+        # 流式空闲判定用这个上界（见 `STREAM_IDLE_TIMEOUT_CAP`）：调大 `_timeout`
+        # 不会顺带把流式静默也拉长。
+        self._stream_timeout = min(timeout_seconds, STREAM_IDLE_TIMEOUT_CAP)
+        self._timeout_retries = max(0, timeout_retries)
+        self._retry_backoff = max(0.0, retry_backoff_seconds)
+
+    # ===== 失败分类与重试（#65）=====
+
+    def _may_retry(self, exc: BaseException, attempt: int) -> bool:
+        """是否该再试一次：只重试超时，且未超出重试预算。
+
+        provider 的 4xx（参数错、额度耗尽、模型不存在）再试一次只是白等一次，真正
+        "再试一次可能就好"的形态只有超时。`attempt` 是**已完成**的尝试次数（0 起）。
+        """
+        return attempt < self._timeout_retries and is_timeout(exc)
+
+    async def _wait_before_retry(
+        self, event: str, exc: BaseException, attempt: int, session_id: str
+    ) -> None:
+        """记一次重试日志并指数退避。`attempt` 是**已完成**的尝试次数（0 起）。"""
+        delay = self._retry_backoff * (2**attempt)
+        logger.warning(
+            event,
+            extra={
+                "session_id": session_id or None,
+                "retry_count": attempt + 1,
+                "wj_extra": {
+                    "reason": exc_reason(exc),
+                    "delay_seconds": f"{delay:g}",
+                },
+            },
+        )
+        await asyncio.sleep(delay)
+
+    @staticmethod
+    def _code_for(exc: BaseException) -> int:
+        """失败分类：#65 要求超时与 provider 报错分列两个码。"""
+        return codes.LLM_TIMEOUT if is_timeout(exc) else codes.LLM_CALL_FAILED
+
+    def _failure(self, exc: BaseException, *, timeout: float, **extra: Any) -> Error:
+        """把底层异常包装成对外错误。
+
+        `reason` 一律用 `exc_reason`（`类型: 消息`）——`str(TimeoutError())` 是空串，
+        正是原先把现场丢干净的原因。`timeout` 是该次调用**实际生效**的上界（流式与
+        非流式不同）。
+        """
+        payload: dict[str, str] = {"reason": exc_reason(exc)}
+        if is_timeout(exc):
+            payload["timeout"] = f"{timeout:g}"
+        return wrap(exc, self._code_for(exc), extra={**payload, **extra})
+
+    def _log_failure(
+        self,
+        event: str,
+        exc: BaseException,
+        attempt: int,
+        session_id: str,
+        **context: Any,
+    ) -> None:
+        """终局失败日志：带上异常类型、错误码与已试次数（#65 的现场可诊断性）。
+
+        `context` 给各调用点补自己的现场（流式失败要带已经吐了几段）。
+        """
+        logger.error(
+            event,
+            extra={
+                "session_id": session_id or None,
+                "retry_count": attempt,
+                "wj_extra": {
+                    "reason": exc_reason(exc),
+                    "error_code": self._code_for(exc),
+                    **context,
+                },
+            },
+        )
 
     def _provider_headers(self, session_id: str) -> dict[str, str] | None:
         """opencodego 要求每个会话带稳定 `x-opencode-session` 头（路由/缓存优化），
@@ -169,9 +265,16 @@ class ChatLLMService:
         下发；工具轮的引导语是**临时文本**，由最终持久 `character_speech` 覆盖。
 
         超时按**相邻 chunk 的空闲间隔**计（不把消费者处理/背压时间算作 provider
-        超时）；错误统一包装为 `LLM_CALL_FAILED`。
+        超时）；超时抛 `LLM_TIMEOUT`、其余失败抛 `LLM_CALL_FAILED`（#65）。
+
+        重试（#65）：只在**一段 chunk 都还没交给消费者**时重试。已经 yield 出去的
+        分片收不回来——重开一条流会让消费端把同一段工具参数累加两遍（可见文本更糟，
+        学生眼前会重念一遍）。空闲超时发生在首片之前才是安全的，而这也正是最常见的
+        形态（provider 卡在起手）。
         """
         chunks = 0
+        emitted = False
+        attempt = 0
         async with self._client(session_id) as client, self._semaphore:
             logger.info(
                 "llm_stream_start",
@@ -186,50 +289,61 @@ class ChatLLMService:
                     },
                 },
             )
-            try:
-                stream = await asyncio.wait_for(
-                    client.chat.completions.create(
-                        **self._request(messages, stream=True, tools=tools)
-                    ),
-                    timeout=self._timeout,
-                )
-                iterator = stream.__aiter__()
-                while True:
-                    try:
-                        raw = await asyncio.wait_for(
-                            iterator.__anext__(), timeout=self._timeout
+            while True:
+                try:
+                    stream = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            **self._request(messages, stream=True, tools=tools)
+                        ),
+                        timeout=self._stream_timeout,
+                    )
+                    iterator = stream.__aiter__()
+                    while True:
+                        try:
+                            raw = await asyncio.wait_for(
+                                iterator.__anext__(), timeout=self._stream_timeout
+                            )
+                        except StopAsyncIteration:
+                            break
+                        text = _delta_content(raw)
+                        calls = _delta_tool_calls(raw)
+                        usage = _token_usage(raw)
+                        if not text and not calls and usage is None:
+                            continue
+                        if text:
+                            chunks += 1
+                        emitted = True
+                        yield StreamChunk(content=text, tool_calls=calls, usage=usage)
+                except Exception as exc:
+                    if not emitted and self._may_retry(exc, attempt):
+                        await self._wait_before_retry(
+                            "llm_stream_retry", exc, attempt, session_id
                         )
-                    except StopAsyncIteration:
-                        break
-                    text = _delta_content(raw)
-                    calls = _delta_tool_calls(raw)
-                    usage = _token_usage(raw)
-                    if not text and not calls and usage is None:
+                        attempt += 1
                         continue
-                    if text:
-                        chunks += 1
-                    yield StreamChunk(content=text, tool_calls=calls, usage=usage)
-                logger.info(
-                    "llm_stream_end",
-                    extra={
-                        "session_id": session_id or None,
-                        "wj_extra": {
-                            "provider": self.provider,
-                            "model": self.model,
-                            "purpose": purpose.value,
-                            "chunks": chunks,
-                        },
+                    self._log_failure(
+                        "llm_stream_failed", exc, attempt, session_id, chunks=chunks
+                    )
+                    raise self._failure(
+                        exc,
+                        timeout=self._stream_timeout,
+                        retry_count=attempt,
+                        chunks=chunks,
+                    ) from exc
+                break
+            logger.info(
+                "llm_stream_end",
+                extra={
+                    "session_id": session_id or None,
+                    "wj_extra": {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "purpose": purpose.value,
+                        "chunks": chunks,
+                        "retry_count": attempt,
                     },
-                )
-            except Exception as exc:
-                logger.error(
-                    "llm_stream_failed",
-                    extra={
-                        "wj_extra": {"reason": str(exc), "chunks": chunks},
-                        "session_id": session_id or None,
-                    },
-                )
-                raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+                },
+            )
 
     async def _invoke(
         self,
@@ -253,39 +367,48 @@ class ChatLLMService:
                     },
                 },
             )
-            try:
-                resp = await asyncio.wait_for(
-                    client.chat.completions.create(**self._request(messages, tools=tools)),
-                    timeout=self._timeout,
-                )
-                message = resp.choices[0].message
-                content = message.content or ""
-                calls = _tool_calls(message)
-                usage = _token_usage(resp)
-                logger.info(
-                    "llm_call_end",
-                    extra={
-                        "session_id": session_id or None,
-                        "wj_extra": {
-                            "provider": self.provider,
-                            "model": self.model,
-                            "purpose": purpose.value,
-                            "content": content,  # 模型响应全文（业务层关键信息）
-                            "tool_calls": [c.name for c in calls],
-                            "prompt_tokens": usage.prompt_tokens if usage else None,
-                            "completion_tokens": usage.completion_tokens if usage else None,
-                        },
+            attempt = 0
+            while True:
+                try:
+                    resp = await asyncio.wait_for(
+                        client.chat.completions.create(
+                            **self._request(messages, tools=tools)
+                        ),
+                        timeout=self._timeout,
+                    )
+                    message = resp.choices[0].message
+                    content = message.content or ""
+                    calls = _tool_calls(message)
+                    usage = _token_usage(resp)
+                except Exception as exc:
+                    # 非流式调用是整次幂等的，重试不会产生重复输出（#65）。
+                    if self._may_retry(exc, attempt):
+                        await self._wait_before_retry(
+                            "llm_call_retry", exc, attempt, session_id
+                        )
+                        attempt += 1
+                        continue
+                    self._log_failure("llm_call_failed", exc, attempt, session_id)
+                    raise self._failure(
+                        exc, timeout=self._timeout, retry_count=attempt
+                    ) from exc
+                break
+            logger.info(
+                "llm_call_end",
+                extra={
+                    "session_id": session_id or None,
+                    "wj_extra": {
+                        "provider": self.provider,
+                        "model": self.model,
+                        "purpose": purpose.value,
+                        "content": content,  # 模型响应全文（业务层关键信息）
+                        "tool_calls": [c.name for c in calls],
+                        "prompt_tokens": usage.prompt_tokens if usage else None,
+                        "completion_tokens": usage.completion_tokens if usage else None,
+                        "retry_count": attempt,
                     },
-                )
-            except Exception as exc:
-                logger.error(
-                    "llm_call_failed",
-                    extra={
-                        "wj_extra": {"reason": str(exc)},
-                        "session_id": session_id or None,
-                    },
-                )
-                raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+                },
+            )
             return content, calls, usage
 
 

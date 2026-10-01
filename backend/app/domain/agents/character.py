@@ -24,7 +24,7 @@ from app.domain.agents.chat_model import WenjingChatModel
 from app.domain.agents.tools import WorldView, build_character_tools
 from app.domain.game.types import CharacterSetting, PlayerAction, Proposal
 from app.domain.llm import LLMService
-from app.infrastructure.errx import codes, new, wrap
+from app.infrastructure.errx import Error, codes, exc_reason, new, wrap
 
 logger = logging.getLogger("wenjing.agents.character")
 
@@ -169,8 +169,14 @@ class CharacterAgent:
             result = await self._executor.ainvoke(
                 {"messages": [HumanMessage(content=message)]}
             )
+        except Error:
+            # 已经是带码的 errx.Error（含 `LLM_TIMEOUT`）：再包一层会把 #65 分列出来的
+            # 超时码抹平成 `LLM_CALL_FAILED`，上层就再也看不出该调超时还是该换 key。
+            raise
         except Exception as exc:
-            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+            raise wrap(
+                exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}
+            ) from exc
         return _final_text(result.get("messages", []))
 
     async def _run_streaming(
@@ -209,8 +215,13 @@ class CharacterAgent:
                 text = _message_text(chunk)
                 if text:
                     on_delta(text)
+        except Error:
+            # 同上：保住 `LLM_TIMEOUT` 这类已分列的码。
+            raise
         except Exception as exc:
-            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": str(exc)}) from exc
+            raise wrap(
+                exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}
+            ) from exc
         return _final_text(list(merged.values()))
 
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:

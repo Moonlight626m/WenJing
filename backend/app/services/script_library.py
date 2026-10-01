@@ -47,7 +47,8 @@ from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initia
 from app.domain.prompts import write_script
 from app.domain.prompts.manager import PromptManager
 from app.infrastructure.db.prompt_store import DbPromptStore
-from app.infrastructure.errx import codes, new
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import codes, exc_reason, new
 from app.infrastructure.models.material import Material as MaterialRecord
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.script_generation import ScriptGeneration as ScriptGenerationRecord
@@ -57,6 +58,19 @@ logger = logging.getLogger("wenjing.scripts.library")
 
 # fire-and-forget 后台清理任务的强引用集（防 GC 中途回收，S7）
 _background_tasks: set[asyncio.Task] = set()
+
+
+def _failure_text(exc: BaseException) -> str:
+    """教师端可见的失败原因。
+
+    原先只写整数码（`str(exc.code)`），教师端 `GenerationProgress.error` 里只有
+    「4004」这么一个数字——#65 的现象就是「看不出发生了什么」。带码的走
+    `envelope_for` 拿稳定码名 + `safe_message` 中文文案；不带码的回落异常自身措辞。
+    """
+    if hasattr(exc, "code"):
+        env = envelope_for(exc)
+        return f"{env.code}：{env.message}"
+    return exc_reason(exc)
 
 
 def _telemetry_dict(telemetry: GenerationTelemetry) -> dict:
@@ -383,12 +397,12 @@ class ScriptLibrary:
             logger.warning(
                 "script_generation_failed script_id=%s reason=%s",
                 script_id,
-                getattr(exc, "code", exc),
+                exc_reason(exc),
             )
             await self._save_progress(
                 attempt_id,
                 status=GenerationStatus.FAILED.value,
-                error=str(getattr(exc, "code", exc)),
+                error=_failure_text(exc),
             )
 
     async def _load_generation_inputs(
@@ -619,12 +633,12 @@ class ScriptLibrary:
             logger.warning(
                 "script_generation_failed script_id=%s reason=%s",
                 script.id,
-                getattr(exc, "code", exc),
+                exc_reason(exc),
             )
             await self._save_progress(
                 attempt_id,
                 status=GenerationStatus.FAILED.value,
-                error=str(getattr(exc, "code", exc)),
+                error=_failure_text(exc),
             )
 
     async def _run_legacy_stage1(

@@ -62,3 +62,14 @@ class Error(Exception):
     def __reduce__(self) -> tuple[Any, tuple[int, str]]:
         # 保证异常可被 pickle（asyncio / 多进程场景）
         return (Error, (self.code, self._message))
+
+
+def exc_reason(exc: BaseException) -> str:
+    """异常的统一日志/信封措辞：`类型: 消息`。
+
+    只写 `str(exc)` 会在 `str(TimeoutError()) == ''` 这类情形下把现场丢干净
+    （#65），故类型名必带。放在 errx 而非 `diagnostics.logging`：`domain/` 对
+    infrastructure 只白名单了本包，而领域层（如 `agents/character.py`）也要用同一套
+    措辞。
+    """
+    return f"{type(exc).__name__}: {exc}"

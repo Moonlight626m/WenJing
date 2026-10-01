@@ -7,13 +7,15 @@
 
 用法::
 
-    from app.infrastructure.errx import codes, new, wrap, match_code
+    from app.infrastructure.errx import codes, exc_reason, new, wrap, match_code
 
     raise new(codes.ENG_INVALID_TRANSITION, extra={"src": "a", "dst": "b"})
     try:
         ...
     except Exception as e:
-        raise wrap(e, codes.LLM_CALL_FAILED, extra={"reason": str(e)}) from e
+        # `reason` 用 exc_reason（类型: 消息），别用 str(e)——`str(TimeoutError())`
+        # 是空串，日志与信封会一起丢掉现场（#65）。
+        raise wrap(e, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(e)}) from e
     # 匹配（含 cause 链）：
     if match_code(exc, codes.LLM_CALL_FAILED):
         ...
@@ -31,7 +33,7 @@ from app.infrastructure.errx._registry import (
     register,
     set_default_error_code,
 )
-from app.infrastructure.errx.error import Error
+from app.infrastructure.errx.error import Error, exc_reason
 
 # 导入即注册全部错误码（幂等）
 codes.register_all()
@@ -42,6 +44,7 @@ __all__ = [
     "new",
     "wrap",
     "match_code",
+    "exc_reason",
     "register",
     "lookup",
     "all_definitions",

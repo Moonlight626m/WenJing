@@ -137,8 +137,15 @@ class Settings(BaseSettings):
     media_org_tts_budget: int = 0
     media_org_asr_budget: int = 0
 
-    # 默认上限需覆盖 Stage1 全剧本生成（实测 DeepSeek 约 100s）；短调用仅受上界约束
-    llm_timeout_seconds: int = 150
+    # 非流式调用的**整次**上界（秒）：要覆盖最长一个节点的完整 JSON 生成。
+    # 原为 150（基准是实测 DeepSeek 约 100s），但 #65 里换 provider 后实测被突破
+    # ——151512ms 恰好撞在 150s 上被判超时。放宽到 240 留出跨 provider 的余量；
+    # 流式空闲另有 STREAM_IDLE_TIMEOUT_CAP（chat.py）封顶，不随这里一起变长。
+    llm_timeout_seconds: int = 240
+    # 超时后的重试次数与指数退避基数（秒，第 n 次重试等 base * 2**n）。#65：原先
+    # 不重试，一次慢调用即整轮剧本生成失败。只重试超时，provider 报错不重试。
+    llm_timeout_retries: int = 1
+    llm_retry_backoff_seconds: float = 2.0
     player_timeout_seconds: int = 300
     max_events_in_memory: int = 5000
     checkpoint_interval: int = 20
@@ -159,6 +166,8 @@ class Settings(BaseSettings):
             base_url=self.llm_base_url or None,
             temperature=self.llm_temperature,
             timeout_seconds=self.llm_timeout_seconds,
+            timeout_retries=self.llm_timeout_retries,
+            retry_backoff_seconds=self.llm_retry_backoff_seconds,
             max_concurrency=self.max_concurrent_llm,
         )
 

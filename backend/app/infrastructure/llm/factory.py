@@ -61,6 +61,9 @@ class ModelConfig:
     max_tokens: int | None = None
     timeout_seconds: int | None = None
     max_concurrency: int | None = None
+    #: 超时重试次数与退避基数（#65）；见 `ChatLLMService`。
+    timeout_retries: int | None = None
+    retry_backoff_seconds: float | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -97,4 +100,12 @@ class ModelServiceFactory:
             kwargs["max_concurrency"] = config.max_concurrency
         elif "max_concurrency" in config.extra:
             kwargs["max_concurrency"] = config.extra["max_concurrency"]
+        if config.timeout_retries is not None:
+            kwargs["timeout_retries"] = config.timeout_retries
+        elif "timeout_retries" in config.extra:
+            kwargs["timeout_retries"] = config.extra["timeout_retries"]
+        if config.retry_backoff_seconds is not None:
+            kwargs["retry_backoff_seconds"] = config.retry_backoff_seconds
+        elif "retry_backoff_seconds" in config.extra:
+            kwargs["retry_backoff_seconds"] = config.extra["retry_backoff_seconds"]
         return ChatLLMService(**kwargs)

@@ -25,9 +25,10 @@ AGENT_NOT_IN_SESSION = 3001         # 指定角色不在当前会话
 AGENT_PROPOSAL_ALL_REJECTED = 3002  # 全部角色提议被驳回（僵局）
 
 # ===== LLM（LLM）=====
-LLM_CALL_FAILED = 4001              # LLM 调用失败/超时
+LLM_CALL_FAILED = 4001              # LLM 调用失败（provider 报错/网络），不含超时
 LLM_OUTPUT_PARSE_FAILED = 4002      # LLM 结构化输出解析失败
 LLM_UNKNOWN_MODEL = 4003            # 请求了未登记/未知的 provider 或模型
+LLM_TIMEOUT = 4004                  # LLM 调用超时（可重试；#65 与 provider 报错分列）
 
 # ===== 配置（CFG）=====
 CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
@@ -136,6 +137,9 @@ def register_all() -> None:
     register(LLM_CALL_FAILED, "llm call failed: {reason}")
     register(LLM_OUTPUT_PARSE_FAILED, "failed to parse llm structured output: {target}")
     register(LLM_UNKNOWN_MODEL, "unknown llm model/provider: {provider}")
+    # 超时单列一个码（#65）：`str(TimeoutError())` 是空串，和 provider 报错混在一个码里
+    # 时，日志与对外信封都只剩「llm call failed: 」，现场无法自诊断。
+    register(LLM_TIMEOUT, "llm call timed out after {timeout}s: {reason}")
 
     register(CFG_UNKNOWN_PROVIDER, "unknown llm provider: {provider}", is_affect_stability=False)
     register(

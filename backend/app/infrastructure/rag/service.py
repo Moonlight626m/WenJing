@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from app.contracts.material import WebEvidence
-from app.infrastructure.diagnostics.logging import exc_reason
+from app.infrastructure.errx import exc_reason
 from app.infrastructure.rag.ddgs_search import DuckDuckGoSearchProvider
 from app.infrastructure.rag.html_extractor import HtmlDocumentExtractor
 from app.infrastructure.rag.providers import (

@@ -20,7 +20,7 @@ from app.domain.game.media import MediaKind, SceneDesigner
 from app.domain.game.tts import VoiceMap
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.db.session import SessionLocal, engine
-from app.infrastructure.diagnostics.logging import exc_reason
+from app.infrastructure.errx import exc_reason
 from app.infrastructure.llm.factory import ModelServiceFactory
 from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.infrastructure.media import (
