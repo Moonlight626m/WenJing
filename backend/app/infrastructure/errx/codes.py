@@ -35,6 +35,7 @@ CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
 CFG_UNKNOWN_MEDIA_PROVIDER = 5003    # 未知的媒体 provider（检索/生图）
 CFG_MEDIA_IMAGE_GEN_INCOMPLETE = 5004  # provider=openai 但缺少 base_url/api_key
 CFG_MEDIA_TTS_INCOMPLETE = 5005       # TTS provider 配置不全（缺 base_url/api_key）
+CFG_MEDIA_ASR_INCOMPLETE = 5006       # ASR provider 配置不全（缺 base_url/api_key）
 
 # ===== 内容（CNT）=====
 CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
@@ -155,6 +156,11 @@ def register_all() -> None:
     register(
         CFG_MEDIA_TTS_INCOMPLETE,
         "media tts provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_MEDIA_ASR_INCOMPLETE,
+        "media asr provider incomplete, missing: {missing}",
         is_affect_stability=False,
     )
 

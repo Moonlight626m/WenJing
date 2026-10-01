@@ -16,6 +16,7 @@ import type {
   ScriptPublishRequest,
   ScriptSummary,
   SessionListResponse,
+  TranscribeResponse,
   UsageAggregateResponse,
 } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
@@ -326,4 +327,27 @@ export function login(input: Omit<LoginRequest, "schema_version">): Promise<Auth
 
 export function logout(): Promise<void> {
   return request("/api/auth/logout", { method: "POST" });
+}
+
+// ===== 语音输入（#64）=====
+
+/**
+ * 上传一段录音换取文本。
+ *
+ * **只上传、不落库**：服务端在请求内用完即弃，不回传音频也不写事件流。拿到
+ * `text` 后由调用方当普通 `free_input` 命令提交——命令端点仍是唯一游戏输入入口。
+ */
+export function transcribeSpeech(
+  sessionId: string,
+  audio: Blob,
+  durationMs: number
+): Promise<TranscribeResponse> {
+  const form = new FormData();
+  // 文件名按容器给：有些 provider 按扩展名判格式（后端也会兜一层白名单）
+  form.append("audio", audio, "speech.webm");
+  form.append("duration_ms", String(Math.max(0, Math.round(durationMs))));
+  return request(`/api/sessions/${sessionId}/transcribe`, {
+    method: "POST",
+    body: form,
+  });
 }

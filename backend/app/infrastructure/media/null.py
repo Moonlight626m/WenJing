@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from app.domain.game.asr import Transcript
 from app.domain.game.media import (
     AssetKind,
     AssetRecord,
@@ -110,7 +111,25 @@ class NullTts:
         return None
 
 
+class NullAsr:
+    """不转写的 `AsrPort`：返回空文本。
+
+    与 `NullTts` 不同，它**不静默成功**——`AsrTranscriber` 收到空文本会判
+    `MEDIA_ASR_INVALID`。语音是**输入**通道：没识别出东西还假装成功，等于把学生
+    的话吞掉，前端也没机会提示改用键盘（#64 验收三）。
+    """
+
+    async def transcribe(
+        self, *, audio: bytes, content_type: str, language: str = ""
+    ) -> Transcript:
+        return Transcript(provider="null")
+
+    async def aclose(self) -> None:
+        return None
+
+
 __all__ = [
+    "NullAsr",
     "NullAssetRepository",
     "NullTts",
     "NullImageGen",

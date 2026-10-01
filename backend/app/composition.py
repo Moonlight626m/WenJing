@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from app.domain.game.asr import AsrTranscriber
 from app.domain.game.image_review import ImageReviewAgent
 from app.domain.game.media import MediaKind, SceneDesigner
 from app.domain.game.tts import VoiceMap
@@ -28,6 +29,7 @@ from app.infrastructure.media import (
     MediaUsageRecorder,
     SqlAssetJobStore,
     SqlAssetRepository,
+    build_asr,
     build_image_gen,
     build_image_search,
     build_object_storage,
@@ -63,6 +65,8 @@ class Container:
         self._image_search: Any | None = None
         self._image_gen: Any | None = None
         self._tts: Any | None = None
+        self._asr: Any | None = None
+        self._asr_transcriber: AsrTranscriber | None = None
         self._tts_factory: Callable[..., Any] | None = None
         self._voice_map: VoiceMap | None = None
         self._asset_access: AssetAccessService | None = None
@@ -131,11 +135,13 @@ class Container:
         await self._aclose_port("_image_search")
         await self._aclose_port("_image_gen")
         await self._aclose_port("_tts")
+        await self._aclose_port("_asr")
         # 编排器持有上面两个端口（可能已被关闭），一并丢弃以便按新端口重建。
         self._scene_designer = None
         # 工厂闭包 / 编排器持有配额实例（进程内计数 + 已种子集合），随端口一起重建，
         # 否则新一轮 lifespan 会拿着上一轮的内存计数继续扣。
         self._tts_factory = None
+        self._asr_transcriber = None
 
     async def _aclose_port(self, attr: str) -> None:
         port = getattr(self, attr, None)
@@ -281,6 +287,34 @@ class Container:
         if self._tts is None:
             self._tts = build_tts(self.settings)
         return self._tts
+
+    @property
+    def asr(self) -> Any:
+        """语音识别端口（ADR-0005 §11 / #64）；provider=null 时为安全空实现。"""
+        if self._asr is None:
+            self._asr = build_asr(self.settings)
+        return self._asr
+
+    @property
+    def asr_transcriber(self) -> AsrTranscriber:
+        """识别编排（#64）。
+
+        与 `scene_designer` 一样**整体缓存**：它持有 `MediaQuotaService`，而配额的
+        语义是"种子后按进程内计数推进"——每次访问都重建等于计数逐请求清零，
+        配了 `media_org_asr_budget` 时闸门形同不限（#63 审查抓到的同类问题）。
+        """
+        if self._asr_transcriber is None:
+            self._asr_transcriber = AsrTranscriber(
+                port=self.asr,
+                meter=MediaUsageRecorder(session_factory=self.session_factory),
+                quota=MediaQuotaService(
+                    session_factory=self.session_factory,
+                    limits={MediaKind.ASR: self.settings.media_org_asr_budget},
+                ),
+                max_audio_bytes=self.settings.media_asr_max_bytes,
+                max_seconds=self.settings.media_asr_max_seconds,
+            )
+        return self._asr_transcriber
 
     @property
     def voice_map(self) -> VoiceMap:

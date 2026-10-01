@@ -115,6 +115,23 @@ class Settings(BaseSettings):
     media_tts_max_sentence_chars: int = 200
     media_tts_response_format: str = "mp3"
 
+    # 语音识别 provider（M6 #64）：openai = OpenAI 兼容 /audio/transcriptions；
+    # null = 不转写（返回空文本，上层判"没听清"并提示回退键盘）。
+    media_asr_provider: Literal["null", "openai"] = "null"
+    media_asr_base_url: str = "https://api.openai.com/v1"
+    media_asr_api_key: str = ""
+    media_asr_model: str = "whisper-1"
+    #: 识别语言提示（如 "zh"）。留空交给 provider 自动判定。
+    media_asr_language: str = ""
+    media_asr_connect_timeout: float = 5.0
+    # 识别要等整段音频传完再出结果，读超时给足。
+    media_asr_read_timeout: float = 120.0
+    #: 单次录音字节上限（与前端 MediaRecorder 的时长上限配套）。
+    media_asr_max_bytes: int = 5 * 1024 * 1024
+    #: 单次录音时长上限（秒）：识别按秒计费，也给客户端谎报时长设上界。
+    media_asr_max_seconds: int = 120
+    media_asr_response_format: str = "json"
+
     # org 级媒体配额预算（付费调用前 check+consume，ADR-0005 §12）；0=不限额。
     media_org_image_budget: int = 0
     media_org_tts_budget: int = 0

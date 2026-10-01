@@ -488,6 +488,14 @@ class SessionApplication:
 
     # ===== 状态查询 =====
 
+    async def access_context(self, session_id: uuid.UUID, *, actor: Actor) -> SessionRecord:
+        """公开的访问校验：不存在 404、非 owner 403，返回会话行。
+
+        #64 的语音识别要用它拿 org/user/script 归属上下文——识别要计量、要配额，
+        这些都得挂在会话的归属上。比 `get_status` 轻：不重建运行时、不读剧本包。
+        """
+        return await self._access_session(session_id, actor)
+
     async def get_status(
         self, session_id: uuid.UUID, *, actor: Actor
     ) -> SessionStatusResponse:

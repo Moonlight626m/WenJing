@@ -10,7 +10,16 @@ import logging
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from pydantic import ValidationError
 
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
@@ -20,8 +29,10 @@ from app.contracts.dto import (
     SessionListResponse,
     SessionStatusResponse,
 )
+from app.contracts.media import TranscribeResponse
 from app.controllers.auth_deps import Principal, get_principal, require_csrf, resolve_principal
 from app.controllers.errors import error_response as _error_response
+from app.domain.game.asr import TranscriptionRequest
 from app.domain.game.streaming import StreamTee
 from app.infrastructure.config import get_settings
 from app.infrastructure.db.session import SessionLocal
@@ -174,6 +185,53 @@ async def submit_command(
     except WJError as exc:
         return _error_response(exc)
     return update.model_dump(mode="json")
+
+
+@router.post(
+    "/api/sessions/{session_id}/transcribe",
+    response_model=TranscribeResponse,
+)
+async def transcribe_speech(
+    session_id: str,
+    principal: Annotated[Principal, Depends(require_csrf)],
+    audio: Annotated[UploadFile, File()],
+    duration_ms: Annotated[int, Form()] = 0,
+) -> TranscribeResponse:
+    """学生语音 → 文本（#64）。
+
+    识别结果**只回文本**，由前端当普通 `free_input` 提交：命令端点仍是唯一入口
+    （见 `app/contracts/commands.py` 的模块 docstring），语音不开旁路。
+
+    隐私：录音字节在请求内用完即弃——不落对象存储、不进事件流，日志里只有字节数。
+    走 `require_csrf`：这个端点会花 org 的钱。
+    """
+    container = get_container()
+    try:
+        session = await get_application().access_context(
+            _ensure_uuid(session_id), actor=principal.actor
+        )
+        # 先按上限拦一道再读全量：`UploadFile` 是流，读进内存之前就该知道有没有超标。
+        max_bytes = container.settings.media_asr_max_bytes
+        data = await audio.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            raise new(
+                codes.MEDIA_ASR_INVALID, extra={"size": len(data), "limit": max_bytes}
+            )
+        transcript = await container.asr_transcriber.transcribe(
+            TranscriptionRequest(
+                audio_bytes=data,
+                content_type=audio.content_type or "",
+                client_duration_ms=max(0, duration_ms),
+                language=container.settings.media_asr_language,
+                org_id=session.org_id,
+                user_id=session.owner_user_id,
+                script_id=session.script_id,
+                session_id=session.id,
+            )
+        )
+    except WJError as exc:
+        return _error_response(exc)
+    return TranscribeResponse(text=transcript.text, duration_ms=transcript.duration_ms)
 
 
 def _origin_allowed(ws: WebSocket) -> bool:

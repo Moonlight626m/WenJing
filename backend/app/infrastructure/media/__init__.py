@@ -10,6 +10,8 @@ M0（#39）只放空实现与配置，不接业务：
 
 from __future__ import annotations
 
+from app.infrastructure.media.asr import build_asr
+from app.infrastructure.media.asr_openai import OpenAITranscriber
 from app.infrastructure.media.asset_jobs import SqlAssetJobStore
 from app.infrastructure.media.asset_repo import SqlAssetRepository
 from app.infrastructure.media.image_gen import build_image_gen
@@ -20,6 +22,7 @@ from app.infrastructure.media.image_search_openverse import OpenverseImageSearch
 from app.infrastructure.media.image_search_wikimedia import WikimediaImageSearch
 from app.infrastructure.media.meter import MediaUsageRecorder
 from app.infrastructure.media.null import (
+    NullAsr,
     NullAssetRepository,
     NullImageGen,
     NullImageSearch,
@@ -37,6 +40,7 @@ __all__ = [
     "ImageProcessor",
     "MediaQuotaService",
     "MediaUsageRecorder",
+    "NullAsr",
     "NullAssetRepository",
     "NullImageGen",
     "NullImageSearch",
@@ -45,12 +49,14 @@ __all__ = [
     "NullObjectStorage",
     "NullTts",
     "OpenAIImageGen",
+    "OpenAITranscriber",
     "OpenAITts",
     "OpenverseImageSearch",
     "S3ObjectStorage",
     "SqlAssetJobStore",
     "SqlAssetRepository",
     "WikimediaImageSearch",
+    "build_asr",
     "build_image_gen",
     "build_image_search",
     "build_object_storage",

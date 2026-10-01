@@ -425,6 +425,20 @@ export interface AssetUrlResponse {
   expires_at: string;
 }
 
+/**
+ * 语音识别结果（#64 / ADR-0005 §11）。
+ *
+ * 拿到 `text` 后当作普通 `free_input` 命令提交——服务端**不**代劳：
+ * `POST /api/sessions/{id}/commands` 是唯一的游戏输入入口，语音不开旁路。
+ */
+export interface TranscribeResponse {
+  schema_version: string;
+  /** 识别出的文本（学生说的话）。 */
+  text: string;
+  /** 音频时长（毫秒）；0=未知。 */
+  duration_ms: number;
+}
+
 export interface CharacterProfile {
   name: string;
   public_background: string;

@@ -1,0 +1,29 @@
+{
+  "additionalProperties": false,
+  "description": "语音识别结果（#64）。\n\n前端拿到 `text` 后当作普通 `free_input` 命令提交——**不**由服务端代劳：\n`POST /api/sessions/{id}/commands` 是契约里明写的唯一游戏输入入口，\n给语音开旁路会绕开幂等、乐观锁与事件同事务持久化。",
+  "properties": {
+    "schema_version": {
+      "default": "2.7.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "text": {
+      "description": "识别出的文本（学生说的话）",
+      "minLength": 1,
+      "title": "Text",
+      "type": "string"
+    },
+    "duration_ms": {
+      "default": 0,
+      "description": "音频时长（毫秒）；0=未知",
+      "minimum": 0,
+      "title": "Duration Ms",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "text"
+  ],
+  "title": "TranscribeResponse",
+  "type": "object"
+}
