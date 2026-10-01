@@ -75,6 +75,38 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
     setVisible([...visibleRef.current]);
   }
 
+  /**
+   * 一条新行的准入：同 speaker 顶替旧行（并作废它的计时器）→ 未满就地入列 →
+   * 满了排队。消息与在途流两个来源共用它，免得两处各写一遍渐行渐远。
+   * 返回是否改动了可见行。
+   */
+  function admit(line: SubtitleLine): boolean {
+    const current = visibleRef.current;
+    if (line.speaker) {
+      // 排队中的同 speaker 旧句直接由新句取代，避免补位显示过时台词
+      queueRef.current = queueRef.current.filter(
+        (l) => l.speaker !== line.speaker
+      );
+    }
+    const sameIndex = line.speaker
+      ? current.findIndex((l) => l.speaker === line.speaker)
+      : -1;
+    if (sameIndex >= 0) {
+      clearTimer(timersRef.current, current[sameIndex].key);
+      releasedRef.current.add(current[sameIndex].key);
+      visibleRef.current = current.map((l, i) =>
+        i === sameIndex ? line : l
+      );
+      return true;
+    }
+    if (current.length < MAX_VISIBLE_SUBTITLES) {
+      visibleRef.current = [...current, line];
+      return true;
+    }
+    queueRef.current.push(line);
+    return false;
+  }
+
   // 1) 新消息入队：同 speaker 替换、未满入列、满则排队。
   useEffect(() => {
     const incoming = messages.filter(
@@ -87,29 +119,7 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
     let changed = false;
     for (const message of incoming) {
       seenRef.current.add(message.key);
-      const line = toLine(message);
-      const current = visibleRef.current;
-      const sameIndex = line.speaker
-        ? current.findIndex((l) => l.speaker === line.speaker)
-        : -1;
-      if (line.speaker) {
-        // 排队中的同 speaker 旧句直接由新句取代，避免补位显示过时台词。
-        queueRef.current = queueRef.current.filter(
-          (l) => l.speaker !== line.speaker
-        );
-      }
-      if (sameIndex >= 0) {
-        clearTimer(timersRef.current, current[sameIndex].key);
-        visibleRef.current = current.map((l, i) =>
-          i === sameIndex ? line : l
-        );
-        changed = true;
-      } else if (current.length < MAX_VISIBLE_SUBTITLES) {
-        visibleRef.current = [...current, line];
-        changed = true;
-      } else {
-        queueRef.current.push(line);
-      }
+      if (admit(toLine(message))) changed = true;
     }
     if (changed) commit();
   }, [messages]);
@@ -157,29 +167,18 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
         continue;
       }
 
-      const line: SubtitleLine = {
-        key,
-        kind: "character_speech",
-        speaker: stream.speaker,
-        text: stream.text,
-        fading: false,
-        live,
-      };
       // 同角色的旧行（上一句台词，或上一轮流）让位，避免同屏两份同一角色
-      queueRef.current = queueRef.current.filter(
-        (l) => l.speaker !== line.speaker
-      );
-      const same = current.findIndex((l) => l.speaker === line.speaker);
-      if (same >= 0) {
-        clearTimer(timersRef.current, current[same].key);
-        releasedRef.current.add(current[same].key);
-        visibleRef.current = current.map((l, i) => (i === same ? line : l));
+      if (
+        admit({
+          key,
+          kind: "character_speech",
+          speaker: stream.speaker,
+          text: stream.text,
+          fading: false,
+          live,
+        })
+      ) {
         changed = true;
-      } else if (current.length < MAX_VISIBLE_SUBTITLES) {
-        visibleRef.current = [...current, line];
-        changed = true;
-      } else {
-        queueRef.current.push(line);
       }
     }
     if (changed) setVisible([...visibleRef.current]);

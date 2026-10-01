@@ -119,24 +119,22 @@ async def test_concurrent_streams_do_not_share_sentence_state():
     assert sentences.said == [("母亲", "路上小心。"), ("我", "我走了。")]
 
 
-async def test_push_fans_out_and_keeps_the_bounded_buffer():
+async def test_push_fans_out_to_both_outlets():
+    """`push` 是唯一的扇出点：文本出口不丢字，分句出口按句收。"""
     text = _TextSink()
     sentences = _SentenceSink()
-    tee = StreamTee(text_sink=text, sentence_sink=sentences, max_buffer=2)
+    tee = StreamTee(text_sink=text, sentence_sink=sentences)
 
     for index in range(4):
         tee.push(TextDelta(stream_id="s", speaker="甲", text=f"{index}。"))
 
-    assert [d.text for d in tee.drain()] == ["2。", "3。"], "缓冲 drop-oldest"
-    assert [t for _, t in text.deltas] == ["0。", "1。", "2。", "3。"], "文本出口不丢字"
+    assert [t for _, t in text.deltas] == ["0。", "1。", "2。", "3。"]
     assert sentences.said == [("甲", "0。"), ("甲", "1。"), ("甲", "2。"), ("甲", "3。")]
 
 
 async def test_tee_without_outlets_is_a_no_op():
-    """两个出口都可缺省：没接消费方时 tee 不该炸，只留缓冲。"""
+    """两个出口都可缺省：没接消费方时 tee 不该炸（它在 #63 接 TTS 之前就是这个状态）。"""
     tee = StreamTee()
     stream_id = tee.start("母亲")
     tee.delta(stream_id, "路上小心。")
     tee.end(stream_id)
-
-    assert [d.text for d in tee.drain()] == ["路上小心。"]

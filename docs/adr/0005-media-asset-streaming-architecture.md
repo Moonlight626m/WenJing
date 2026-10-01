@@ -142,6 +142,17 @@
 - **TTFT 顺序**：reaction 的流式在 cycle 中位于 propose/verify 之前（`_on_input` 先
   `_collect_reactions`），需在实现时确认可见 token 不被内部 silent 阶段阻塞。
 
+> 实现注记（2026-10-01，#59/#60/#62 落地时澄清，不改变上述决策）：
+> - 「忽略 `tool_call_chunks`」指的是**不把它当可见文本下发**，不是不产出。LangGraph
+>   的工具节点靠 `AIMessageChunk.tool_call_chunks` 组装 tool_calls，丢掉它工具轮永远
+>   不触发（ADR-0004）。同一条增量里的 `content` 与工具分片分属两条通道，各自照发。
+> - `disconnect 即 cancel` 取消的是**该连接的瞬态流**（`StreamChannel` 发送失败即停）。
+>   命令与它的 LLM 往返照常跑完并落库：半途取消会留下一次没有 `character_speech`
+>   的命令，重连的玩家再也看不到那句台词——与「事件只存最终完整文本」相冲突。
+> - 有限缓冲 + drop-oldest 落在**连接级**出口（`StreamChannel`），淘汰只针对字幕增量；
+>   `stream_start` / `stream_end` 是协议骨架，挤掉 `stream_end` 会让前端留一条永不
+>   收束的字幕。
+
 ### 11. 音频：并发音轨、后端中转、不混音、客户端打断
 
 - 音频可并发；**后端不混音**，按 speaker 各推一条流。

@@ -27,6 +27,7 @@ from typing import Any
 logger = logging.getLogger("wenjing.session.stream")
 
 #: 单连接待发的瞬态消息上限。一条发言几十段，32 足够吸收一次网络抖动。
+#: 溢出时丢的是最旧的**增量**；`stream_start` / `stream_end` 不参与淘汰。
 DEFAULT_BUFFER_SIZE = 32
 #: 收流时的冲刷上限：慢客户端不能把 WS 处理循环拖住（超时就放弃未发完的字幕）。
 FLUSH_TIMEOUT_SECONDS = 1.0
@@ -113,7 +114,18 @@ class StreamChannel:
         if self._closing or self._closed:
             return
         if len(self._pending) >= self._buffer_size:
-            self._pending.popleft()
+            # drop-oldest 只针对**字幕增量**：start/end 是协议骨架，把它挤掉等于丢
+            # 状态而不是丢字——前端会留一条永远"还在长"的字幕。没有增量可丢时
+            # （缓冲里全是控制帧）才退让，丢最旧的那条。
+            victim = next(
+                (
+                    index
+                    for index, message in enumerate(self._pending)
+                    if message["type"] == "stream_delta"
+                ),
+                0,
+            )
+            del self._pending[victim]
             self._dropped += 1
             if self._dropped == 1:
                 # 只报第一次：一个卡住的客户端能刷出成千上万条，日志不该跟着淹

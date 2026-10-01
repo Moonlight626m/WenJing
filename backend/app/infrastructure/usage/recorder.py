@@ -15,7 +15,6 @@ token 计数说明：底层 provider 未统一回传 usage 时，用 `estimate_t
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
@@ -242,12 +241,7 @@ class UsageRecordingLLM:
             yield StreamChunk(
                 content=reply.content,
                 tool_calls=tuple(
-                    ToolCallDelta(
-                        index=index,
-                        id=call.id,
-                        name=call.name,
-                        arguments=json.dumps(call.arguments, ensure_ascii=False),
-                    )
+                    ToolCallDelta.from_tool_call(call, index)
                     for index, call in enumerate(reply.tool_calls)
                 ),
                 usage=reply.usage,

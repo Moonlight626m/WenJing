@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeAlias, runtime_checkable
@@ -76,6 +77,16 @@ class ToolCallDelta:
     id: str = ""
     name: str = ""
     arguments: str = ""
+
+    @classmethod
+    def from_tool_call(cls, call: ToolCall, index: int) -> ToolCallDelta:
+        """把一条完整的 `ToolCall` 折成单片分片（非流式降级路径用）。"""
+        return cls(
+            index=index,
+            id=call.id,
+            name=call.name,
+            arguments=json.dumps(call.arguments, ensure_ascii=False),
+        )
 
 
 @dataclass(frozen=True)

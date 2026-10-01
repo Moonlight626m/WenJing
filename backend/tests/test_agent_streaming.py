@@ -197,3 +197,74 @@ async def test_react_to_without_sink_keeps_non_streaming_behaviour():
 
     assert text == llm.final
     assert llm.tool_results, "非流式路径仍应经过工具调用"
+
+
+class _SameChunkToolLLM(_StreamingToolLLM):
+    """把引导语与 tool_call 塞进**同一个 chunk** 的 provider（OpenAI 兼容实现常见）。"""
+
+    async def astream_with_tools(  # noqa: ANN201
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[StreamChunk]:
+        self.rounds.append(messages)
+        if not any(m.get("role") == "tool" for m in messages):
+            self.tool_rounds += 1
+            yield StreamChunk(
+                content=PREAMBLE,
+                tool_calls=(
+                    ToolCallDelta(
+                        index=0, id="c1", name="view_world_progress", arguments="{}"
+                    ),
+                ),
+            )
+            return
+        yield StreamChunk(content=FINAL)
+
+
+async def test_content_is_streamed_even_when_the_chunk_also_carries_tool_calls():
+    """工具分片与可见文本是两条通道：同一段里都有时，文本不能跟着被吞掉。"""
+    llm = _SameChunkToolLLM()
+    agent = CharacterAgent(
+        CharacterSetting(name="杜甫", public_background="诗人"), llm, _FakeWorld()
+    )
+
+    deltas: list[str] = []
+    text = await agent.react_to(
+        PlayerAction(type="text", text="我们去喝酒"),
+        "stage2",
+        on_delta=deltas.append,
+    )
+
+    assert deltas == [PREAMBLE, FINAL], "同段的引导语必须照常流出"
+    assert text == FINAL, "落库的仍是最终答复，不含临时引导语"
+
+
+class _IdlessExecutor:
+    """增量不带 id 的执行器（LangChain 之外的驱动方可能如此）。"""
+
+    def __init__(self, parts: list[str]) -> None:
+        self.parts = parts
+
+    async def astream(self, _input, *, stream_mode):  # noqa: ANN001, ANN202
+        for part in self.parts:
+            yield AIMessageChunk(content=part), {"langgraph_node": "model"}
+
+
+async def test_idless_chunks_merge_into_one_message():
+    """没有 id 的增量属于同一条消息：各自成键会让最终答复只剩最后半截。"""
+    agent = CharacterAgent(
+        CharacterSetting(name="杜甫", public_background="诗人"),
+        _StreamingToolLLM(),
+        _FakeWorld(),
+    )
+    agent._executor = _IdlessExecutor(["我提议", "按进度", "推进。"])
+
+    text = await agent.react_to(
+        PlayerAction(type="text", text="我们去喝酒"), "stage2", on_delta=lambda _: None
+    )
+
+    assert text == FINAL

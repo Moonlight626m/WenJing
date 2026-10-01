@@ -341,6 +341,9 @@ export const useGameStore = create<GameStore>((set, get) => {
             ? payload.allowed_commands
             : []) as CommandKind[],
           // 场景背景（#53）：权威快照携带，重连即恢复当前背景与场景标题
+          // 重连的权威快照：在途流属于**上一条连接**，一并丢弃（字幕的收束
+          // 由随后的 character_speech 事件负责，不靠流缓冲）
+          streams: [],
           sceneKey:
             typeof payload.scene_key === "string" ? payload.scene_key : null,
           sceneTitle:

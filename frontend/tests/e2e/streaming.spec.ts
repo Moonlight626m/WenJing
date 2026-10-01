@@ -14,6 +14,7 @@ import type { WireMessage } from "../../src/stores/gameStore";
 import {
   applyStreamMessage,
   settleStreams,
+  useGameStore,
   type LiveStream,
 } from "../../src/stores/gameStore";
 
@@ -107,5 +108,50 @@ test.describe("#61 流式字幕", () => {
     ]);
     expect(streams[0].speaker).toBe("角色");
     expect(streams[0].text).toBe("嗯");
+  });
+});
+
+test.describe("#61 store 分发与收束", () => {
+  test("stream_* 落进 streams，持久发言一到即结算（终态规则）", () => {
+    const store = useGameStore;
+    store.setState({ streams: [], messages: [] });
+
+    store.getState().handleServerMessage({
+      type: "stream_start",
+      session_id: "s",
+      payload: { stream_id: "a", speaker: "母亲" },
+    });
+    store.getState().handleServerMessage({
+      type: "stream_delta",
+      session_id: "s",
+      payload: { stream_id: "a", text: "路上" },
+    });
+    expect(store.getState().streams[0].text).toBe("路上");
+    expect(store.getState().messages).toEqual([]); // 瞬态消息不进消息流
+
+    store.getState().handleServerMessage({
+      type: "character_speech",
+      seq: 7,
+      session_id: "s",
+      payload: { speaker: "母亲", text: "路上小心。" },
+    });
+    expect(store.getState().streams).toEqual([]);
+    expect(store.getState().messages).toHaveLength(1);
+  });
+
+  test("重连的权威快照丢弃在途流（上一条连接的字幕不作数）", () => {
+    const store = useGameStore;
+    store.setState({
+      streams: [{ streamId: "a", speaker: "母亲", text: "路上", ended: false }],
+    });
+
+    store.getState().handleServerMessage({
+      type: "session_init",
+      seq: 0,
+      session_id: "s",
+      payload: { stage: "stage2_reenacting" },
+    });
+
+    expect(store.getState().streams).toEqual([]);
   });
 });

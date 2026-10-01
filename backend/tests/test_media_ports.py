@@ -24,7 +24,6 @@ from app.domain.game.media import (
     SceneDesigner,
     build_dedup_key,
 )
-from app.domain.game.streaming import StreamTee, TextDelta
 from app.infrastructure.media import (
     NullAssetRepository,
     NullImageGen,
@@ -191,10 +190,3 @@ def test_scene_designer_holds_ports():
     # 去重键的 provider_version 默认跟随生图实现，换 provider 即失效缓存
     assert designer.provider_version == "NullImageGen"
 
-
-def test_stream_tee_drops_oldest_over_capacity():
-    tee = StreamTee(max_buffer=2)
-    for i in range(4):
-        tee.push(TextDelta(stream_id="s", speaker="甲", text=str(i)))
-    assert [d.text for d in tee.drain()] == ["2", "3"]
-    assert tee.drain() == []

@@ -1,7 +1,9 @@
 """流式 tee 编排（ADR-0005 §10，issue #39 M0 → #62 填充）。
 
 职责：`LLM 文本流 → {WS 文本消费者, 分句器 → TTS → 音频出口}`，
-多角色并发生成、增量带 `speaker`、有限缓冲 + drop-oldest、客户端 barge-in 停播。
+多角色并发生成、增量带 `speaker`、客户端 barge-in 停播。
+有限缓冲 + drop-oldest 落在**连接级**出口 `StreamChannel` 上（每条连接各自有界），
+不在本层重复一层：tee 只管分流，不管攒。
 
 #62 把 M0 的骨架接成了真的分流点：`StreamTee` 实现 `SpeechStreamSink`，运行时照旧
 只认一个出口；逐段文字转给 WS 文本出口，**攒够一句**才交给 `SentenceSink`（TTS 出口，
@@ -50,18 +52,13 @@ class StreamTee:
     """文本流 tee：一个入口（`SpeechStreamSink`），两个出口。
 
     - `text_sink`：WS 文本消费者，逐字转发（`StreamChannel` 是它的生产实现）；
-    - `sentence_sink`：分句器的下游，攒够一句才吐（TTS 出口，M6 接）；
-    - `max_buffer`：有限缓冲上限，溢出 drop-oldest（§10 背压）——`drain()` 是它的
-      拉取面，给进程内的消费者/测试用；WS 那条路自己还有一层连接级缓冲
-      （`StreamChannel`），两者对应不同消费者，不合并。
+    - `sentence_sink`：分句器的下游，攒够一句才吐（TTS 出口，M6 #63 接）。
 
     `start` / `delta` / `end` 是 `SpeechStreamSink` 的形状，运行时不必知道 tee 的存在。
     """
 
-    max_buffer: int = 64
     text_sink: SpeechStreamSink | None = None
     sentence_sink: SentenceSink | None = None
-    _buffer: list[TextDelta] = field(default_factory=list)
     _speakers: dict[str, str] = field(default_factory=dict)
     _pending: dict[str, str] = field(default_factory=dict)
 
@@ -100,24 +97,13 @@ class StreamTee:
     # ===== 扇出 =====
 
     def push(self, delta: TextDelta) -> None:
-        """唯一的扇出点：有界缓冲 → WS 文本出口 → 分句器。"""
+        """唯一的扇出点：WS 文本出口 → 分句器。"""
 
-        self._buffer.append(delta)
-        if len(self._buffer) > self.max_buffer:
-            del self._buffer[: len(self._buffer) - self.max_buffer]
         self._speakers.setdefault(delta.stream_id, delta.speaker)
-
         if self.text_sink is not None:
             self.text_sink.delta(delta.stream_id, delta.text)
         if self.sentence_sink is not None:
             self._feed_sentences(delta)
-
-    def drain(self) -> list[TextDelta]:
-        """取走并清空缓冲。"""
-
-        out = self._buffer
-        self._buffer = []
-        return out
 
     def _feed_sentences(self, delta: TextDelta) -> None:
         """按句末标点切分，最后一段留在 `pending` 里等下一段（或收流时冲尾）。"""

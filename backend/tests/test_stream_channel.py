@@ -50,8 +50,8 @@ async def test_empty_delta_is_not_sent():
     assert [m["type"] for m in sent] == ["stream_start", "stream_end"]
 
 
-async def test_buffer_overflow_drops_oldest_keeping_newest():
-    """慢客户端：缓冲满了丢**最旧**的，保住最新字幕（TTFT 的意义就在这里）。"""
+async def test_buffer_overflow_drops_oldest_delta_keeping_the_stream_start():
+    """慢客户端：缓冲满了丢**最旧的字幕增量**，保住最新字幕与那条流的骨架。"""
     sent: list[dict] = []
     gate = asyncio.Event()
 
@@ -68,7 +68,29 @@ async def test_buffer_overflow_drops_oldest_keeping_newest():
     await channel.aclose()
 
     assert len(sent) == 3, "缓冲区只留得下 3 条"
-    assert [m["payload"].get("text", "") for m in sent] == ["第7段", "第8段", "第9段"]
+    assert sent[0]["type"] == "stream_start", "流的骨架不参与淘汰"
+    assert [m["payload"].get("text", "") for m in sent[1:]] == ["第8段", "第9段"]
+
+
+async def test_stream_end_survives_overflow():
+    """`stream_end` 被挤掉，前端就会留着一条永远"还在长"的字幕——它不能被 drop。"""
+    sent: list[dict] = []
+    gate = asyncio.Event()
+
+    async def _slow_send(message: dict) -> None:
+        await gate.wait()
+        sent.append(message)
+
+    channel = StreamChannel("s1", _slow_send, buffer_size=2)
+    stream_id = channel.start("杜甫")
+    channel.delta(stream_id, "第一段")
+    channel.delta(stream_id, "第二段")
+    channel.end(stream_id)
+
+    gate.set()
+    await channel.aclose()
+
+    assert [m["type"] for m in sent] == ["stream_start", "stream_end"]
 
 
 async def test_closed_channel_stops_sending_after_connection_loss():

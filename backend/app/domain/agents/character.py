@@ -186,22 +186,26 @@ class CharacterAgent:
         用 `stream_mode="messages"` 拿每个节点产出的消息增量，只认模型节点给出的
         `AIMessageChunk`（工具节点产出的是 `ToolMessage`，跳过）：
         - 文本增量即时回调，不在本地缓冲——缓冲会把 TTFT 吃掉；
-        - 带 `tool_call_chunks` 的段不产可见文本：工具调用是机制不是台词；
+        - `tool_call_chunks` 只走工具通道，不作为文本下发；但**同一段里的 content
+          照常发出**——有的 provider 把引导语与 tool_call 塞进同一个 chunk，按段
+          整体丢弃会把玩家该看到的话直接吞掉；
         - 按消息 id 归并增量，流末仍用 `_final_text` 取「最后一条无工具调用的 AI
           文本」作为返回值，故工具轮的引导语不会混进持久发言。
         """
         message = self._build_user_message(stage, instruction=instruction, extra=extra)
         merged: dict[str, AIMessageChunk] = {}
+        last_key = ""
         try:
             async for chunk, _meta in self._executor.astream(
                 {"messages": [HumanMessage(content=message)]}, stream_mode="messages"
             ):
                 if not isinstance(chunk, AIMessageChunk):
                     continue
-                key = chunk.id or f"anon-{len(merged)}"
+                # provider 不给 id 时沿用上一条的键：这些增量属于同一条消息，
+                # 各自成键会让流末的归并拿到一堆半截消息
+                key = chunk.id or last_key or "anon"
+                last_key = key
                 merged[key] = merged[key] + chunk if key in merged else chunk
-                if chunk.tool_call_chunks:
-                    continue
                 text = _message_text(chunk)
                 if text:
                     on_delta(text)
