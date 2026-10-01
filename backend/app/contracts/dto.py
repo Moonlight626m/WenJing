@@ -113,6 +113,7 @@ class ServerMessage(VersionedContract):
 
     - `seq` 在会话内单调递增，客户端以 last_confirmed_seq 恢复。
     - `payload` 按 type 判别（见 ClientMessage 侧注释）。
+    - 瞬态流式消息**不在本模型**：它们没有 seq、不进 outbox，见 `StreamMessage`。
     """
 
     type: str = Field(
@@ -123,6 +124,20 @@ class ServerMessage(VersionedContract):
     )
     session_id: uuid.UUID
     seq: int = Field(ge=0)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class StreamMessage(ContractModel):
+    """瞬态流式消息（ADR-0005 §10 / #60）：**有 type 无 seq**。
+
+    `stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →
+    `stream_end{stream_id}`。它描述的是"此刻屏幕上滚动的字幕"，不参与
+    `seq`/`confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的
+    `character_speech`——前端收到它即丢弃对应 `stream_id` 的流缓冲。
+    """
+
+    type: Literal["stream_start", "stream_delta", "stream_end"]
+    session_id: uuid.UUID
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -147,11 +162,27 @@ class ResyncRequestMessage(ContractModel):
     last_confirmed_seq: int = Field(ge=0)
 
 
+class CancelAudioMessage(ContractModel):
+    """客户端打断（barge-in，ADR-0005 §11）：停播并放掉这条音轨。
+
+    **不抢占 LLM**：命令仍串行、事件同事务持久化，服务端在生成中根本收不到新命令，
+    所以打断只可能作用于已经流到客户端的那条音轨。音频出口是 M6（#63）：今天没有
+    音轨可取消，服务端只需接受这条消息而不是把它当畸形帧。
+    """
+
+    type: Literal["cancel_audio"] = "cancel_audio"
+    track_id: str = Field(min_length=1)
+
+
 ClientMessage = Annotated[
-    SubmitCommandMessage | ConfirmMessagesMessage | ResyncRequestMessage,
+    SubmitCommandMessage
+    | ConfirmMessagesMessage
+    | ResyncRequestMessage
+    | CancelAudioMessage,
     Field(discriminator="type"),
 ]
 
 client_message_adapter: TypeAdapter[SubmitCommandMessage
                                    | ConfirmMessagesMessage
-                                   | ResyncRequestMessage] = TypeAdapter(ClientMessage)
+                                   | ResyncRequestMessage
+                                   | CancelAudioMessage] = TypeAdapter(ClientMessage)

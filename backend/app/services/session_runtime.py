@@ -39,6 +39,7 @@ from app.domain.game.media import (
     SceneAssetRequest,
 )
 from app.domain.game.script_adapter import script_package_to_script
+from app.domain.game.streaming import SpeechStreamSink
 from app.domain.llm import LLMService
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
 from app.infrastructure.errx import Error as WJError
@@ -215,17 +216,36 @@ class SessionApplication:
         return update_result
 
     async def submit_command_messages(
-        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        *,
+        actor: Actor,
+        speech_sink: SpeechStreamSink | None = None,
     ) -> list[dict]:
-        """WS 用：一次提交同时返回投影更新与本次应发布的消息（复用同一 store）。"""
-        update_result, store = await self._submit(session_id, command, actor=actor)
+        """WS 用：一次提交同时返回投影更新与本次应发布的消息（复用同一 store）。
+
+        `speech_sink` 非空时，本次命令里的角色发言额外走**瞬态**流式出口（#60）：
+        它只影响"此刻屏幕上的字幕"，落库的仍是由本方法返回的那条
+        `character_speech`。
+        """
+        update_result, store = await self._submit(
+            session_id, command, actor=actor, speech_sink=speech_sink
+        )
         return messages_from_update(session_id, store, update_result)
 
     async def _submit(
-        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        *,
+        actor: Actor,
+        speech_sink: SpeechStreamSink | None = None,
     ) -> tuple[RuntimeUpdate, PersistentEventStore]:
         await self._access_session(session_id, actor)
-        runtime, store, version = await self._restore_runtime(session_id)
+        runtime, store, version = await self._restore_runtime(
+            session_id, speech_sink=speech_sink
+        )
 
         if await self._store.has_command(command.command_id):
             # 幂等闸：对账返回当前状态，不重复执行
@@ -534,7 +554,7 @@ class SessionApplication:
     # ===== 恢复（断线重连 / 进程重启 / 每命令）=====
 
     async def _restore_runtime(
-        self, session_id: uuid.UUID
+        self, session_id: uuid.UUID, *, speech_sink: SpeechStreamSink | None = None
     ) -> tuple[GameRuntime, PersistentEventStore, int]:
         """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。
 
@@ -553,6 +573,7 @@ class SessionApplication:
             loaded.package,
             store=loaded.store,
             usage_context=self._usage_context(session_id, loaded.session),
+            speech_sink=speech_sink,
         )
         snap = loaded.snapshot
         base: dict | None = None
@@ -595,6 +616,7 @@ class SessionApplication:
         *,
         store: PersistentEventStore | None = None,
         usage_context=None,
+        speech_sink: SpeechStreamSink | None = None,
     ) -> tuple[GameRuntime, PersistentEventStore]:
         store = store or PersistentEventStore()
         llm = self._agent_llm
@@ -606,6 +628,7 @@ class SessionApplication:
             llm=llm,
             config=self._config,
             event_store=store,
+            speech_sink=speech_sink,
         )
         return runtime, store
 

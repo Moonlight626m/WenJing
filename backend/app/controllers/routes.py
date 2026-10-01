@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from typing import Annotated, Any
 
@@ -20,14 +21,18 @@ from app.contracts.dto import (
 )
 from app.controllers.auth_deps import Principal, get_principal, require_csrf, resolve_principal
 from app.controllers.errors import error_response as _error_response
+from app.domain.game.streaming import StreamTee
 from app.infrastructure.config import get_settings
 from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.db.session import create_engine as create_db_engine
 from app.infrastructure.diagnostics.metrics import metrics
 from app.infrastructure.errx import Error as WJError
 from app.infrastructure.errx import codes, new
+from app.services.stream_channel import StreamChannel
 
 router = APIRouter()
+
+logger = logging.getLogger("wenjing.api.routes")
 
 
 def get_application():
@@ -232,16 +237,38 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
                     )
                 )
                 return
+            # 瞬态流式字幕出口（#60）：per-connection，只在本次命令内有效。
+            # 它发的 `stream_*` 不进 outbox——没有 seq 就没有缺口，重连补发靠的是
+            # 事件流里那条完整的 `character_speech`。
+            channel = StreamChannel(session_id, ws.send_json)
+            # tee（#62）：文字逐段给 WS，同时攒成整句喂 TTS 出口（M6 #63 接实现）。
+            # 运行时只认 `speech_sink` 一个出口，怎么分流是这里的事。
+            tee = StreamTee(text_sink=channel)
             try:
                 msgs = await application.submit_command_messages(
-                    sid, command, actor=actor
+                    sid, command, actor=actor, speech_sink=tee
                 )
             except WJError as exc:
+                # 先收流再报错：错误消息不能被还没冲刷完的字幕挤到后面
+                await channel.aclose()
                 await _send_error(exc)
                 return
+            await channel.aclose()
             for msg in msgs:
                 outbox.append(msg)
                 await ws.send_json(msg)
+        elif parsed.type == "cancel_audio":
+            # barge-in（ADR-0005 §11）：客户端停播 + 通知服务端放掉这条音轨。
+            # 音轨是 M6（#63）的产物，今天没有可取消的任务——这里尤其**不能**顺手去
+            # 打断命令：命令串行 + 事件同事务持久化是引擎的地基，服务端在生成中本就
+            # 收不到新命令，barge-in 只可能是客户端行为。
+            logger.info(
+                "audio_cancel",
+                extra={
+                    "session_id": session_id,
+                    "wj_extra": {"track_id": parsed.track_id},
+                },
+            )
         elif parsed.type == "confirm_messages":
             last = parsed.last_confirmed_seq
             outbox[:] = [m for m in outbox if m["seq"] > last]

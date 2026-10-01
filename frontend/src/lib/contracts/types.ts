@@ -695,6 +695,28 @@ export interface ServerMessage {
 }
 
 /**
+ * 瞬态流式消息（#60 / ADR-0005 §10）：**有 type 无 seq**。
+ *
+ * `stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →
+ * `stream_end{stream_id}`。它描述"此刻屏幕上滚动的字幕"，不进 outbox、不参与
+ * `confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的 `character_speech`
+ * ——收到它即丢弃对应 `stream_id` 的流缓冲（终态规则）。
+ */
+export interface StreamMessage {
+  type: "stream_start" | "stream_delta" | "stream_end";
+  session_id: string;
+  payload: StreamMessagePayload;
+}
+
+export interface StreamMessagePayload {
+  stream_id: string;
+  /** 仅 stream_start 携带：本条流属于哪个角色。 */
+  speaker?: string;
+  /** 仅 stream_delta 携带。 */
+  text?: string;
+}
+
+/**
  * 运行期配图就绪（#56）：命令外事件路径推送。
  * `scene_key` 与 `RuntimeState.scene_key` 同源；`current_asset` 与 narrative
  * 消息同形，前端复用同一套换背景逻辑。
@@ -729,7 +751,17 @@ export type ServerMessagePayloads =
 export type ClientMessage =
   | SubmitCommandMessage
   | ConfirmMessagesMessage
-  | ResyncRequestMessage;
+  | ResyncRequestMessage
+  | CancelAudioMessage;
+
+/**
+ * 客户端打断（barge-in，#62 / ADR-0005 §11）：停播并放掉这条音轨。
+ * **不抢占 LLM**——命令串行、事件同事务，服务端在生成中收不到新命令。
+ */
+export interface CancelAudioMessage {
+  type: "cancel_audio";
+  track_id: string;
+}
 
 export interface SubmitCommandMessage {
   type: "submit_command";

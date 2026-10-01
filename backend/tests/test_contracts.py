@@ -31,6 +31,7 @@ from app.contracts.auth import (
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
+    CancelAudioMessage,
     CreateSessionRequest,
     ResyncRequestMessage,
     ServerMessage,
@@ -297,6 +298,11 @@ def test_client_messages_discriminated_parse() -> None:
         {"type": "resync_request", "last_confirmed_seq": 2}
     )
     assert isinstance(resync, ResyncRequestMessage)
+    cancel = client_message_adapter.validate_python(
+        {"type": "cancel_audio", "track_id": "t-1"}
+    )
+    assert isinstance(cancel, CancelAudioMessage)
+    assert cancel.track_id == "t-1"
 
 
 def test_server_message_seq_and_payload() -> None:

@@ -33,6 +33,7 @@ function GameContent() {
 
   const stage = useGameStore((s) => s.stage);
   const messages = useGameStore((s) => s.messages);
+  const streams = useGameStore((s) => s.streams);
   const characters = useGameStore((s) => s.characters);
   const playableRoles = useGameStore((s) => s.playableRoles);
   const playerRole = useGameStore((s) => s.playerRole);
@@ -159,7 +160,7 @@ function GameContent() {
                 )}
               </div>
               <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/75 via-black/35 to-transparent px-4 pt-10 pb-3">
-                <SubtitleTrack messages={messages} />
+                <SubtitleTrack messages={messages} streams={streams} />
               </div>
             </div>
 

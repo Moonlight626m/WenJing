@@ -26,6 +26,7 @@ from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
     CreateSessionRequest,
     ServerMessage,
+    StreamMessage,
     SessionListResponse,
     SessionSummary,
 )
@@ -69,6 +70,7 @@ EXPORTS: dict[str, type] = {
     "runtime_update": RuntimeUpdate,
     "error_envelope": ErrorEnvelope,
     "server_message": ServerMessage,
+    "stream_message": StreamMessage,
     "generation_progress": GenerationProgress,
     "gate_review": GateReview,
     "script_create_request": ScriptCreateRequest,

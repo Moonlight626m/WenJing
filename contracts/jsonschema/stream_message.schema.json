@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "description": "瞬态流式消息（ADR-0005 §10 / #60）：**有 type 无 seq**。\n\n`stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →\n`stream_end{stream_id}`。它描述的是\"此刻屏幕上滚动的字幕\"，不参与\n`seq`/`confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的\n`character_speech`——前端收到它即丢弃对应 `stream_id` 的流缓冲。",
+  "properties": {
+    "type": {
+      "enum": [
+        "stream_start",
+        "stream_delta",
+        "stream_end"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "type",
+    "session_id"
+  ],
+  "title": "StreamMessage",
+  "type": "object"
+}

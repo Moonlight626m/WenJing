@@ -32,6 +32,7 @@ from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
 from app.domain.game.media import scene_visual_description
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
+from app.domain.game.streaming import SpeechStreamSink
 from app.domain.game.types import (
     InteractionPoint,
     PlayerAction,
@@ -112,6 +113,7 @@ class GameRuntime:
         log: logging.Logger | None = None,
         event_store: EventStore | None = None,
         on_flush: Callable[[], Awaitable[None]] | None = None,
+        speech_sink: SpeechStreamSink | None = None,
     ) -> None:
         self.session_id = session_id
         self.script = script
@@ -122,6 +124,9 @@ class GameRuntime:
             event_store if event_store is not None else EventStore()
         )
         self._on_flush = on_flush
+        # 流式字幕出口（#60）：None = 不发流式（HTTP 命令路径、离线重放、测试）。
+        # 运行时实例按命令重建，故把"发到哪条连接"挂在这里是安全的。
+        self._speech_sink = speech_sink
         self._log = log or logging.getLogger("wenjing.core.runtime")
 
         self.state_machine = GameStateMachine()
@@ -634,7 +639,7 @@ class GameRuntime:
     async def _collect_reactions(self, action: PlayerAction, stage: str) -> None:
         names = self.characters.active_names()
         results = await asyncio.gather(
-            *[self.characters.get(n).react_to(action, stage) for n in names],
+            *[self._react(name, action, stage) for name in names],
             return_exceptions=True,
         )
         for name, res in zip(names, results):
@@ -644,7 +649,29 @@ class GameRuntime:
                     extra={"wj_extra": {"name": name, "err": str(res)}},
                 )
                 continue
+            # 落库的永远是**最终答复**；前端屏幕上已经滚过的那份是临时文本，
+            # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
             self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
+
+    async def _react(self, name: str, action: PlayerAction, stage: str) -> str:
+        """单角色反应；配了流出口就开一条流，逐段推给客户端。
+
+        多角色是并发生成的（`asyncio.gather`），每条流各有 `stream_id`，前端按
+        `stream_id` 分轨渲染（ADR-0005 §11 的多音轨同源）。`end` 走 `finally`：
+        生成中途抛错也必须收流，否则客户端会留着一条不结束的字幕。
+        """
+        sink = self._speech_sink
+        if sink is None:
+            return await self.characters.get(name).react_to(action, stage)
+        stream_id = sink.start(name)
+        try:
+            return await self.characters.get(name).react_to(
+                action,
+                stage,
+                on_delta=lambda text: sink.delta(stream_id, text),
+            )
+        finally:
+            sink.end(stream_id)
 
     # ===== 回溯（保留旧历史；分支语义由 #8 扩展）=====
 

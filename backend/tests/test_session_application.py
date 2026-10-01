@@ -179,8 +179,8 @@ async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, 
     barrier = asyncio.Barrier(2)
     original = SessionApplication._restore_runtime
 
-    async def _synced(self, session_id):
-        loaded = await original(self, session_id)
+    async def _synced(self, session_id, **kwargs):
+        loaded = await original(self, session_id, **kwargs)
         await barrier.wait()
         return loaded
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { ChatMessage } from "@/stores/gameStore";
+import type { ChatMessage, LiveStream } from "@/stores/gameStore";
 
 /** 屏幕中下方字幕：角色行 + 旁白行（ADR-0005 §1）。 */
 export interface SubtitleLine {
@@ -11,6 +11,13 @@ export interface SubtitleLine {
   speaker: string | null;
   text: string;
   fading: boolean;
+  /** 在途的流式行（#61）：文本还会长，不武装停留/淡出计时器。 */
+  live?: boolean;
+}
+
+/** 流式行的稳定键：同一个 `stream_id` 全程同一行，文字在行内增长。 */
+function streamKey(stream: LiveStream): string {
+  return `stream:${stream.streamId}`;
 }
 
 /** 多行上限 3 行（ADR-0005 §1 裁决 Q33）。 */
@@ -49,14 +56,20 @@ function clearTimer(
  * 把消息流编排为「最多 3 行、到达顺序堆叠、同 speaker 新句替换旧句、
  * 溢出排队、停留后淡出」的字幕队列。
  *
- * 仅消费已持久化的完整消息（真 token 流式由 M5 #61 接入）。
+ * 两个来源合成同一条队列（#61）：
+ * - **持久消息**（`messages`）：权威文本，`seq` 去重；
+ * - **在途流**（`streams`）：`stream_id` 标识的临时文本，逐段增长。
+ * 二者按 speaker 收敛——持久发言一到就取代同角色的流式行（终态规则），
+ * 屏幕上不会同时留下"滚动中的"和"最终的"两份。
  */
-export function useSubtitleQueue(messages: ChatMessage[]) {
+export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[]) {
   const [visible, setVisible] = useState<SubtitleLine[]>([]);
   const visibleRef = useRef<SubtitleLine[]>([]);
   const queueRef = useRef<SubtitleLine[]>([]);
   const timersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const seenRef = useRef(new Set<string>());
+  // 已经淡出过的流式行不再复活：流缓冲要等持久发言才清空，而淡出可能更早发生
+  const releasedRef = useRef(new Set<string>());
 
   function commit() {
     setVisible([...visibleRef.current]);
@@ -105,6 +118,7 @@ export function useSubtitleQueue(messages: ChatMessage[]) {
   useEffect(() => {
     if (messages.length === 0 && seenRef.current.size > 0) {
       seenRef.current.clear();
+      releasedRef.current.clear();
       queueRef.current = [];
       for (const timer of timersRef.current.values()) clearTimeout(timer);
       timersRef.current.clear();
@@ -112,6 +126,64 @@ export function useSubtitleQueue(messages: ChatMessage[]) {
       commit();
     }
   }, [messages]);
+
+  // 1b) 在途流式行：同 stream_id 就地更新，同 speaker 让位给新的一条。
+  useEffect(() => {
+    let changed = false;
+    for (const stream of streams) {
+      const key = streamKey(stream);
+      if (releasedRef.current.has(key)) continue;
+      const live = !stream.ended;
+      const current = visibleRef.current;
+
+      const own = current.findIndex((l) => l.key === key);
+      if (own >= 0) {
+        if (current[own].text !== stream.text || current[own].live !== live) {
+          visibleRef.current = current.map((l, i) =>
+            i === own ? { ...l, text: stream.text, live } : l
+          );
+          changed = true;
+        }
+        continue;
+      }
+
+      const queued = queueRef.current.findIndex((l) => l.key === key);
+      if (queued >= 0) {
+        queueRef.current[queued] = {
+          ...queueRef.current[queued],
+          text: stream.text,
+          live,
+        };
+        continue;
+      }
+
+      const line: SubtitleLine = {
+        key,
+        kind: "character_speech",
+        speaker: stream.speaker,
+        text: stream.text,
+        fading: false,
+        live,
+      };
+      // 同角色的旧行（上一句台词，或上一轮流）让位，避免同屏两份同一角色
+      queueRef.current = queueRef.current.filter(
+        (l) => l.speaker !== line.speaker
+      );
+      const same = current.findIndex((l) => l.speaker === line.speaker);
+      if (same >= 0) {
+        clearTimer(timersRef.current, current[same].key);
+        releasedRef.current.add(current[same].key);
+        visibleRef.current = current.map((l, i) => (i === same ? line : l));
+        changed = true;
+      } else if (current.length < MAX_VISIBLE_SUBTITLES) {
+        visibleRef.current = [...current, line];
+        changed = true;
+      } else {
+        queueRef.current.push(line);
+      }
+    }
+    if (changed) setVisible([...visibleRef.current]);
+  }, [streams]);
 
   // 2) 为可见行武装「停留 → 淡出 → 移除并补位」计时器。
   useEffect(() => {
@@ -125,7 +197,8 @@ export function useSubtitleQueue(messages: ChatMessage[]) {
     }
 
     for (const line of visible) {
-      if (line.fading || timersRef.current.has(line.key)) continue;
+      // 还在长的行不设停留计时：它会一直更新到收流，届时 live 变 false 再武装
+      if (line.live || line.fading || timersRef.current.has(line.key)) continue;
       const dwellTimer = setTimeout(() => {
         visibleRef.current = visibleRef.current.map((l) =>
           l.key === line.key ? { ...l, fading: true } : l
@@ -134,6 +207,7 @@ export function useSubtitleQueue(messages: ChatMessage[]) {
         const fadeTimer = setTimeout(() => {
           timersRef.current.delete(line.key);
           timersRef.current.delete(`${line.key}:fade`);
+          releasedRef.current.add(line.key);
           const queued = queueRef.current.shift();
           const remaining = visibleRef.current.filter(
             (l) => l.key !== line.key
@@ -162,8 +236,14 @@ export function useSubtitleQueue(messages: ChatMessage[]) {
 }
 
 /** 底部字幕层：旁白居中斜体，角色行 `角色：台词`（无气泡）。 */
-export function SubtitleTrack({ messages }: { messages: ChatMessage[] }) {
-  const lines = useSubtitleQueue(messages);
+export function SubtitleTrack({
+  messages,
+  streams,
+}: {
+  messages: ChatMessage[];
+  streams: LiveStream[];
+}) {
+  const lines = useSubtitleQueue(messages, streams);
   if (lines.length === 0) return null;
 
   return (
@@ -184,6 +264,15 @@ export function SubtitleTrack({ messages }: { messages: ChatMessage[] }) {
               {line.speaker ?? "角色"}：
             </span>
             {line.text}
+            {line.live ? (
+              <span
+                aria-hidden
+                data-testid="subtitle-caret"
+                className="ml-0.5 inline-block animate-pulse text-amber-300"
+              >
+                ▍
+              </span>
+            ) : null}
           </p>
         ) : (
           <p
