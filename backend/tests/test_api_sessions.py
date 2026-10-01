@@ -238,6 +238,36 @@ def test_rest_error_envelopes(client):
     assert bad.json()["code"].startswith("PROTOCOL_") or "code" in bad.json()
 
 
+def test_command_endpoint_returns_an_envelope_for_malformed_bodies(client):
+    """非法 `PlayerCommand` 必须是业务信封，不能是 500（#66）。
+
+    `POST /api/sessions/{id}/commands` 是契约里明写的**唯一**游戏输入入口，畸形
+    请求体是常规客户端错误。裸 `ValidationError` 会被 Starlette 兜成 500 + 纯文本，
+    前端拿不到 `code` 也就无法提示；WS 路径早就有这层转换，REST 路径漏了。
+    """
+    sid, role = _full_setup(client)
+    url = f"/api/sessions/{sid}/commands"
+    headers = _csrf(client)
+
+    # 四种都是 PlayerCommand 的常规校验项，不是边角输入
+    bodies = [
+        {"session_id": sid, "command_id": "not-a-uuid", "kind": "select_role",
+         "payload": {"role_name": role}},
+        {"session_id": sid, "kind": "select_role", "payload": {}},
+        {"session_id": sid, "kind": "not_a_kind", "payload": {}},
+        {"session_id": sid, "kind": "select_role", "payload": "oops"},
+    ]
+    for body in bodies:
+        resp = client.post(url, json=body, headers=headers)
+        assert resp.status_code == 400, (body, resp.status_code, resp.text)
+        envelope = resp.json()
+        assert envelope["code"] == "PROTOCOL_MALFORMED_MESSAGE", body
+        assert envelope["domain"] == "protocol", body
+        assert envelope["message"], body
+        # 校验细节必须带出来，否则前端只能显示一句"消息格式错误"，无从排查
+        assert envelope["details"], body
+
+
 # ===== WS =====
 
 

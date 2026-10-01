@@ -11,6 +11,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Response, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.composition import get_container
@@ -146,11 +147,22 @@ async def submit_command(
     body: dict[str, Any],
     principal: Annotated[Principal, Depends(require_csrf)],
 ) -> dict[str, Any]:
-    """提交 PlayerCommand（#5）：幂等 + 单事务持久化 → RuntimeUpdate 投影。"""
+    """提交 PlayerCommand（#5）：幂等 + 单事务持久化 → RuntimeUpdate 投影。
+
+    `PlayerCommand` 的校验失败**必须**转成业务信封（#66）：这是契约里明写的唯一
+    游戏输入入口，非法请求体是常规客户端错误，不是服务端故障。裸 `ValidationError`
+    会被 Starlette 兜成 500 + 纯文本，前端拿不到 `code` 也就无法提示。
+    WS 路径早就这么处理了（`_handle` 里的 `client_message_adapter`），这里补齐。
+    """
     from app.contracts.commands import PlayerCommand
 
     try:
-        command = PlayerCommand.model_validate(body)
+        try:
+            command = PlayerCommand.model_validate(body)
+        except ValidationError as exc:
+            raise new(
+                codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]}
+            ) from exc
         if str(command.session_id) != session_id:
             raise new(
                 codes.PRT_MALFORMED_MESSAGE,
