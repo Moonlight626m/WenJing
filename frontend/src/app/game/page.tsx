@@ -12,12 +12,12 @@ import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
 import { AudioControls } from "@/components/audio-controls";
+import { GameStage } from "@/components/game-stage";
 import { InteractionCard } from "@/components/interaction-card";
 import { MessageStream } from "@/components/message-stream";
-import { GameStage } from "@/components/game-stage";
-import { SubtitleTrack } from "@/components/subtitle-track";
 import { RolePanel } from "@/components/role-panel";
 import { RollbackBar } from "@/components/rollback-bar";
+import { SubtitleTrack } from "@/components/subtitle-track";
 import { ToastHost } from "@/components/toast-host";
 
 const CONNECTION_LABELS: Record<string, { text: string; className: string }> = {

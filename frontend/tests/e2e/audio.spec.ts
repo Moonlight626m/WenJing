@@ -10,11 +10,36 @@ import { expect, test } from "@playwright/test";
 
 import {
   appendChunk,
-  dropAll,
   finishTrack,
   startTrack,
+  type FinishedTrack,
   type PendingTrack,
 } from "../../src/lib/audio-tracks";
+import { AudioSession, type AudioPlayerLike } from "../../src/lib/audio-session";
+
+/** 记下被交付的音轨，避免在 Node 里碰 `new Audio()` / `createObjectURL`。 */
+class FakePlayer implements AudioPlayerLike {
+  played: FinishedTrack[] = [];
+  stops = 0;
+  muted = false;
+
+  play(track: FinishedTrack): void {
+    this.played.push(track);
+  }
+
+  stopAll(): string[] {
+    this.stops += 1;
+    return this.played.map((t) => t.trackId);
+  }
+
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+  }
+
+  dispose(): void {
+    this.played = [];
+  }
+}
 
 function bytes(...values: number[]): ArrayBuffer {
   return new Uint8Array(values).buffer;
@@ -118,13 +143,100 @@ test.describe("#63 音轨缓冲", () => {
     expect(track(tracks, "t1")?.codec).toBe("audio/mpeg");
   });
 
-  test("断线丢弃全部在途轨（上一条连接的音频不作数）", () => {
-    expect(dropAll()).toHaveLength(0);
-  });
-
   test("空音轨不产出可播放的 Blob", () => {
     const tracks = startTrack([], { track_id: "t1", speaker: "母亲", codec: "audio/mpeg" });
     const { ready } = finishTrack(tracks, { track_id: "t1" });
     expect(ready?.blob.size).toBe(0);
+  });
+});
+
+test.describe("#63 会话接线（控制帧 + 二进制帧 → 播放）", () => {
+  test("start → 二进制 → end 交付一条可播放的音轨", async () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+
+    session.handleControl("audio_start", {
+      track_id: "t1",
+      speaker: "母亲",
+      codec: "audio/mpeg",
+    });
+    session.pushBinary(bytes(1, 2));
+    session.handleControl("audio_end", { track_id: "t1" });
+
+    expect(player.played).toHaveLength(1);
+    expect(player.played[0].speaker).toBe("母亲");
+    expect(player.played[0].blob.type).toBe("audio/mpeg");
+    expect(new Uint8Array(await player.played[0].blob.arrayBuffer())).toEqual(
+      new Uint8Array([1, 2])
+    );
+  });
+
+  test("没有 start 的二进制帧不产出音轨", () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+    session.pushBinary(bytes(1));
+    session.handleControl("audio_end", { track_id: "ghost" });
+    expect(player.played).toHaveLength(0);
+  });
+
+  test("end 之前不交付（收尾不漏帧也不早交付）", () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+    session.handleControl("audio_start", {
+      track_id: "t1",
+      speaker: "母亲",
+      codec: "audio/mpeg",
+    });
+    session.pushBinary(bytes(1));
+    expect(player.played).toHaveLength(0);
+
+    session.pushBinary(bytes(2));
+    session.handleControl("audio_end", { track_id: "t1" });
+    expect(player.played).toHaveLength(1);
+  });
+
+  test("barge-in 停播全部音轨并回报被停的 track_id", () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+    session.handleControl("audio_start", {
+      track_id: "t1",
+      speaker: "母亲",
+      codec: "audio/mpeg",
+    });
+    session.pushBinary(bytes(1));
+    session.handleControl("audio_end", { track_id: "t1" });
+
+    expect(session.bargeIn()).toEqual(["t1"]);
+    expect(player.stops).toBe(1);
+  });
+
+  test("reset 丢弃在途轨（断线后上一条连接的音频不作数）", () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+    session.handleControl("audio_start", {
+      track_id: "t1",
+      speaker: "母亲",
+      codec: "audio/mpeg",
+    });
+    session.reset();
+    session.pushBinary(bytes(1));
+    session.handleControl("audio_end", { track_id: "t1" });
+    expect(player.played).toHaveLength(0);
+  });
+
+  test("静音只改播放器，不影响缓冲与交付", () => {
+    const player = new FakePlayer();
+    const session = new AudioSession(player);
+    session.setMuted(true);
+    expect(player.muted).toBe(true);
+
+    session.handleControl("audio_start", {
+      track_id: "t1",
+      speaker: "母亲",
+      codec: "audio/mpeg",
+    });
+    session.pushBinary(bytes(1));
+    session.handleControl("audio_end", { track_id: "t1" });
+    expect(player.played).toHaveLength(1);
   });
 });

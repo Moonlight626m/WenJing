@@ -170,6 +170,28 @@ async def test_audio_bytes_pass_through_with_sniffed_content_type():
     assert audio.model == DEFAULT_MODEL
 
 
+async def test_duration_and_sample_rate_are_measured_from_the_bytes():
+    """ADR-0005 §12 要求 media_usage 记音频时长；provider 不回，只能自己量。"""
+    frame = b"\xff\xfb\x90\x00" + b"\x00" * 413  # 44.1kHz 128kbps MPEG1 L3
+    adapter = _tts(_ok(frame * 10))
+    audio = await adapter.synthesize(text="句子。", voice=_voice("nova"))
+
+    assert audio.sample_rate == 44100
+    assert audio.duration_ms == round(10 * 1152 * 1000 / 44100)
+
+
+async def test_unmeasurable_audio_still_succeeds_with_zero_duration():
+    """量不出时长不该让整条音轨失败（时长是计量元数据，不是可用性前提）。
+
+    这里用比特率索引 0xF（保留值）的帧：魔数嗅探认得出是 MP3，但帧头解不出，
+    时长只能记 0——正是"能播但量不出"的那类输入。
+    """
+    adapter = _tts(_ok(b"\xff\xfb\xf0\x00" + b"\x00" * 64))
+    audio = await adapter.synthesize(text="句子。", voice=_voice("nova"))
+    assert audio.audio_bytes
+    assert audio.duration_ms == 0
+
+
 async def test_wav_magic_is_recognised():
     adapter = _tts(_ok(b"RIFF\x00\x00\x00\x00WAVEfmt "))
     audio = await adapter.synthesize(text="句子。", voice=_voice("nova"))

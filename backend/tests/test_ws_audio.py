@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.game.tts import SynthesizedAudio, VoiceProfile
+from app.domain.game.tts import SynthesizedAudio, VoiceMap, VoiceProfile
 from tests.test_api_sessions import _full_setup
 from tests.test_api_sessions import client as _sessions_client  # noqa: F401
 
@@ -52,10 +52,8 @@ def fake_tts(monkeypatch):
     monkeypatch.setattr(
         container,
         "_voice_map",
-        __import__("app.domain.game.tts", fromlist=["VoiceMap"]).VoiceMap(
-            voices=tuple(
-                VoiceProfile(voice_id=v) for v in ("v1", "v2", "v3", "v4")
-            )
+        VoiceMap(
+            voices=tuple(VoiceProfile(voice_id=v) for v in ("v1", "v2", "v3", "v4"))
         ),
     )
     return fake

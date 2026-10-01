@@ -18,6 +18,7 @@ import httpx
 
 from app.domain.game.tts import SynthesizedAudio, VoiceProfile
 from app.infrastructure.errx import codes, new, wrap
+from app.infrastructure.media.audio_probe import probe_audio
 
 OPENAI_SPEECH_PATH = "/audio/speech"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -107,9 +108,10 @@ class OpenAITts:
         )
 
     async def aclose(self) -> None:
-        return None
+        """关闭自建的 httpx 连接池（`TtsPort` 的协议方法，由组合根在 lifespan 收尾时调）。
 
-    async def _close(self) -> None:
+        只关**自建**的：注入 `client` 时所有权在调用方（测试里靠 fixture 统一收口）。
+        """
         if self._owns_client:
             await self._client.aclose()
 
@@ -179,13 +181,16 @@ class OpenAITts:
                     },
                 )
             mime = self._content_type
+        # provider 的响应是裸字节，没有时长字段（`/audio/speech` 不回元数据）。
+        # 时长从字节里量（逐帧累加采样数，VBR 也准）——`media_usage` 要记它
+        # （ADR-0005 §12），量不出来记 0，不让整条音轨失败。
+        probe = probe_audio(data)
         return SynthesizedAudio(
             audio_bytes=data,
             content_type=mime,
             units=len(body_text),
-            # 时长交由前端按 `loadedmetadata` 实测：从码率估算对 VBR 编码不准，
-            # 而一个错的时长会让字幕提前淡出。
-            duration_ms=0,
+            duration_ms=probe.duration_ms,
+            sample_rate=probe.sample_rate,
             provider="openai",
             model=self._model,
         )

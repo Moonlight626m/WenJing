@@ -101,8 +101,10 @@ class Settings(BaseSettings):
     #: provider 侧默认音色；`media_tts_voices` 为空时全场都用它（角色不可区分）。
     media_tts_default_voice: str = "alloy"
     # 音色池（逗号分隔）：角色按**名字哈希**取模分配，同名角色跨会话恒定。
-    # 池子越大越不容易撞嗓；空 = 退回 default_voice。
-    media_tts_voices: str = ""
+    # 池子越大越不容易撞嗓；空 = 全场退回 default_voice（角色**不可区分**）。
+    # 默认给满 OpenAI 兼容的六个嗓：不给的话「音色可区分角色」（#63 验收）只在
+    # 运营显式配置后才成立，而默认配置才是绝大多数部署的样子。
+    media_tts_voices: str = "alloy,echo,fable,onyx,nova,shimmer"
     #: 运营钦定的 角色名=音色 覆盖（逗号分隔，如 `母亲=nova,父亲=onyx`）。
     media_tts_voice_overrides: str = ""
     media_tts_connect_timeout: float = 5.0

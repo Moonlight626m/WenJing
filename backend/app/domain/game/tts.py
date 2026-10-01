@@ -54,8 +54,11 @@ class SynthesizedAudio:
     content_type: str = "audio/mpeg"
     #: 合成消耗的字符数（`media_usage.units` 的口径，ADR-0005 §12：tts=字符）。
     units: int = 0
-    #: provider 回报或本地估算的时长（毫秒），供 `media_usage.size` 与前端进度条。
+    #: 时长（毫秒）。provider 不回这个字段，由 adapter 从字节量出来（逐帧累加采样数），
+    #: 量不出记 0。落进 `media_usage.meta`——`units` 对 tts 是**字符**（ADR-0005 §12）。
     duration_ms: int = 0
+    #: 采样率（Hz）；同样由 adapter 量出，随 `audio_start` 下发。0 = 未知。
+    sample_rate: int = 0
     provider: str = ""
     model: str = ""
 
@@ -143,20 +146,6 @@ class TtsPort(Protocol):
     ) -> SynthesizedAudio: ...
 
     async def aclose(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class AudioTrack:
-    """一条待下发的音轨（前端多 `<audio>` 并发播放；后端不混音）。"""
-
-    track_id: str
-    speaker: str
-    audio: SynthesizedAudio
-    #: 归属上下文，供计量与 barge-in 归因。
-    session_id: uuid.UUID | None = None
-    org_id: uuid.UUID | None = None
-    user_id: uuid.UUID | None = None
-    script_id: int | None = None
 
 
 @runtime_checkable
@@ -262,7 +251,9 @@ class TtsSynthesizer:
             return
         if not audio.audio_bytes:
             return
-        track_id = self.sink.start(speaker, content_type=audio.content_type)
+        track_id = self.sink.start(
+            speaker, content_type=audio.content_type, sample_rate=audio.sample_rate
+        )
         try:
             self.sink.chunk(track_id, audio.audio_bytes)
         finally:
@@ -307,7 +298,6 @@ def _spawn(coro: Coroutine[Any, Any, None]) -> asyncio.Task[None] | None:
 
 
 __all__ = [
-    "AudioTrack",
     "AudioTrackSink",
     "SynthesizedAudio",
     "TtsPort",

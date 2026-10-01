@@ -63,6 +63,7 @@ class Container:
         self._image_search: Any | None = None
         self._image_gen: Any | None = None
         self._tts: Any | None = None
+        self._tts_factory: Callable[..., Any] | None = None
         self._voice_map: VoiceMap | None = None
         self._asset_access: AssetAccessService | None = None
         self._asset_repo: SqlAssetRepository | None = None
@@ -125,17 +126,25 @@ class Container:
         self.checkpointer = None
         # 关闭后再次访问需以无 checkpointer 重建，避免绑定已关闭的 saver
         self._script_library = None
-        # 检索/生图端口各自持有自建 httpx 连接池；不关会在长跑进程与多轮 lifespan
-        # 下持续泄漏 socket/fd（空实现无 close，走 hasattr 守卫）。置空以便重建。
+        # 检索/生图/TTS 端口各自持有自建 httpx 连接池；不关会在长跑进程与多轮
+        # lifespan 下持续泄漏 socket/fd（空实现无 close，走 hasattr 守卫）。置空以便重建。
         await self._aclose_port("_image_search")
         await self._aclose_port("_image_gen")
+        await self._aclose_port("_tts")
         # 编排器持有上面两个端口（可能已被关闭），一并丢弃以便按新端口重建。
         self._scene_designer = None
+        # 工厂闭包 / 编排器持有配额实例（进程内计数 + 已种子集合），随端口一起重建，
+        # 否则新一轮 lifespan 会拿着上一轮的内存计数继续扣。
+        self._tts_factory = None
 
     async def _aclose_port(self, attr: str) -> None:
         port = getattr(self, attr, None)
-        if port is not None and hasattr(port, "close"):
-            await port.close()
+        if port is not None:
+            # 端口自建的 httpx 池可能挂在 `close` 或 `aclose` 上——`TtsPort` 用后者
+            # （协议里就叫 `aclose`），两个都认，免得新增端口时又漏一个。
+            closer = getattr(port, "close", None) or getattr(port, "aclose", None)
+            if closer is not None:
+                await closer()
         setattr(self, attr, None)
 
     async def _open_checkpointer(self) -> tuple[Any | None, Any | None]:
@@ -285,32 +294,40 @@ class Container:
         """按连接造 `TtsSynthesizer` 的工厂（音轨出口是 per-connection 的）。
 
         出口（`AudioTrackChannel`）随连接生灭，所以合成器也必须 per-connection；
-        端口、音色表、计量、配额这些进程级依赖在这里绑好，路由只管传出口。
+        端口、音色表、计量、配额这些**进程级**依赖在这里绑好，路由只管传出口。
+
+        **工厂本身必须缓存**（`self._tts_factory`）：属性每次访问都新建的话，
+        `MediaQuotaService` 会被逐命令重建，而它的语义是「首次触达某 (org,kind) 时
+        从 `media_usage` 聚合种子，此后按**进程内计数**推进」——重建等于每条命令都把
+        计数丢掉并从 DB 重种子，预算形同不限。默认 `media_org_tts_budget=0`（不限）
+        时看不出来，配了预算才咬人。同文件 `scene_designer` 是正确先例。
         """
-        from app.domain.game.tts import TtsSynthesizer
+        if self._tts_factory is None:
+            from app.domain.game.tts import TtsSynthesizer
 
-        meter = MediaUsageRecorder(session_factory=self.session_factory)
-        quota = MediaQuotaService(
-            session_factory=self.session_factory,
-            limits={MediaKind.TTS: self.settings.media_org_tts_budget},
-        )
-
-        def build(sink: Any, *, session_id: Any, org_id: Any, user_id: Any,
-                  script_id: Any = None) -> TtsSynthesizer:
-            return TtsSynthesizer(
-                port=self.tts,
-                voices=self.voice_map,
-                sink=sink,
-                meter=meter,
-                quota=quota,
-                session_id=session_id,
-                org_id=org_id,
-                user_id=user_id,
-                script_id=script_id,
-                max_sentence_chars=self.settings.media_tts_max_sentence_chars,
+            meter = MediaUsageRecorder(session_factory=self.session_factory)
+            quota = MediaQuotaService(
+                session_factory=self.session_factory,
+                limits={MediaKind.TTS: self.settings.media_org_tts_budget},
             )
 
-        return build
+            def build(sink: Any, *, session_id: Any, org_id: Any, user_id: Any,
+                      script_id: Any = None) -> TtsSynthesizer:
+                return TtsSynthesizer(
+                    port=self.tts,
+                    voices=self.voice_map,
+                    sink=sink,
+                    meter=meter,
+                    quota=quota,
+                    session_id=session_id,
+                    org_id=org_id,
+                    user_id=user_id,
+                    script_id=script_id,
+                    max_sentence_chars=self.settings.media_tts_max_sentence_chars,
+                )
+
+            self._tts_factory = build
+        return self._tts_factory
 
     @property
     def asset_access(self) -> AssetAccessService:

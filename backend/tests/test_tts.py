@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import uuid
 
 import pytest
@@ -302,8 +303,13 @@ async def test_quota_failure_is_treated_as_denied():
     assert port.calls == []
 
 
-async def test_speak_without_a_running_loop_is_dropped_not_raised():
-    """同步上下文里调用 `speak` 不该炸（`SentenceSink` 是同步协议）。"""
+def test_speak_without_a_running_loop_is_dropped_not_raised():
+    """**同步**上下文里调用 `speak` 不该炸（`SentenceSink` 是同步协议）。
+
+    刻意写成 `def` 而非 `async def`：`asyncio_mode = "auto"` 下 async 用例本身就
+    跑在事件循环里，`asyncio.create_task` 不会抛，`_spawn` 的 RuntimeError 分支
+    根本走不到——那样测的就不是这条路径了。
+    """
     port, sink = _FakePort(), _FakeSink()
     synth = _synth(port, sink)
     synth.speak("母亲", "没有事件循环。")  # 不在 async 上下文
@@ -396,3 +402,125 @@ async def test_close_waits_for_inflight_synthesis():
     synth.speak("母亲", "慢句子。")
     await synth.aclose()
     assert [e[0] for e in sink.events] == ["start", "chunk", "end"]
+
+
+# ===== 容器装配（#63 审查处置）=====
+
+
+def test_synthesizer_factory_is_cached_across_accesses():
+    """工厂必须缓存，否则配额闸逐命令失效。
+
+    `MediaQuotaService` 的语义是「首次触达某 (org,kind) 时从 `media_usage` 聚合种子，
+    此后按**进程内计数**推进」。属性每次访问都新建实例，等于每条命令都把计数丢掉并
+    从 DB 重种子——配了 `media_org_tts_budget` 时闸门形同不限。默认预算 0（不限）
+    时看不出来，所以必须靠用例钉住，而不是靠观察。
+    """
+    from app.composition import Container
+    from app.infrastructure.config import Settings
+
+    container = Container(Settings())
+    assert container.tts_synthesizer_factory is container.tts_synthesizer_factory
+
+
+def test_synthesizers_built_from_the_factory_share_one_quota():
+    """同一进程内造出的所有合成器必须共用同一个配额实例（计数才累积得起来）。"""
+    from app.composition import Container
+    from app.infrastructure.config import Settings
+
+    container = Container(Settings())
+    build = container.tts_synthesizer_factory
+    first = build(_FakeSink(), session_id=None, org_id=uuid.uuid4(), user_id=None)
+    second = build(_FakeSink(), session_id=None, org_id=uuid.uuid4(), user_id=None)
+    assert first.quota is second.quota
+    assert first.meter is second.meter
+
+
+def test_tts_port_is_closed_on_container_close():
+    """TTS 端口自建 httpx 连接池：容器收尾必须关掉，否则长跑进程持续泄漏 fd。"""
+    from app.composition import Container
+    from app.infrastructure.config import Settings
+
+    container = Container(Settings())
+    _ = container.tts  # 建出来，才有得关
+    assert container._tts is not None
+    assert container.tts_synthesizer_factory is not None
+
+    asyncio.run(container.close())
+
+    assert container._tts is None
+    assert container._tts_factory is None
+
+
+def test_aclose_port_accepts_both_close_and_aclose():
+    """端口自建的池可能挂在 `close` 或 `aclose` 上（`TtsPort` 用后者），两个都认。"""
+    from app.composition import Container
+    from app.infrastructure.config import Settings
+
+    class _AcloseOnly:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    container = Container(Settings())
+    port = _AcloseOnly()
+    container._tts = port
+
+    asyncio.run(container._aclose_port("_tts"))
+
+    assert port.closed is True
+    assert container._tts is None
+
+
+# ===== 时长探测（ADR-0005 §12 要求 media_usage 记时长）=====
+
+
+def test_mp3_duration_is_measured_not_guessed():
+    """provider 只回裸字节、不回时长，所以时长必须从帧里量出来。"""
+    from app.infrastructure.media.audio_probe import probe_audio
+
+    # 44.1kHz MPEG1 Layer III，128kbps：帧长 417 字节，1152 采样/帧。
+    # 造 10 帧 → 11520 采样 → 261ms。
+    frame = b"\xff\xfb\x90\x00" + b"\x00" * 413
+    probe = probe_audio(frame * 10)
+    assert probe.sample_rate == 44100
+    assert probe.duration_ms == round(10 * 1152 * 1000 / 44100)
+
+
+def test_mp3_duration_skips_the_id3v2_tag():
+    """ID3v2 长度是 synchsafe 整数；按普通大端读会跳歪，时长恒为 0。"""
+    from app.infrastructure.media.audio_probe import probe_audio
+
+    frame = b"\xff\xfb\x90\x00" + b"\x00" * 413
+    # synchsafe 的 0x00 0x00 0x02 0x01 = 257 字节 tag body
+    tag = b"ID3\x03\x00\x00\x00\x00\x02\x01" + b"\x00" * 257
+    assert probe_audio(tag + frame * 10).duration_ms == round(
+        10 * 1152 * 1000 / 44100
+    )
+
+
+def test_wav_duration_comes_from_the_header():
+    from app.infrastructure.media.audio_probe import probe_audio
+
+    data_size = 44100 * 2 * 2  # 1 秒 16bit 立体声
+    wav = (
+        b"RIFF"
+        + struct.pack("<I", 36 + data_size)
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, 2, 44100, 176400, 4, 16)
+        + b"data"
+        + struct.pack("<I", data_size)
+        + b"\x00" * data_size
+    )
+    probe = probe_audio(wav)
+    assert probe.duration_ms == 1000
+    assert probe.sample_rate == 44100
+
+
+def test_unrecognised_bytes_yield_zero_not_an_error():
+    """时长是计量元数据，量不出来记 0，不该让整条音轨失败。"""
+    from app.infrastructure.media.audio_probe import probe_audio
+
+    assert probe_audio(b"\x00\x01\x02\x03") == probe_audio(b"")
+    assert probe_audio(b"\x00\x01\x02\x03").duration_ms == 0

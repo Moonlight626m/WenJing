@@ -17,13 +17,32 @@ import {
   appendChunk,
   finishTrack,
   startTrack,
+  type FinishedTrack,
   type PendingTrack,
 } from "@/lib/audio-tracks";
 
-class AudioSession {
+/**
+ * `AudioSession` 真正用到的那部分播放器能力。
+ *
+ * 抽出来是为了**可测**：`AudioTrackPlayer` 依赖 `new Audio()` / `URL.createObjectURL`，
+ * 在 Node 里（Playwright 的纯函数用例）跑不起来。注入一个假播放器就能把
+ * 「控制帧 + 二进制帧 → 一条可播放的音轨」这条接线完整验一遍，而不必起浏览器。
+ */
+export interface AudioPlayerLike {
+  play(track: FinishedTrack): void;
+  stopAll(): string[];
+  setMuted(muted: boolean): void;
+  dispose(): void;
+}
+
+export class AudioSession {
   private tracks: PendingTrack[] = [];
-  private readonly player = new AudioTrackPlayer();
+  private readonly player: AudioPlayerLike;
   private muted = false;
+
+  constructor(player: AudioPlayerLike = new AudioTrackPlayer()) {
+    this.player = player;
+  }
 
   /** 控制帧（`audio_start` / `audio_end`）。二进制帧走 `pushBinary`。 */
   handleControl(type: string, payload: unknown): void {
@@ -57,18 +76,6 @@ class AudioSession {
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.player.setMuted(muted);
-  }
-
-  get isMuted(): boolean {
-    return this.muted;
-  }
-
-  get playingCount(): number {
-    return this.player.playingCount;
-  }
-
-  get pendingCount(): number {
-    return this.tracks.length;
   }
 
   dispose(): void {

@@ -39,7 +39,7 @@ def build_tts(settings: Settings) -> TtsPort:
     raise new(codes.CFG_UNKNOWN_MEDIA_PROVIDER, extra={"provider": provider})
 
 
-def _split(value: str) -> list[str]:
+def _split_csv(value: str) -> list[str]:
     """逗号分隔配置项 → 去空去重的列表（保序）。"""
     seen: dict[str, None] = {}
     for item in value.split(","):
@@ -55,12 +55,13 @@ def build_voice_map(settings: Settings) -> VoiceMap:
     - `media_tts_voices` 是池子，角色名哈希取模分配；
     - `media_tts_voice_overrides` 的 `角色=音色` 优先于池子；
     - 池子为空时全场用 `media_tts_default_voice`（此时角色不可区分——运营可以从
-      `VoiceMap.describe()` 看出来，不必额外告警）。
+      `VoiceMap.describe()` 看出来，不必额外告警）。默认配置给的是六个嗓，所以
+      「音色可区分角色」开箱即成立。
     """
-    voices = tuple(VoiceProfile(voice_id=v) for v in _split(settings.media_tts_voices))
+    voices = tuple(VoiceProfile(voice_id=v) for v in _split_csv(settings.media_tts_voices))
     default = VoiceProfile(voice_id=settings.media_tts_default_voice)
     overrides: dict[str, VoiceProfile] = {}
-    for pair in _split(settings.media_tts_voice_overrides):
+    for pair in _split_csv(settings.media_tts_voice_overrides):
         name, _, voice = pair.partition("=")
         name, voice = name.strip(), voice.strip()
         if name and voice:

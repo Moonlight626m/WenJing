@@ -82,14 +82,10 @@ export function startTrack(
  */
 export function appendChunk(
   tracks: PendingTrack[],
-  data: ArrayBuffer,
-  trackId?: string
+  data: ArrayBuffer
 ): PendingTrack[] {
   if (tracks.length === 0) return tracks;
-  const index = trackId
-    ? tracks.findIndex((t) => t.trackId === trackId)
-    : tracks.length - 1;
-  if (index < 0) return tracks;
+  const index = tracks.length - 1;
   const next = tracks.slice();
   next[index] = { ...next[index], chunks: [...next[index].chunks, data] };
   return next;
@@ -113,11 +109,6 @@ export function finishTrack(
     },
     remaining: tracks.filter((t) => t.trackId !== info.track_id),
   };
-}
-
-/** 收尾时丢弃全部在途轨（断线/重连：上一条连接的音频不作数）。 */
-export function dropAll(): PendingTrack[] {
-  return [];
 }
 
 /**
@@ -159,16 +150,6 @@ export class AudioTrackPlayer {
     }
     this.revokeAll();
     return ids;
-  }
-
-  /** 停播指定音轨；返回是否确实停了一条（用于决定要不要发 `cancel_audio`）。 */
-  stop(trackId: string): boolean {
-    const audio = this.playing.get(trackId);
-    if (!audio) return false;
-    audio.pause();
-    audio.src = "";
-    this.playing.delete(trackId);
-    return true;
   }
 
   setMuted(muted: boolean): void {
