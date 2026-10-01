@@ -92,6 +92,27 @@ class Settings(BaseSettings):
     # 崩溃循环会把同一场景一次次重排队列，那份产出多半没人看得到。
     media_asset_job_ttl_seconds: int = MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT
 
+    # 语音合成 provider（M6 #63）：openai = OpenAI 兼容 /audio/speech（换厂商不改
+    # adapter）；null = 不合成，`TtsSynthesizer` 收到空字节即静默跳过（字幕照滚）。
+    media_tts_provider: Literal["null", "openai"] = "null"
+    media_tts_base_url: str = "https://api.openai.com/v1"
+    media_tts_api_key: str = ""
+    media_tts_model: str = "tts-1"
+    #: provider 侧默认音色；`media_tts_voices` 为空时全场都用它（角色不可区分）。
+    media_tts_default_voice: str = "alloy"
+    # 音色池（逗号分隔）：角色按**名字哈希**取模分配，同名角色跨会话恒定。
+    # 池子越大越不容易撞嗓；空 = 退回 default_voice。
+    media_tts_voices: str = ""
+    #: 运营钦定的 角色名=音色 覆盖（逗号分隔，如 `母亲=nova,父亲=onyx`）。
+    media_tts_voice_overrides: str = ""
+    media_tts_connect_timeout: float = 5.0
+    media_tts_read_timeout: float = 60.0
+    media_tts_max_bytes: int = 16 * 1024 * 1024
+    media_tts_max_chars: int = 4096
+    #: 单句送合成长度上限（tee 的分句器已按标点切过，这里防超长"一句话"）。
+    media_tts_max_sentence_chars: int = 200
+    media_tts_response_format: str = "mp3"
+
     # org 级媒体配额预算（付费调用前 check+consume，ADR-0005 §12）；0=不限额。
     media_org_image_budget: int = 0
     media_org_tts_budget: int = 0

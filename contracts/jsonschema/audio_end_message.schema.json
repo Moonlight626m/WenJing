@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "description": "音轨结束：该 `track_id` 的二进制帧到此为止。",
+  "properties": {
+    "type": {
+      "const": "audio_end",
+      "default": "audio_end",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "AudioEndMessage",
+  "type": "object"
+}

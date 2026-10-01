@@ -18,6 +18,7 @@ from app.domain.game.media import (
     MediaKind,
     MediaUsage,
 )
+from app.domain.game.tts import SynthesizedAudio, VoiceProfile
 
 
 class NullObjectStorage:
@@ -95,8 +96,23 @@ class NullMediaQuota:
         return None
 
 
+class NullTts:
+    """不合成的 `TtsPort`：返回空字节，上层（`TtsSynthesizer`）据此静默跳过。
+
+    返回空字节而不是抛错：无 key 的开发/测试环境里不该刷满合成失败告警——"没配
+    provider"是预期状态，不是故障（与其余 null adapter 同一约定）。
+    """
+
+    async def synthesize(self, *, text: str, voice: VoiceProfile) -> SynthesizedAudio:
+        return SynthesizedAudio(audio_bytes=b"", provider="null")
+
+    async def aclose(self) -> None:
+        return None
+
+
 __all__ = [
     "NullAssetRepository",
+    "NullTts",
     "NullImageGen",
     "NullImageSearch",
     "NullMediaMeter",

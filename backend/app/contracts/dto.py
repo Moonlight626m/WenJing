@@ -141,6 +141,29 @@ class StreamMessage(ContractModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class AudioStartMessage(ContractModel):
+    """音轨开始（ADR-0005 §11 / #63）：**有 type 无 seq**，与 `StreamMessage` 同类。
+
+    紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言
+    一条音轨，多角色并发时前端挂多个 `<audio>`；后端不混音。
+
+    `codec` 是 MIME（`audio/mpeg` 等），不是裸格式名——前端直接喂
+    `Blob([bytes], {type: codec})` 造 `objectURL`，不必再维护一张格式映射表。
+    """
+
+    type: Literal["audio_start"] = "audio_start"
+    session_id: uuid.UUID
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AudioEndMessage(ContractModel):
+    """音轨结束：该 `track_id` 的二进制帧到此为止。"""
+
+    type: Literal["audio_end"] = "audio_end"
+    session_id: uuid.UUID
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class SubmitCommandMessage(ContractModel):
     """客户端提交命令（PlayerCommand 直接作为 payload 强校验）。"""
 

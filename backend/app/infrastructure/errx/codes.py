@@ -34,6 +34,7 @@ CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
 CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
 CFG_UNKNOWN_MEDIA_PROVIDER = 5003    # 未知的媒体 provider（检索/生图）
 CFG_MEDIA_IMAGE_GEN_INCOMPLETE = 5004  # provider=openai 但缺少 base_url/api_key
+CFG_MEDIA_TTS_INCOMPLETE = 5005       # TTS provider 配置不全（缺 base_url/api_key）
 
 # ===== 内容（CNT）=====
 CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
@@ -69,6 +70,12 @@ MEDIA_IMAGE_GEN_TIMEOUT = 13009     # 生图请求连接/读取超时
 MEDIA_IMAGE_GEN_BLOCKED = 13010     # 本地安全闸门拒绝（prompt 过滤 / 产物 URL 被 SSRF 拦）
 MEDIA_IMAGE_GEN_INVALID = 13011     # provider 返回的图片无效（解码/内容类型/尺寸）
 MEDIA_UPLOAD_TOO_LARGE = 13012      # 教师上传图片超过大小上限（#49）
+MEDIA_TTS_FAILED = 13013            # 语音合成 provider 不可用/响应异常
+MEDIA_TTS_TIMEOUT = 13014           # 合成请求连接/读取超时
+MEDIA_TTS_INVALID = 13015           # provider 返回的音频无效（解码/内容类型）
+MEDIA_ASR_FAILED = 13016            # 语音识别 provider 不可用/响应异常
+MEDIA_ASR_TIMEOUT = 13017           # 识别请求连接/读取超时
+MEDIA_ASR_INVALID = 13018           # provider 返回的转写无效/为空
 
 # ===== 持久化（PER，issue #13）=====
 PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
@@ -143,6 +150,11 @@ def register_all() -> None:
     register(
         CFG_MEDIA_IMAGE_GEN_INCOMPLETE,
         "media image gen provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_MEDIA_TTS_INCOMPLETE,
+        "media tts provider incomplete, missing: {missing}",
         is_affect_stability=False,
     )
 
@@ -221,6 +233,20 @@ def register_all() -> None:
     register(
         MEDIA_UPLOAD_TOO_LARGE,
         "uploaded image too large: {size} bytes (limit {limit})",
+        is_affect_stability=False,
+    )
+    register(MEDIA_TTS_FAILED, "speech synthesis failed: {reason}")
+    register(MEDIA_TTS_TIMEOUT, "speech synthesis timed out: {reason}")
+    register(
+        MEDIA_TTS_INVALID,
+        "invalid synthesized audio: {reason}",
+        is_affect_stability=False,
+    )
+    register(MEDIA_ASR_FAILED, "speech recognition failed: {reason}")
+    register(MEDIA_ASR_TIMEOUT, "speech recognition timed out: {reason}")
+    register(
+        MEDIA_ASR_INVALID,
+        "invalid transcription: {reason}",
         is_affect_stability=False,
     )
 

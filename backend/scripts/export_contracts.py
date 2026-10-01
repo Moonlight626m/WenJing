@@ -24,11 +24,13 @@ from app.contracts.auth import (
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
+    AudioEndMessage,
+    AudioStartMessage,
     CreateSessionRequest,
     ServerMessage,
-    StreamMessage,
     SessionListResponse,
     SessionSummary,
+    StreamMessage,
 )
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
@@ -71,6 +73,8 @@ EXPORTS: dict[str, type] = {
     "error_envelope": ErrorEnvelope,
     "server_message": ServerMessage,
     "stream_message": StreamMessage,
+    "audio_start_message": AudioStartMessage,
+    "audio_end_message": AudioEndMessage,
     "generation_progress": GenerationProgress,
     "gate_review": GateReview,
     "script_create_request": ScriptCreateRequest,

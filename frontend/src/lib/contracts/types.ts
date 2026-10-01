@@ -717,6 +717,33 @@ export interface StreamMessagePayload {
 }
 
 /**
+ * 音轨开始（#63 / ADR-0005 §11）：**有 type 无 seq**，与 `StreamMessage` 同类。
+ *
+ * 紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言
+ * 一条音轨，多角色并发时挂多个 `<audio>`；后端不混音。
+ */
+export interface AudioStartMessage {
+  type: "audio_start";
+  session_id: string;
+  payload: AudioStartPayload;
+}
+
+export interface AudioStartPayload {
+  track_id: string;
+  /** 本条音轨属于哪个角色。 */
+  speaker: string;
+  /** MIME（`audio/mpeg` 等）：直接喂 `new Blob([bytes], { type: codec })`。 */
+  codec: string;
+  sample_rate: number;
+}
+
+export interface AudioEndMessage {
+  type: "audio_end";
+  session_id: string;
+  payload: { track_id: string };
+}
+
+/**
  * 运行期配图就绪（#56）：命令外事件路径推送。
  * `scene_key` 与 `RuntimeState.scene_key` 同源；`current_asset` 与 narrative
  * 消息同形，前端复用同一套换背景逻辑。

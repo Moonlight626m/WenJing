@@ -510,11 +510,14 @@ class SessionApplication:
 
     async def session_init(self, session_id: uuid.UUID, *, actor: Actor) -> dict:
         """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。"""
-        await self._access_session(session_id, actor)
+        sess = await self._access_session(session_id, actor)
         runtime, store, _ = await self._restore_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return {
             "session_id": str(session_id),
+            # 会话引用的剧本（#63）：音频/媒体计量的归属上下文之一。
+            # `_access_session` 本就加载了这一行，顺带带出来比让路由再查一次划算。
+            "script_id": sess.script_id,
             "stage": state.stage.value,
             "branch_id": str(state.branch_id),
             "last_sequence": state.last_sequence,

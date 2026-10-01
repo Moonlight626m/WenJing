@@ -26,9 +26,12 @@ from app.infrastructure.media.null import (
     NullMediaMeter,
     NullMediaQuota,
     NullObjectStorage,
+    NullTts,
 )
 from app.infrastructure.media.quota import MediaQuotaService
 from app.infrastructure.media.storage_s3 import S3ObjectStorage, build_object_storage
+from app.infrastructure.media.tts import build_tts, build_voice_map
+from app.infrastructure.media.tts_openai import OpenAITts
 
 __all__ = [
     "ImageProcessor",
@@ -40,7 +43,9 @@ __all__ = [
     "NullMediaMeter",
     "NullMediaQuota",
     "NullObjectStorage",
+    "NullTts",
     "OpenAIImageGen",
+    "OpenAITts",
     "OpenverseImageSearch",
     "S3ObjectStorage",
     "SqlAssetJobStore",
@@ -49,4 +54,6 @@ __all__ = [
     "build_image_gen",
     "build_image_search",
     "build_object_storage",
+    "build_tts",
+    "build_voice_map",
 ]

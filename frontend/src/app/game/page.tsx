@@ -11,6 +11,7 @@ import { stageLabel } from "@/lib/labels";
 import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
+import { AudioControls } from "@/components/audio-controls";
 import { InteractionCard } from "@/components/interaction-card";
 import { MessageStream } from "@/components/message-stream";
 import { GameStage } from "@/components/game-stage";
@@ -131,6 +132,7 @@ function GameContent() {
               <span className="animate-pulse text-amber-300">处理中：{pending.label}…</span>
             )}
             <span className={conn.className}>{conn.text}</span>
+            <AudioControls />
             <Link href="/" className="text-white/50 underline">
               首页
             </Link>

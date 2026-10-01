@@ -28,6 +28,7 @@ from app.infrastructure.db.session import create_engine as create_db_engine
 from app.infrastructure.diagnostics.metrics import metrics
 from app.infrastructure.errx import Error as WJError
 from app.infrastructure.errx import codes, new
+from app.services.audio_channel import AudioTrackChannel
 from app.services.stream_channel import StreamChannel
 
 router = APIRouter()
@@ -196,8 +197,13 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
     await ws.accept()
     metrics.set_gauge("wenjing_ws_connections", metrics.get("wenjing_ws_connections") + 1)
     application = get_application()
-    hub = get_container().event_hub
+    container = get_container()
+    hub = container.event_hub
     outbox: list[dict[str, Any]] = []
+    # 音轨出口是**连接级**的（ADR-0005 §11）：一条连接的音频只发给这条连接，
+    # `cancel_audio` 也只可能取消自己听得到的轨。在 `try` **之前**建，是为了让
+    # `finally` 里的 `aclose` 在鉴权/参数校验提前失败时也有对象可关。
+    audio = AudioTrackChannel(session_id, ws.send_json, ws.send_bytes)
 
     async def _send_error(exc: WJError, seq: int = 0) -> None:
         env = envelope_for(exc)
@@ -241,32 +247,50 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             # 它发的 `stream_*` 不进 outbox——没有 seq 就没有缺口，重连补发靠的是
             # 事件流里那条完整的 `character_speech`。
             channel = StreamChannel(session_id, ws.send_json)
-            # tee（#62）：文字逐段给 WS，同时攒成整句喂 TTS 出口（M6 #63 接实现）。
+            # tee（#62）：文字逐段给 WS，同时攒成整句喂 TTS 出口（#63）。
             # 运行时只认 `speech_sink` 一个出口，怎么分流是这里的事。
-            tee = StreamTee(text_sink=channel)
+            synthesizer = container.tts_synthesizer_factory(
+                audio,
+                session_id=sid,
+                org_id=actor.org_id,
+                user_id=actor.user_id,
+                script_id=script_id,
+            )
+            tee = StreamTee(text_sink=channel, sentence_sink=synthesizer)
             try:
                 msgs = await application.submit_command_messages(
                     sid, command, actor=actor, speech_sink=tee
                 )
             except WJError as exc:
                 # 先收流再报错：错误消息不能被还没冲刷完的字幕挤到后面
+                await synthesizer.aclose()
                 await channel.aclose()
+                await audio.flush()
                 await _send_error(exc)
                 return
+            # 顺序：先等合成收尾（它还在往 audio 里塞帧），再冲刷两个出口。
+            # 注意 audio 只 `flush` 不 `aclose`：它是**连接级**的，每条命令都关掉
+            # 会让第二条命令起的音频全被静默吞掉（只有第一个角色有声音）。
+            await synthesizer.aclose()
             await channel.aclose()
+            await audio.flush()
             for msg in msgs:
                 outbox.append(msg)
                 await ws.send_json(msg)
         elif parsed.type == "cancel_audio":
-            # barge-in（ADR-0005 §11）：客户端停播 + 通知服务端放掉这条音轨。
-            # 音轨是 M6（#63）的产物，今天没有可取消的任务——这里尤其**不能**顺手去
-            # 打断命令：命令串行 + 事件同事务持久化是引擎的地基，服务端在生成中本就
-            # 收不到新命令，barge-in 只可能是客户端行为。
+            # barge-in（ADR-0005 §11）：客户端停播 + 服务端放掉这条音轨的待发数据。
+            # 这里尤其**不能**顺手去打断命令：命令串行 + 事件同事务持久化是引擎的
+            # 地基，服务端在生成中本就收不到新命令，barge-in 只可能是客户端行为。
+            # 已经写进 socket 的字节收不回来，真正的"停"是客户端 `<audio>.pause()`。
+            cancelled = audio.cancel(parsed.track_id)
             logger.info(
                 "audio_cancel",
                 extra={
                     "session_id": session_id,
-                    "wj_extra": {"track_id": parsed.track_id},
+                    "wj_extra": {
+                        "track_id": parsed.track_id,
+                        "cancelled": cancelled,
+                    },
                 },
             )
         elif parsed.type == "confirm_messages":
@@ -295,6 +319,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         # （漏掉的也能靠随后的 resync_request 从事件流补回来，但没必要漏）。
         with hub.subscribe(sid) as pushed:
             init = await application.session_init(sid, actor=actor)
+            script_id = init.get("script_id")
             init_msg = {
                 "type": "session_init",
                 "seq": init["last_sequence"],
@@ -339,6 +364,8 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         except Exception:
             pass
     finally:
+        # 音轨出口是连接级的：连接真的结束了才关（见上面 per-command 的 `flush`）。
+        await audio.aclose()
         metrics.dec("wenjing_ws_connections")
         try:
             await ws.close()

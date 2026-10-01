@@ -1,5 +1,6 @@
 "use client";
 
+import { audioSession } from "@/lib/audio-session";
 import { create } from "zustand";
 
 import type {
@@ -178,10 +179,15 @@ interface GameStore {
   pending: PendingCommand | null;
   connection: Connection;
   sender: Sender | null;
+  /** 音频是否静音（#63）。只影响本地播放，不影响服务端合成与计量。 */
+  audioMuted: boolean;
 
   resetSession: (sessionId: string) => void;
   setConnection: (connection: Connection) => void;
   setSender: (sender: Sender) => void;
+  setAudioMuted: (muted: boolean) => void;
+  /** barge-in（#63 / ADR-0005 §11）：停播全部音轨并通知服务端放掉它们。 */
+  bargeIn: () => string[];
   setScriptInfo: (pkg: ScriptPackage) => void;
   setStatusInfo: (status: {
     stage: string;
@@ -259,6 +265,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     pending: null,
     connection: "idle",
     sender: null,
+    audioMuted: false,
 
     resetSession: (sessionId) => {
       clearResendTimer();
@@ -283,6 +290,25 @@ export const useGameStore = create<GameStore>((set, get) => {
     setConnection: (connection) => set({ connection }),
 
     setSender: (sender) => set({ sender }),
+
+    setAudioMuted: (muted) => {
+      audioSession.setMuted(muted);
+      set({ audioMuted: muted });
+    },
+
+    bargeIn: () => {
+      // 停播是**客户端**行为（ADR-0005 §11）：服务端在生成中收不到新命令，
+      // 这里只通知它把还没发完的音轨丢掉。已经写进 socket 的字节收不回来，
+      // 真正的"停"是上面那句 `stopAll`。
+      const stopped = audioSession.bargeIn();
+      const sender = get().sender;
+      if (sender) {
+        for (const trackId of stopped) {
+          sender({ type: "cancel_audio", track_id: trackId });
+        }
+      }
+      return stopped;
+    },
 
     setScriptInfo: (pkg) =>
       set({
@@ -312,6 +338,13 @@ export const useGameStore = create<GameStore>((set, get) => {
       if (msg.type.startsWith("stream_")) {
         const next = applyStreamMessage(get().streams, msg);
         if (next) set({ streams: next });
+        return;
+      }
+
+      // 音轨控制帧（#63）：与 `stream_*` 同类——瞬态、无 seq、不进消息流、不推进
+      // 确认水位。音频字节本身走**二进制帧**（`lib/ws.ts`），不经过这里。
+      if (msg.type === "audio_start" || msg.type === "audio_end") {
+        audioSession.handleControl(msg.type, payload);
         return;
       }
 

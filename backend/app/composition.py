@@ -11,10 +11,12 @@ services/domain/infrastructure，不 import controllers/main，故不破坏 `lin
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from app.domain.game.image_review import ImageReviewAgent
 from app.domain.game.media import MediaKind, SceneDesigner
+from app.domain.game.tts import VoiceMap
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.db.session import SessionLocal, engine
 from app.infrastructure.diagnostics.logging import exc_reason
@@ -29,6 +31,8 @@ from app.infrastructure.media import (
     build_image_gen,
     build_image_search,
     build_object_storage,
+    build_tts,
+    build_voice_map,
 )
 from app.infrastructure.rag.service import RagService, build_search_provider
 from app.infrastructure.usage import UsageRecorder
@@ -58,6 +62,8 @@ class Container:
         self._object_storage: Any | None = None
         self._image_search: Any | None = None
         self._image_gen: Any | None = None
+        self._tts: Any | None = None
+        self._voice_map: VoiceMap | None = None
         self._asset_access: AssetAccessService | None = None
         self._asset_repo: SqlAssetRepository | None = None
         self._asset_jobs: SqlAssetJobStore | None = None
@@ -259,6 +265,52 @@ class Container:
         if self._image_gen is None:
             self._image_gen = build_image_gen(self.settings)
         return self._image_gen
+
+    @property
+    def tts(self) -> Any:
+        """语音合成端口（ADR-0005 §11 / #63）；provider=null 时为安全空实现。"""
+        if self._tts is None:
+            self._tts = build_tts(self.settings)
+        return self._tts
+
+    @property
+    def voice_map(self) -> VoiceMap:
+        """角色 → 音色映射（#63）。领域策略，与 provider 选型解耦。"""
+        if self._voice_map is None:
+            self._voice_map = build_voice_map(self.settings)
+        return self._voice_map
+
+    @property
+    def tts_synthesizer_factory(self) -> Callable[[Any], Any]:
+        """按连接造 `TtsSynthesizer` 的工厂（音轨出口是 per-connection 的）。
+
+        出口（`AudioTrackChannel`）随连接生灭，所以合成器也必须 per-connection；
+        端口、音色表、计量、配额这些进程级依赖在这里绑好，路由只管传出口。
+        """
+        from app.domain.game.tts import TtsSynthesizer
+
+        meter = MediaUsageRecorder(session_factory=self.session_factory)
+        quota = MediaQuotaService(
+            session_factory=self.session_factory,
+            limits={MediaKind.TTS: self.settings.media_org_tts_budget},
+        )
+
+        def build(sink: Any, *, session_id: Any, org_id: Any, user_id: Any,
+                  script_id: Any = None) -> TtsSynthesizer:
+            return TtsSynthesizer(
+                port=self.tts,
+                voices=self.voice_map,
+                sink=sink,
+                meter=meter,
+                quota=quota,
+                session_id=session_id,
+                org_id=org_id,
+                user_id=user_id,
+                script_id=script_id,
+                max_sentence_chars=self.settings.media_tts_max_sentence_chars,
+            )
+
+        return build
 
     @property
     def asset_access(self) -> AssetAccessService:
