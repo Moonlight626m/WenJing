@@ -62,6 +62,8 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
             beats=[
                 Beat(beat_id=b.beat_id, description=b.description) for b in s.beats
             ],
+            # 背景稳定引用随包进引擎（#53）：export_state 据游标解析 current_asset
+            background_asset=s.background_asset,
         )
         for s in pkg.scenes
     ]

@@ -31,6 +31,7 @@ _CODE_MAP: dict[int, str] = {
     codes.LLM_CALL_FAILED: "LLM_CALL_FAILED",
     codes.LLM_OUTPUT_PARSE_FAILED: "LLM_INVALID_OUTPUT",
     codes.LLM_UNKNOWN_MODEL: "LLM_CALL_FAILED",
+    codes.LLM_TIMEOUT: "LLM_TIMEOUT",
     codes.CNT_UNSUPPORTED_GENRE: "CONTENT_UNSUPPORTED_GENRE",
     codes.CNT_INSUFFICIENT_SOURCE: "CONTENT_INSUFFICIENT_SOURCE",
     codes.CNT_GENERATION_FAILED: "CONTENT_GENERATION_FAILED",
@@ -38,9 +39,28 @@ _CODE_MAP: dict[int, str] = {
     codes.INP_UNSUPPORTED_EXTENSION: "INPUT_UNSUPPORTED_EXTENSION",
     codes.INP_INVALID_ENCODING: "INPUT_INVALID_ENCODING",
     codes.INP_TOO_LARGE: "INPUT_TOO_LARGE",
+    codes.INP_INVALID_MEDIA_INPUT: "INPUT_INVALID_MEDIA_INPUT",
     codes.SEARCH_UNAVAILABLE: "SEARCH_UNAVAILABLE",
     codes.SEARCH_BLOCKED_TARGET: "SEARCH_BLOCKED_TARGET",
     codes.SEARCH_TIMEOUT: "SEARCH_TIMEOUT",
+    codes.MEDIA_STORAGE_FAILED: "MEDIA_STORAGE_FAILED",
+    codes.MEDIA_IMAGE_INVALID: "MEDIA_IMAGE_INVALID",
+    codes.MEDIA_ASSET_NOT_FOUND: "MEDIA_ASSET_NOT_FOUND",
+    codes.MEDIA_ASSET_NOT_READY: "MEDIA_ASSET_NOT_READY",
+    codes.MEDIA_SEARCH_FAILED: "MEDIA_SEARCH_FAILED",
+    codes.MEDIA_SEARCH_BLOCKED: "MEDIA_SEARCH_BLOCKED",
+    codes.MEDIA_SEARCH_TIMEOUT: "MEDIA_SEARCH_TIMEOUT",
+    codes.MEDIA_IMAGE_GEN_FAILED: "MEDIA_IMAGE_GEN_FAILED",
+    codes.MEDIA_IMAGE_GEN_TIMEOUT: "MEDIA_IMAGE_GEN_TIMEOUT",
+    codes.MEDIA_IMAGE_GEN_BLOCKED: "MEDIA_IMAGE_GEN_BLOCKED",
+    codes.MEDIA_IMAGE_GEN_INVALID: "MEDIA_IMAGE_GEN_INVALID",
+    codes.MEDIA_UPLOAD_TOO_LARGE: "MEDIA_UPLOAD_TOO_LARGE",
+    codes.MEDIA_TTS_FAILED: "MEDIA_TTS_FAILED",
+    codes.MEDIA_TTS_TIMEOUT: "MEDIA_TTS_TIMEOUT",
+    codes.MEDIA_TTS_INVALID: "MEDIA_TTS_INVALID",
+    codes.MEDIA_ASR_FAILED: "MEDIA_ASR_FAILED",
+    codes.MEDIA_ASR_TIMEOUT: "MEDIA_ASR_TIMEOUT",
+    codes.MEDIA_ASR_INVALID: "MEDIA_ASR_INVALID",
     codes.PRT_MALFORMED_MESSAGE: "PROTOCOL_MALFORMED_MESSAGE",
     codes.PRT_UNKNOWN_COMMAND: "PROTOCOL_UNKNOWN_COMMAND",
     codes.PER_WRITE_FAILED: "PERSISTENCE_WRITE_FAILED",
@@ -55,19 +75,6 @@ _CODE_MAP: dict[int, str] = {
     codes.SCR_NOT_EDITABLE: "CONTENT_SCRIPT_NOT_EDITABLE",
     codes.SCR_MATERIAL_NOT_FOUND: "CONTENT_MATERIAL_NOT_FOUND",
     codes.SCR_NOT_READY: "CONTENT_SCRIPT_NOT_READY",
-}
-
-_DOMAIN_BY_SEGMENT: dict[str, ErrorDomain] = {
-    "1": ErrorDomain.SESSION,   # SESS
-    "2": ErrorDomain.GAME,      # ENG
-    "3": ErrorDomain.GAME,      # AGENT 归入 game 域
-    "4": ErrorDomain.LLM,       # LLM
-    "6": ErrorDomain.CONTENT,   # CNT
-    "7": ErrorDomain.INPUT,     # INP
-    "8": ErrorDomain.SEARCH,     # SEARCH
-    "9": ErrorDomain.PROTOCOL,  # PRT
-    "11": ErrorDomain.AUTH,     # AUTH
-    "12": ErrorDomain.CONTENT,  # SCR（剧本库，归入 content 域）
 }
 
 
@@ -91,6 +98,7 @@ def safe_message(err: Any) -> str:
         codes.LLM_CALL_FAILED: "模型服务暂时不可用，请稍后重试。",
         codes.LLM_OUTPUT_PARSE_FAILED: "模型输出异常，正在重试。",
         codes.LLM_UNKNOWN_MODEL: "模型服务暂时不可用，请稍后重试。",
+        codes.LLM_TIMEOUT: "模型响应超时，请稍后重试。",
         codes.CNT_UNSUPPORTED_GENRE: "该课文体裁暂不支持，请导入小说、叙事文、戏剧或人物故事。",
         codes.CNT_INSUFFICIENT_SOURCE: "原文内容不足以生成剧本，请补充更完整的叙事文本。",
         codes.CNT_GENERATION_FAILED: "剧本生成失败，请稍后重试。",
@@ -98,9 +106,28 @@ def safe_message(err: Any) -> str:
         codes.INP_UNSUPPORTED_EXTENSION: "仅支持 .txt 或 .md 文件。",
         codes.INP_INVALID_ENCODING: "文件编码无法识别，请使用 UTF-8 或 GBK 编码。",
         codes.INP_TOO_LARGE: "课文内容过长，请缩短后重试。",
+        codes.INP_INVALID_MEDIA_INPUT: "上传的配图参数不合法，请检查后重试。",
         codes.SEARCH_UNAVAILABLE: "网络资料检索暂不可用，将仅基于原文生成。",
         codes.SEARCH_BLOCKED_TARGET: "目标网址不可访问。",
         codes.SEARCH_TIMEOUT: "网络资料获取超时，将仅基于原文生成。",
+        codes.MEDIA_STORAGE_FAILED: "媒体存储暂时不可用，请稍后重试。",
+        codes.MEDIA_IMAGE_INVALID: "图片格式无法处理。",
+        codes.MEDIA_ASSET_NOT_FOUND: "资产不存在。",
+        codes.MEDIA_ASSET_NOT_READY: "资产尚未就绪，请稍后重试。",
+        codes.MEDIA_SEARCH_FAILED: "图片素材检索暂不可用。",
+        codes.MEDIA_SEARCH_BLOCKED: "图片素材来源不可访问。",
+        codes.MEDIA_SEARCH_TIMEOUT: "图片素材检索超时。",
+        codes.MEDIA_IMAGE_GEN_FAILED: "配图生成暂不可用，将先以文字继续。",
+        codes.MEDIA_IMAGE_GEN_TIMEOUT: "配图生成超时，将先以文字继续。",
+        codes.MEDIA_IMAGE_GEN_BLOCKED: "该配图请求不符合内容安全要求。",
+        codes.MEDIA_IMAGE_GEN_INVALID: "生成的配图不可用。",
+        codes.MEDIA_UPLOAD_TOO_LARGE: "上传的图片过大，请压缩后重试。",
+        codes.MEDIA_TTS_FAILED: "语音合成失败，请稍后重试。",
+        codes.MEDIA_TTS_TIMEOUT: "语音合成超时，请稍后重试。",
+        codes.MEDIA_TTS_INVALID: "合成的语音不可用。",
+        codes.MEDIA_ASR_FAILED: "语音识别失败，请改用键盘输入。",
+        codes.MEDIA_ASR_TIMEOUT: "语音识别超时，请改用键盘输入。",
+        codes.MEDIA_ASR_INVALID: "没有听清，请重说或改用键盘输入。",
         codes.PRT_MALFORMED_MESSAGE: "请求格式无法处理。",
         codes.PRT_UNKNOWN_COMMAND: "不支持的命令类型。",
         codes.PER_WRITE_FAILED: "数据保存失败，请稍后重试。",

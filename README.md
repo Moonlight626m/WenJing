@@ -2,7 +2,8 @@
 
 面向学生的语文课文情景演绎 multi-agent 角色扮演平台。基于课文由编剧 Agent 生成剧本，玩家与角色 Agents 共同演绎剧情，还原课文后进入同人续写。
 
-> 功能设计见 [`design/design.md`](design/design.md)；技术决议（D1–D15）见 [`design/design_00_tech_decisions.md`](design/design_00_tech_decisions.md)。
+> 现行决策见 [`docs/adr/`](docs/adr/)（ADR），文档地图见 [`docs/README.md`](docs/README.md)；
+> MVP 期设计文档已归档到 [`docs/archive/design/`](docs/archive/design/)（历史参考，非现行规格）。
 
 ## 技术栈
 
@@ -16,9 +17,12 @@
 ## 目录结构
 
 ```
-backend/     # FastAPI 服务（app: config/api/core/agents/db/schemas）
-frontend/    # Next.js 应用（app/components/stores/lib）
-design/      # 系统设计文档
+backend/            # FastAPI 服务（app: composition/controllers/services/domain/infrastructure/contracts）
+frontend/           # Next.js 应用（app/components/stores/lib）
+docs/               # ADR、专题设计、调研、agent 配置（见 docs/README.md）
+docs/archive/design/# 已归档的 MVP 期系统设计（历史参考，非现行规格）
+CONTEXT.md          # 领域术语表
+AGENTS.md           # 仓库协作与命令约定
 ```
 
 ## 环境配置
@@ -161,5 +165,12 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
 前端全流程与生产化加固。多用户化（ADR-0002 / #16）已完成（#17–#26）：账号后端、
 鉴权隔离、教师创作 API、学生游玩 API、用量计量、账号/教师/学生端 UI、运营后台 UI、
-文档收尾。剩余：运营后台「用户/组织」面板待后端补充端点（见 #25）。
+文档收尾。剧本生成 workflow（ADR-0003，#27–#36）与**场景视觉化与多媒体**
+（ADR-0005，epic #38 / 子任务 #39–#64）已推进到 M6：媒体端口与对象存储、开放版权
+检索 + 审核 + 回退生成、配图审批、事件为权威的资产继承、运行期配图与崩溃恢复、
+真 token 流式字幕（WS 瞬态 + 事件只存最终文本）、TTS 配音与 ASR 语音输入均已落地。
+
+剩余：**#52**（游玩页舞台的视觉验收）待人工确认；epic **#38** 等它关单后收口。
+运营后台「用户/组织」面板仍待后端补充端点（见 #25）。
+
 领域术语见 [`CONTEXT.md`](CONTEXT.md)。

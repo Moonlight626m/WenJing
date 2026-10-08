@@ -84,6 +84,7 @@ class EventType(StrEnum):
     AGENT_REACTIONS_DONE = "agent_reactions_done"
     STAGE_TRANSITIONED = "stage_transitioned"
     ROLLBACK_EXECUTED = "rollback_executed"
+    ASSET_READY = "asset_ready"
 
 
 class ErrorDomain(StrEnum):
@@ -92,6 +93,7 @@ class ErrorDomain(StrEnum):
     INPUT = "input"
     CONTENT = "content"
     SEARCH = "search"
+    MEDIA = "media"
     LLM = "llm"
     GAME = "game"
     SESSION = "session"
@@ -140,12 +142,17 @@ class UsagePurpose(StrEnum):
     DIVIDE_EVENTS = "divide_events"
     CHARACTER_DESIGN = "character_design"
     SCRIPT_WRITING = "script_writing"
+    # 媒体图片审核 agent（ADR-0005 §6 / issue #45）：便宜模型结构化判定。
+    IMAGE_REVIEW = "image_review"
 
 
 class MessageCategory(StrEnum):
-    """前端渲染类别：叙事消息 / 角色发言 / 系统提示 / 当前交互。"""
+    """前端渲染类别：叙事消息 / 角色发言 / 系统提示 / 当前交互 / 资产就绪。"""
 
     NARRATIVE = "narrative"
     CHARACTER_SPEECH = "character_speech"
     SYSTEM = "system"
     INTERACTION = "interaction"
+    # 运行期配图就绪（ADR-0005 §5，issue #56）：命令外事件路径推送，
+    # 前端据此替换当前场景背景；不是聊天流消息，故不复用 ContentBlock。
+    ASSET_READY = "asset_ready"

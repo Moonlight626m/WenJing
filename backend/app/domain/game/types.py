@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.contracts.script import AssetRef
 from app.domain.game.state_machine import GameStage, InteractionPhase
 
 # ===== 剧本（Stage1 产物，MVP 由 mock 提供，不测生成链路）=====
@@ -45,6 +46,9 @@ class Scene:
     title: str
     participants: list[str] = field(default_factory=list)
     beats: list[Beat] = field(default_factory=list)
+    # 场景背景稳定引用（#53 / ADR-0005 §3）：URL-free，URL 由鉴权端点签发；
+    # 无图（纯文本游玩）为 None。
+    background_asset: AssetRef | None = None
 
 
 @dataclass
@@ -104,6 +108,19 @@ class Direction:
 
     conflict: str
     context: str
+
+
+@dataclass
+class SceneAssetIntent:
+    """运行期配图意图（ADR-0005 §5，issue #56）：引擎说「这个场景缺图」。
+
+    引擎**只发起意图**，不自己生成——生成由 Session 层在命令事务提交后派后台
+    任务（`services/scene_assets.py`）。这里只带引擎自己知道的东西；session /
+    branch / org 这些归属上下文由应用层在请求期补上，引擎拿不到也不该拿。
+    """
+
+    scene_key: str
+    description: str
 
 
 # ===== 交互与玩家 =====

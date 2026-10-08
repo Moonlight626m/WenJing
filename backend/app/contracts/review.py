@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 from pydantic import Field
@@ -83,7 +84,11 @@ class EventDivisionDraft(ContractModel):
 
 
 class GateReview(VersionedContract):
-    """闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。"""
+    """闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。
+
+    终审闸门（#48 选项 A）随 `package` 天然携带场景/人物槽位上的 AssetRef，
+    教师配图审批（#49）直接基于槽位状态发起 asset_ops，无需独立资产清单字段。
+    """
 
     gate: GateKind
     dossier: MaterialDossier | None = None
@@ -93,19 +98,62 @@ class GateReview(VersionedContract):
     package: ScriptPackage | None = None
 
 
+class AssetOp(VersionedContract):
+    """教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。
+
+    - `subject_key`：配图主体键（#48 命名）——`scene:{scene_id}` /
+      `character:{name}`，与 AssetRef 所在槽位一一对应；
+    - `asset_id`：仅 `bind_upload` 用（上传端点先落库、resume 再绑定）；
+      其余操作按 subject_key 定位槽位，忽略该字段。
+
+    生效语义（节点侧实现）：
+    - `remove`：清空槽位 AssetRef（资产行留存；ADR-0005 明确删除/回收暂不立项）；
+    - `regenerate`：重新配图（绕开该主体的既有资产缓存与同字节检索候选）；
+    - `search_replace`：仅开放版权检索替换（不走付费生成；失败保留旧图）；
+    - `bind_upload`：绑定教师上传的资产（upload 端点产出）。
+    """
+
+    op: Literal["remove", "regenerate", "search_replace", "bind_upload"]
+    subject_key: str = Field(min_length=1)
+    kind: Literal["background", "avatar", "fullbody"]
+    asset_id: uuid.UUID | None = None
+
+
+def validate_subject_key(subject_key: str) -> str:
+    """上传端点的 subject_key 输入校验（#49）：`scene:{int}` / `character:{name}`。
+
+    契约层没有对 AssetOp.subject_key 加 pattern——workflow 内部键是可信的，
+    校验只需卡在系统边界（multipart 表单进不了 Pydantic 模型）。
+    """
+    if subject_key.startswith("scene:"):
+        rest = subject_key.split(":", 1)[1]
+        if rest.isdigit() and int(rest) >= 1:
+            return subject_key
+    elif subject_key.startswith("character:") and len(subject_key) > len("character:"):
+        return subject_key
+    raise ValueError(f"bad subject_key: {subject_key!r}")
+
+
 class GateEdits(VersionedContract):
-    """教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。"""
+    """教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。
+
+    `asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一
+    subject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。
+    """
 
     dossier: MaterialDossier | None = None
     division: EventDivisionDraft | None = None
     profiles: list[CharacterProfile] | None = None
     package: ScriptPackage | None = None
+    asset_ops: list[AssetOp] = Field(default_factory=list)
 
 
 __all__ = [
     "GateKind",
     "GateReview",
     "GateEdits",
+    "AssetOp",
+    "validate_subject_key",
     "CharacterNote",
     "MaterialDossier",
     "InteractionPoint",

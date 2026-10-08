@@ -158,14 +158,8 @@ def log_event(record: logging.LogRecord) -> None:
     logging.getLogger(LOGGER_NAME).handle(record)
 
 
-def exc_reason(exc: BaseException) -> str:
-    """统一 fallback 日志的原因格式：`类型: 消息`。"""
-    return f"{type(exc).__name__}: {exc}"
-
-
 __all__ = [
     "configure_logging",
-    "exc_reason",
     "get_logger",
     "LOGGER_NAME",
     "redact_credentials",

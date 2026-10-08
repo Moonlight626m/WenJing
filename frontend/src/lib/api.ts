@@ -1,6 +1,8 @@
 import { apiBaseUrl } from "@/lib/config";
 import { logger } from "@/lib/logger";
 import type {
+  AssetRef,
+  AssetUrlResponse,
   AuthSessionInfo,
   ErrorEnvelope,
   GenerationResumeRequest,
@@ -14,8 +16,10 @@ import type {
   ScriptPublishRequest,
   ScriptSummary,
   SessionListResponse,
+  TranscribeResponse,
   UsageAggregateResponse,
 } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
@@ -53,8 +57,10 @@ export function formatApiError(err: unknown): string {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
+  const isFormData = init?.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    // FormData 由浏览器自设 Content-Type（含 multipart boundary），不能覆盖
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(init?.headers as Record<string, string> | undefined),
   };
   if (MUTATING_METHODS.has(method)) {
@@ -146,7 +152,7 @@ export interface RuntimeUpdateDto {
 export function openSession(scriptId: number): Promise<SessionStatus> {
   return request("/api/sessions", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.0.0", script_id: scriptId }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, script_id: scriptId }),
   });
 }
 
@@ -194,7 +200,7 @@ export function createScriptDraft(
 ): Promise<ScriptSummary> {
   return request("/api/scripts", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 
@@ -216,7 +222,7 @@ export function resumeScriptGeneration(
   return request(`/api/scripts/${scriptId}/generation/resume`, {
     method: "POST",
     body: JSON.stringify({
-      schema_version: "2.0.0",
+      schema_version: CONTRACTS_SCHEMA_VERSION,
       ...payload,
     } satisfies GenerationResumeRequest),
   });
@@ -232,7 +238,7 @@ export function publishScript(
 ): Promise<ScriptSummary> {
   return request(`/api/scripts/${scriptId}/publish`, {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.0.0", visibility }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, visibility }),
   });
 }
 
@@ -242,6 +248,28 @@ export function unpublishScript(scriptId: number): Promise<ScriptSummary> {
 
 export function deleteScript(scriptId: number): Promise<void> {
   return request(`/api/scripts/${scriptId}`, { method: "DELETE" });
+}
+
+// ===== 资产（#49/#50，backend/app/controllers/assets.py 镜像）=====
+
+/** 预签名 URL 物化（短时效）：教师审阅面板按 asset_id 换取可显示的图片地址。 */
+export function fetchAssetUrl(assetId: string): Promise<AssetUrlResponse> {
+  return request(`/api/assets/${assetId}/url`);
+}
+
+/** 教师自有素材上传（#49）：multipart；成功返回 READY 的稳定引用。 */
+export function uploadScriptAsset(
+  scriptId: number,
+  input: { subjectKey: string; kind: "background" | "avatar" | "fullbody"; file: File }
+): Promise<AssetRef> {
+  const form = new FormData();
+  form.set("subject_key", input.subjectKey);
+  form.set("kind", input.kind);
+  form.set("image", input.file);
+  return request(`/api/scripts/${scriptId}/assets/upload`, {
+    method: "POST",
+    body: form,
+  });
 }
 
 // ===== 运营后台（super_admin 只读，backend/app/api/admin.py 镜像）=====
@@ -286,17 +314,40 @@ export function listAdminUsage(
 export function register(input: Omit<RegisterRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/register", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 
 export function login(input: Omit<LoginRequest, "schema_version">): Promise<AuthSessionInfo> {
   return request("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ schema_version: "2.0.0", ...input }),
+    body: JSON.stringify({ schema_version: CONTRACTS_SCHEMA_VERSION, ...input }),
   });
 }
 
 export function logout(): Promise<void> {
   return request("/api/auth/logout", { method: "POST" });
+}
+
+// ===== 语音输入（#64）=====
+
+/**
+ * 上传一段录音换取文本。
+ *
+ * **只上传、不落库**：服务端在请求内用完即弃，不回传音频也不写事件流。拿到
+ * `text` 后由调用方当普通 `free_input` 命令提交——命令端点仍是唯一游戏输入入口。
+ */
+export function transcribeSpeech(
+  sessionId: string,
+  audio: Blob,
+  durationMs: number
+): Promise<TranscribeResponse> {
+  const form = new FormData();
+  // 文件名按容器给：有些 provider 按扩展名判格式（后端也会兜一层白名单）
+  form.append("audio", audio, "speech.webm");
+  form.append("duration_ms", String(Math.max(0, Math.round(durationMs))));
+  return request(`/api/sessions/${sessionId}/transcribe`, {
+    method: "POST",
+    body: form,
+  });
 }

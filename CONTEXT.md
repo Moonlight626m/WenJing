@@ -1,7 +1,7 @@
 # 文境 — 领域术语表（CONTEXT.md）
 
-> 单上下文布局（见 `docs/agents/domain.md`）。术语以本表为准；与 `design/` 旧文档冲突时，
-> 以 ADR（`docs/adr/`）与本表为准。ADR-0002 引入的多用户术语见文末参考。
+> 单上下文布局（见 `docs/agents/domain.md`）。术语以本表为准；与 `docs/archive/design/`
+> 旧文档冲突时，以 ADR（`docs/adr/`）与本表为准。ADR-0002 引入的多用户术语见文末参考。
 
 ## 产品域
 
@@ -67,3 +67,28 @@
 每次 LLM 调用一条记录，落 `llm_usage` 表
 （provider / model / tokens / purpose: stage1|agent|verify / org / user / script / session）。
 供 super_admin 运营后台按 org / 时间 / 用途聚合。
+媒体（图片/TTS/ASR）另记 `media_usage`（kind / provider / units / org / script / session），
+与 token 语义的 `llm_usage` 分离（见 ADR-0005）。
+
+## 媒体与场景表现（ADR-0005）
+
+### 资产（Asset）
+
+场景背景图 / 角色头像 / 立绘等多媒体文件。字节存**对象存储**（S3 兼容，私有桶），
+DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`，不存 URL/字节。
+访问经鉴权端点签发短时效预签名 URL，前端直取。发布后资产冻结。
+
+### 场景设计（SceneDesigner）
+
+场景资产编排组件（`domain/game/media.py`）：检索开放版权素材 → 审核 → 回退文生图 →
+存储 → 产出 `AssetRef`。Stage2 在剧本生成期预生成；Stage3 由引擎中转异步生成。
+
+### 编剧 Agent / DM
+
+编剧 Agent（`screenwriter`）是剧情推进的"主持人"角色；"DM"仅口语别名，不是独立术语，
+代码与契约沿用 `screenwriter`。
+
+### 流式（Streaming）
+
+运行期角色发言采用真 token 流式以降低 TTFT；`stream_*` 为 WS 瞬态消息，事件溯源只存
+最终完整文本，断线用 `resync` 补全（ADR-0005 §10）。

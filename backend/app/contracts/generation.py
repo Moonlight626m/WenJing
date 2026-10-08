@@ -38,6 +38,7 @@ class GenerationNode(StrEnum):
     DESIGN_CHARACTERS = "design_characters"
     WRITE_SCRIPT = "write_script"
     FINAL_AUDIT = "final_audit"
+    DESIGN_ASSETS = "design_assets"
 
 
 class GenerationNodeStatus(StrEnum):

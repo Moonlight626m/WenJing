@@ -31,6 +31,7 @@ from app.contracts.auth import (
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
+    CancelAudioMessage,
     CreateSessionRequest,
     ResyncRequestMessage,
     ServerMessage,
@@ -44,6 +45,7 @@ from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.media import AssetUrlResponse
 from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState
 from app.contracts.script_library import (
@@ -78,6 +80,7 @@ def _load(name: str) -> dict:
         ("material_input", MaterialInput),
         ("material", Material),
         ("material_public", MaterialPublic),
+        ("asset_url_response", AssetUrlResponse),
         ("script_create_request", ScriptCreateRequest),
         ("script_publish_request", ScriptPublishRequest),
         ("generation_resume_request", GenerationResumeRequest),
@@ -123,6 +126,50 @@ def test_script_package_fixture_roundtrip() -> None:
 
     out = json.loads(pkg.model_dump_json())
     assert ScriptPackage.model_validate(out) == pkg
+
+
+def test_asset_ref_is_url_free() -> None:
+    """AssetRef 只放稳定引用，不得泄漏 object_key/URL（#43 验收）。"""
+    from pydantic import ValidationError
+
+    from app.contracts.script import AssetRef
+
+    assert set(AssetRef.model_fields) == {"schema_version", "asset_id", "kind", "status"}
+    with pytest.raises(ValidationError):
+        AssetRef.model_validate(
+            {
+                "asset_id": "11111111-1111-4111-8111-111111111111",
+                "kind": "background",
+                "status": "ready",
+                "object_key": "org/secret.png",
+            }
+        )
+
+
+def test_asset_types_align_with_domain() -> None:
+    """契约 AssetRef/AssetCredit 与 domain/game/media 的领域定义不漂移。"""
+    from typing import get_args
+
+    from app.contracts.script import AssetCredit, AssetRef
+    from app.domain.game.media import AssetCredit as DomainCredit
+    from app.domain.game.media import AssetKind
+
+    assert set(get_args(AssetRef.model_fields["kind"].annotation)) == {
+        k.value for k in AssetKind
+    }
+    assert set(AssetCredit.model_fields) - {"schema_version"} == set(
+        DomainCredit.__dataclass_fields__
+    )
+
+
+def test_script_package_carries_asset_refs() -> None:
+    """fixture 已覆盖 Scene/CharacterProfile 的资产引用与署名。"""
+    from app.contracts.script import ScriptPackage
+
+    pkg = ScriptPackage.model_validate(json.loads((FIXTURES / "script_package.json").read_text()))
+    assert pkg.scenes[0].background_asset is not None
+    assert pkg.characters[0].avatar_asset is not None
+    assert pkg.characters[0].avatar_credit is not None
 
 
 def test_domain_event_fresh_build_defaults() -> None:
@@ -251,6 +298,11 @@ def test_client_messages_discriminated_parse() -> None:
         {"type": "resync_request", "last_confirmed_seq": 2}
     )
     assert isinstance(resync, ResyncRequestMessage)
+    cancel = client_message_adapter.validate_python(
+        {"type": "cancel_audio", "track_id": "t-1"}
+    )
+    assert isinstance(cancel, CancelAudioMessage)
+    assert cancel.track_id == "t-1"
 
 
 def test_server_message_seq_and_payload() -> None:

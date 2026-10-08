@@ -15,7 +15,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "alembic>=1.14",
-    "langchain>=0.3",
+    "langchain>=1.0",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=3.1",
     "psycopg[binary]>=3.2",
@@ -24,6 +24,9 @@ dependencies = [
     "websockets>=13",
     "argon2-cffi>=25.1.0",
     "ddgs>=9.16.0",
+    "boto3>=1.43.103",
+    "pillow>=12.3.0",
+    "python-multipart>=0.0.32",
 ]
 
 [dependency-groups]

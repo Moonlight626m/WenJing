@@ -19,7 +19,9 @@ from app.contracts.runtime import (
     RuntimeState,
     RuntimeUpdate,
 )
+from app.contracts.script import AssetRef
 from app.domain.game.game_runtime import StepResult
+from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
 
 # 内存事件类型 → 契约 EventType
@@ -32,6 +34,7 @@ _EVENT_TYPE_MAP: dict[str, EventType] = {
     "player_action": EventType.PLAYER_ACTION_RECORDED,
     "character_speech": EventType.AGENT_REACTIONS_DONE,
     "rollback": EventType.ROLLBACK_EXECUTED,
+    "asset_ready": EventType.ASSET_READY,
 }
 
 
@@ -71,22 +74,38 @@ def project_interaction(
 
 
 def project_state(
-    session_id: uuid.UUID, store: PersistentEventStore, export: dict[str, Any]
+    session_id: uuid.UUID,
+    store: PersistentEventStore,
+    export: dict[str, Any],
+    *,
+    path: list[Any] | None = None,
 ) -> RuntimeState:
-    """export_state → 契约 RuntimeState。"""
-    path = store.active_events()
+    """export_state → 契约 RuntimeState。
+
+    `path` 允许调用方传入已算好的活动分支事件（`project_update` 复用同一次遍历），
+    否则每次调用都要重走一遍 `branch_path`（血缘分支数 × 事件数）。
+    """
+    if path is None:
+        path = store.active_events()
+    current_asset = export.get("current_asset")
     return RuntimeState(
         session_id=session_id,
         branch_id=branch_uuid(session_id, store.active_branch_id),
         last_sequence=max(0, len(path) - 1),
         stage=StageValue(export["stage"]),
         phase=export.get("phase"),
-        scene_id=None,
+        scene_id=_scene_id_from_key(export.get("scene_key")),
+        scene_key=export.get("scene_key"),
+        scene_title=export.get("scene_title"),
         beat_cursor=export.get("beat_cursor"),
         plot_context={
             "plot_log": list(export.get("plot_log", [])),
             "player_role": export.get("player_role"),
         },
+        # 引擎已解析的背景稳定引用（#53）：投影只透传，URL 由鉴权端点签发
+        current_asset=(
+            AssetRef.model_validate(current_asset) if current_asset else None
+        ),
         character_memories={
             name: _flatten_memory(mem)
             for name, mem in (export.get("character_memories") or {}).items()
@@ -99,18 +118,29 @@ def project_state(
     )
 
 
+def _scene_id_from_key(scene_key: str | None) -> int | None:
+    """`scene:{id}` → id；运行期单调键（非脚本场景）返回 None。"""
+    if scene_key and scene_key.startswith("scene:"):
+        rest = scene_key.split(":", 1)[1]
+        if rest.isdigit():
+            return int(rest)
+    return None
+
+
 def project_update(
     session_id: uuid.UUID,
     store: PersistentEventStore,
     result: StepResult,
 ) -> RuntimeUpdate:
     """StepResult → 契约 RuntimeUpdate（new_events 映射为确定性 UUID 引用）。"""
-    path_ids = {e.event_id: e for e in store.active_events()}
-    order = {e.event_id: i for i, e in enumerate(store.active_events())}
+    # 活动分支事件只遍历一次：投影消息与状态都复用同一 path（此前每次命令走三遍）
+    path = store.active_events()
+    order = {e.event_id: i for i, e in enumerate(path)}
     refs: list[DomainEventRef] = []
     for entry in result.new_events:
         local_id = int(entry["event_id"])
-        ev = path_ids.get(local_id)
+        pos = order.get(local_id)
+        ev = path[pos] if pos is not None else None
         payload = ev.payload if ev else (entry.get("payload") or {})
         refs.append(
             DomainEventRef(
@@ -122,7 +152,7 @@ def project_update(
     return RuntimeUpdate(
         session_id=session_id,
         branch_id=branch_uuid(session_id, store.active_branch_id),
-        state=project_state(session_id, store, result.state),
+        state=project_state(session_id, store, result.state, path=path),
         new_events=refs,
         terminal=result.terminal,
         emitted_event_types=sorted({r.event_type for r in refs}, key=lambda t: t.value),
@@ -140,6 +170,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     "rollback": "system",
     "proposal": "system",
     "direction": "system",
+    # 运行期配图就绪（#56）：命令外事件路径的唯一对外出口——不列这里，
+    # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
+    "asset_ready": "asset_ready",
 }
 _SILENT_EVENTS = frozenset({"verification", "player_action"})
 
@@ -179,11 +212,30 @@ def project_messages(
             continue
         p = ev.payload or {}
         payload: dict[str, Any] = {"category": category}
-        if category == "character_speech":
+        if category == "asset_ready":
+            # 配图就绪（#56）：与 narrative 消息同形携带 current_asset，
+            # 前端复用同一套「按 AssetRef 换背景」逻辑，不另立字段语义。
+            # 缺省 kind/status 取自 media 的枚举（不另立第三份字面量副本），
+            # 与 `domain/game/assets.py::derive_scene_assets` 同一约定。
+            payload["scene_key"] = p.get("scene_key")
+            payload["current_asset"] = {
+                "asset_id": p.get("asset_id"),
+                "kind": p.get("kind") or AssetKind.BACKGROUND.value,
+                "status": p.get("status") or AssetStatus.READY.value,
+            }
+        elif category == "character_speech":
             payload["speaker"] = p.get("speaker")
             payload["text"] = str(p.get("text", ""))
         elif category == "narrative":
             payload["text"] = str(p.get("summary", ""))
+            # 场景切换信息（#53）：前端据此更新背景/场景标题。
+            # current_asset 也随事件下发——实时跨场景时不必等重连的 session_init
+            if p.get("scene_key"):
+                payload["scene_key"] = p["scene_key"]
+            if p.get("scene_title"):
+                payload["scene_title"] = p["scene_title"]
+            if p.get("current_asset") is not None:
+                payload["current_asset"] = p["current_asset"]
         else:
             payload["text"] = _system_text(ev.event_type, p)
         msgs.append({"type": category, "seq": seq, "payload": payload})

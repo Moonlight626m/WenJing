@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Callable
 
 from pydantic import ValidationError
 from sqlalchemy import or_, select
@@ -30,10 +31,12 @@ from app.contracts.generation import (
     NodeProgress,
 )
 from app.contracts.material import MaterialInput
-from app.contracts.review import GateReview
+from app.contracts.review import GateReview, validate_subject_key
+from app.contracts.script import AssetRef
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor, script_visible_to
 from app.domain.content.pipeline import ContentPipeline
+from app.domain.game.media import AssetKind, AssetStatus, SceneDesigner, to_asset_ref
 from app.domain.generation.stage1 import (
     PROMPT_VERSION,
     GenerationTelemetry,
@@ -44,7 +47,8 @@ from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initia
 from app.domain.prompts import write_script
 from app.domain.prompts.manager import PromptManager
 from app.infrastructure.db.prompt_store import DbPromptStore
-from app.infrastructure.errx import codes, new
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import codes, exc_reason, new
 from app.infrastructure.models.material import Material as MaterialRecord
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.script_generation import ScriptGeneration as ScriptGenerationRecord
@@ -54,6 +58,19 @@ logger = logging.getLogger("wenjing.scripts.library")
 
 # fire-and-forget 后台清理任务的强引用集（防 GC 中途回收，S7）
 _background_tasks: set[asyncio.Task] = set()
+
+
+def _failure_text(exc: BaseException) -> str:
+    """教师端可见的失败原因。
+
+    原先只写整数码（`str(exc.code)`），教师端 `GenerationProgress.error` 里只有
+    「4004」这么一个数字——#65 的现象就是「看不出发生了什么」。带码的走
+    `envelope_for` 拿稳定码名 + `safe_message` 中文文案；不带码的回落异常自身措辞。
+    """
+    if hasattr(exc, "code"):
+        env = envelope_for(exc)
+        return f"{env.code}：{env.message}"
+    return exc_reason(exc)
 
 
 def _telemetry_dict(telemetry: GenerationTelemetry) -> dict:
@@ -140,6 +157,7 @@ class ScriptLibrary:
         usage_recorder=None,
         workflow_checkpointer=None,
         workflow_enabled: bool = False,
+        scene_designer=None,
     ) -> None:
         self._factory = session_factory
         self._script_llm = script_llm
@@ -149,6 +167,13 @@ class ScriptLibrary:
         self._usage_recorder = usage_recorder
         self._workflow_checkpointer = workflow_checkpointer
         self._workflow_enabled = workflow_enabled
+        # 场景资产编排（#48）：组合根注入；None = 无媒体配置，生成期不出图。
+        # 可传零参 callable（组合根的延迟构建）：**首次生成**时才调用求值，
+        # 避免构造 ScriptLibrary 就急切建起整套媒体栈（测试桩 settings 无媒体字段）。
+        # 从 DomainGame media 的 SceneDesigner 导入仅作类型/文档用途。
+        self._scene_designer: SceneDesigner | Callable[[], SceneDesigner | None] | None = (
+            scene_designer
+        )
         self._tasks: dict[int, asyncio.Task] = {}
 
     # ===== 素材导入 =====
@@ -372,12 +397,12 @@ class ScriptLibrary:
             logger.warning(
                 "script_generation_failed script_id=%s reason=%s",
                 script_id,
-                getattr(exc, "code", exc),
+                exc_reason(exc),
             )
             await self._save_progress(
                 attempt_id,
                 status=GenerationStatus.FAILED.value,
-                error=str(getattr(exc, "code", exc)),
+                error=_failure_text(exc),
             )
 
     async def _load_generation_inputs(
@@ -420,18 +445,31 @@ class ScriptLibrary:
                 session_id=f"script-{script.id}",
                 analysis=analysis,
                 web_evidence=web,
+                # 资产归属（#48）：配图计量/配额/预生成走发起教师，字符串通道见 state.py
+                org_id=str(script.org_id) if script.org_id is not None else "",
+                user_id=str(script.owner_user_id) if script.owner_user_id is not None else "",
             ),
             thread_id=thread_id,
         )
         await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
 
+    def _designer(self) -> SceneDesigner | None:
+        """解析组合根延迟注入的编排（callable → 首次生成时求值，#48）。"""
+        return (
+            self._scene_designer() if callable(self._scene_designer)
+            else self._scene_designer
+        )
+
     def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
         """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
+        designer = self._designer()
         return WorkflowNodes(
             self._stage1_llm(script),
             model_name=self._model_name,
             teacher_gates=self._workflow_checkpointer is not None,
             prompts=PromptManager(DbPromptStore(self._factory)),
+            # 配图编排（#48）：None 时 design_assets 节点直接跳过（无媒体配置降级）
+            scene_designer=designer,
         )
 
     def _attempt_sink(self, attempt_id: int):
@@ -458,6 +496,56 @@ class ScriptLibrary:
         telemetry["doubter_rounds"] = len(runner.snapshot().doubter_events)
         telemetry["prompt_versions"] = _prompt_versions()
         await self._persist_package(script.id, package, telemetry)
+
+    async def upload_asset(
+        self,
+        script_id: int,
+        actor: Actor,
+        *,
+        subject_key: str,
+        kind: str,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+    ) -> AssetRef:
+        """教师自有素材上传（#49）：落库为 READY 资产，返回稳定引用。
+
+        - **仅草稿可上传**（`_require_editable`）：发布即冻结资产（ADR-0005 §4），
+          上传是内容变更，与编辑剧本字段同一冻结语义；
+        - 上传件在 resume 时经 `bind_upload` 绑进配图槽位——两步分离是因为
+          上传发生在审阅界面（multipart），生效发生在闸门恢复（原子、可审计）；
+        - 转 FAILED（字节不可解码等）转为同步错误立即反馈（上传不是生成期
+          后台任务，静默降级会让教师面对一个「成功但没图」的假象）。
+        """
+        script = await self._load_owned(script_id, actor)
+        self._require_editable(script)
+        designer = self._designer()
+        if designer is None:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "media stack not configured"},
+            )
+        try:
+            parsed_kind = AssetKind(kind)
+            validate_subject_key(subject_key)
+        except ValueError as exc:
+            raise new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)}) from exc
+        record = await designer.publish_upload(
+            org_id=script.org_id,
+            subject_key=subject_key,
+            scene_key=f"script:{script_id}:{subject_key}",
+            description=f"教师上传：{subject_key}",
+            kind=parsed_kind,
+            image_bytes=image_bytes,
+            content_type=content_type,
+            script_id=script_id,
+            user_id=actor.user_id,
+        )
+        if record.status is not AssetStatus.READY:
+            raise new(
+                codes.MEDIA_IMAGE_INVALID,
+                extra={"asset_id": str(record.asset_id), "status": record.status.value},
+            )
+        return to_asset_ref(record)
 
     async def resume_generation(
         self, script_id: int, actor: Actor, *, resume: GenerationResumeRequest
@@ -545,12 +633,12 @@ class ScriptLibrary:
             logger.warning(
                 "script_generation_failed script_id=%s reason=%s",
                 script.id,
-                getattr(exc, "code", exc),
+                exc_reason(exc),
             )
             await self._save_progress(
                 attempt_id,
                 status=GenerationStatus.FAILED.value,
-                error=str(getattr(exc, "code", exc)),
+                error=_failure_text(exc),
             )
 
     async def _run_legacy_stage1(

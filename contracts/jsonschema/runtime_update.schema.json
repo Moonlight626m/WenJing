@@ -5,7 +5,7 @@
       "description": "当前等待玩家响应的交互点（稳定交互点语义）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -42,12 +42,53 @@
       "title": "ActiveInteraction",
       "type": "object"
     },
+    "AssetRef": {
+      "additionalProperties": false,
+      "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.7.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "asset_id": {
+          "format": "uuid",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "background",
+            "avatar",
+            "fullbody"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "ready",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "kind",
+        "status"
+      ],
+      "title": "AssetRef",
+      "type": "object"
+    },
     "DomainEventRef": {
       "additionalProperties": false,
       "description": "RuntimeUpdate 内的事件引用（完整 DomainEvent 由 event store 持久化）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -86,7 +127,8 @@
         "player_action_recorded",
         "agent_reactions_done",
         "stage_transitioned",
-        "rollback_executed"
+        "rollback_executed",
+        "asset_ready"
       ],
       "title": "EventType",
       "type": "string"
@@ -106,7 +148,7 @@
       "description": "交互点的单个选项。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -131,7 +173,7 @@
       "description": "显式、可序列化的运行时状态；恢复/回放的重建目标。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -177,6 +219,30 @@
           "default": null,
           "title": "Scene Id"
         },
+        "scene_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Key"
+        },
+        "scene_title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scene Title"
+        },
         "beat_cursor": {
           "anyOf": [
             {
@@ -193,6 +259,17 @@
           "additionalProperties": true,
           "title": "Plot Context",
           "type": "object"
+        },
+        "current_asset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "character_memories": {
           "additionalProperties": {
@@ -237,7 +314,7 @@
       "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -281,7 +358,7 @@
   "description": "一次命令推进的结果：提交后到下一个稳定交互点或终态返回。\n\n含状态、新事件、活动交互与允许命令——session 层据此投影对外消息。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.7.0",
       "title": "Schema Version",
       "type": "string"
     },

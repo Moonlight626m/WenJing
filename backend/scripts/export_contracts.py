@@ -24,15 +24,19 @@ from app.contracts.auth import (
 from app.contracts.commands import PlayerCommand
 from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
+    AudioEndMessage,
+    AudioStartMessage,
     CreateSessionRequest,
     ServerMessage,
     SessionListResponse,
     SessionSummary,
+    StreamMessage,
 )
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.events import DomainEvent
 from app.contracts.generation import GenerationProgress
 from app.contracts.material import Material, MaterialInput
+from app.contracts.media import AssetUrlResponse, TranscribeResponse
 from app.contracts.review import GateReview
 from app.contracts.runtime import GameSnapshot, RuntimeState, RuntimeUpdate
 from app.contracts.script_library import (
@@ -56,6 +60,8 @@ EXPORTS: dict[str, type] = {
     "material_input": MaterialInput,
     "material": Material,
     "material_public": MaterialPublic,
+    "asset_url_response": AssetUrlResponse,
+    "transcribe_response": TranscribeResponse,
     "text_analysis": TextAnalysis,
     "player_command": PlayerCommand,
     "domain_event": DomainEvent,
@@ -67,6 +73,9 @@ EXPORTS: dict[str, type] = {
     "runtime_update": RuntimeUpdate,
     "error_envelope": ErrorEnvelope,
     "server_message": ServerMessage,
+    "stream_message": StreamMessage,
+    "audio_start_message": AudioStartMessage,
+    "audio_end_message": AudioEndMessage,
     "generation_progress": GenerationProgress,
     "gate_review": GateReview,
     "script_create_request": ScriptCreateRequest,

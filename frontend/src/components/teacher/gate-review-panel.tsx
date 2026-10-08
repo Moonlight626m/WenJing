@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 
+import {
+  AssetReviewSection,
+  collectAssetOps,
+  type AssetOpDrafts,
+} from "@/components/teacher/asset-review";
 import type {
   CharacterProfile,
   GateEdits,
@@ -9,6 +14,7 @@ import type {
   MaterialDossier,
   ScriptPackage,
 } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const TEXT_FIELD =
   "w-full rounded-lg border border-amber-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-amber-500 dark:border-amber-800";
@@ -18,6 +24,8 @@ export interface GateResumePayload {
   directives: string[];
   edits: GateEdits;
   action: "approve" | "reject";
+  /** #50：上传等异步操作可能需要知道剧本 id（门面板从详情页获得）。 */
+  scriptId?: number;
 }
 
 const GATE_TITLES: Record<string, string> = {
@@ -37,10 +45,12 @@ const GATE_HINTS: Record<string, string> = {
 
 /** 教师闸门审阅面板（#34）：按闸门位置展示中间产物，支持编辑与指导。 */
 export function GateReviewPanel({
+  scriptId,
   review,
   busy,
   onResume,
 }: {
+  scriptId?: number;
   review: GateReview | null;
   busy: string | null;
   onResume: (payload: GateResumePayload) => void;
@@ -65,6 +75,10 @@ export function GateReviewPanel({
   const [packageDraft, setPackageDraft] = useState<ScriptPackage | null>(
     review?.package ?? null
   );
+  // #50 配图审批：槽位 → 教师意图（仅在 final 闸门使用）
+  const [assetOpDrafts, setAssetOpDrafts] = useState<AssetOpDrafts>(
+    () => new Map()
+  );
 
   // 草稿随新审阅载荷重置（React「props 变化时调整 state」模式：
   // 渲染期间同步，不进 effect）。终审打回重停时 key 不变也能拿到新稿。
@@ -77,6 +91,7 @@ export function GateReviewPanel({
     setSceneParticipants(scenes.map((s) => s.participants.join("、")));
     setPackageDraft(review?.package ?? null);
     setMaterialsOpen(false);
+    setAssetOpDrafts(new Map());
   }
 
   const directiveList = directives
@@ -92,11 +107,12 @@ export function GateReviewPanel({
 
   function buildResume(action: "approve" | "reject"): GateResumePayload {
     const empty: GateEdits = {
-      schema_version: "2.0.0",
+      schema_version: CONTRACTS_SCHEMA_VERSION,
       dossier: null,
       division: null,
       profiles: null,
       package: null,
+      asset_ops: [],
     };
     if (gate === "materials") {
       return {
@@ -128,7 +144,11 @@ export function GateReviewPanel({
     }
     return {
       directives: directiveList,
-      edits: { ...empty, package: editedOr(packageDraft, review?.package ?? null) },
+      edits: {
+        ...empty,
+        package: editedOr(packageDraft, review?.package ?? null),
+        asset_ops: gate === "final" ? collectAssetOps(assetOpDrafts) : [],
+      },
       action,
     };
   }
@@ -324,6 +344,17 @@ export function GateReviewPanel({
             </label>
           ))}
         </div>
+      )}
+
+      {isFinal && packageDraft && (
+        <AssetReviewSection
+          scriptId={scriptId ?? 0}
+          scenes={packageDraft.scenes}
+          characters={packageDraft.characters}
+          drafts={assetOpDrafts}
+          onDraftsChange={setAssetOpDrafts}
+          disabled={busy !== null}
+        />
       )}
 
       <textarea

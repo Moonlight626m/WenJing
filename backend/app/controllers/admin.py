@@ -14,6 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 
+from app.composition import get_container
 from app.contracts.admin import (
     PromptEntry,
     PromptListResponse,
@@ -23,22 +24,16 @@ from app.contracts.admin import (
 from app.contracts.enums import ScriptStatus, UsagePurpose, UserRole
 from app.contracts.script_library import ScriptListResponse
 from app.controllers.auth_deps import Principal, require_role
-from app.infrastructure.db.session import SessionLocal
 from app.infrastructure.models.prompt import PromptTemplate
 from app.services.admin import AdminService
 from app.services.script_projection import script_summary
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-_service: AdminService | None = None
-
 
 def get_admin_service() -> AdminService:
-    """进程级 AdminService 单例（只读）。"""
-    global _service
-    if _service is None:
-        _service = AdminService(session_factory=SessionLocal)
-    return _service
+    """进程级 AdminService（由组合根 `app.composition` 装配，只读）。"""
+    return get_container().admin_service
 
 
 _Admin = Annotated[Principal, Depends(require_role(UserRole.SUPER_ADMIN))]

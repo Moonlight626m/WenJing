@@ -1,0 +1,27 @@
+{
+  "additionalProperties": false,
+  "description": "音轨开始（ADR-0005 §11 / #63）：**有 type 无 seq**，与 `StreamMessage` 同类。\n\n紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言\n一条音轨，多角色并发时前端挂多个 `<audio>`；后端不混音。\n\n`codec` 是 MIME（`audio/mpeg` 等），不是裸格式名——前端直接喂\n`Blob([bytes], {type: codec})` 造 `objectURL`，不必再维护一张格式映射表。",
+  "properties": {
+    "type": {
+      "const": "audio_start",
+      "default": "audio_start",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "payload": {
+      "additionalProperties": true,
+      "title": "Payload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "AudioStartMessage",
+  "type": "object"
+}

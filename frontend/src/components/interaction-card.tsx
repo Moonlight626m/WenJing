@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { CommandKind } from "@/lib/contracts/types";
 import { useGameStore } from "@/stores/gameStore";
+import { VoiceInput } from "@/components/voice-input";
 
 /** 三种输入模式：options / free_input / options_with_fallback。 */
 export function InteractionCard() {
@@ -12,6 +13,7 @@ export function InteractionCard() {
   const pending = useGameStore((s) => s.pending);
   const connection = useGameStore((s) => s.connection);
   const submit = useGameStore((s) => s.submitCommand);
+  const sessionId = useGameStore((s) => s.sessionId);
   const [freeText, setFreeText] = useState("");
 
   if (!interaction) return null;
@@ -67,13 +69,21 @@ export function InteractionCard() {
             disabled={busy}
             className="flex-1 resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
           />
-          <button
-            onClick={sendFreeInput}
-            disabled={busy || !freeText.trim()}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
-          >
-            发送
-          </button>
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={sendFreeInput}
+              disabled={busy || !freeText.trim()}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
+            >
+              发送
+            </button>
+            {/* 语音是增强输入通道：识别结果填进输入框，键盘路径不受影响（#64） */}
+            <VoiceInput
+              sessionId={sessionId}
+              disabled={busy}
+              onText={(text) => setFreeText((prev) => (prev ? `${prev}${text}` : text))}
+            />
+          </div>
         </div>
       )}
 

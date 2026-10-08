@@ -1,5 +1,8 @@
 # 文境 (Wenjing) — 功能设计
 
+> ⚠️ **已归档（非现行规格）**：MVP 期文档，说明见 `docs/archive/README.md`；
+> 现行决策以 `docs/adr/`、GitHub Issues 与 `CONTEXT.md` 为准。
+
 > 基于调研结论和 feedback 讨论，汇总游戏形式、交互逻辑、Agent 职责。
 > 本文档作为主索引，各子模块详见对应文件。
 

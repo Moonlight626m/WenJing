@@ -150,55 +150,62 @@ def test_access_log_body_switch_off():
 
 
 def test_routes_llm_factory_fallback_logs_warning():
-    import app.controllers.routes as routes_mod
+    from app import composition
 
     class _StubSettings:
         llm_api_key = "sk-test"
+        # session_application 的构造会顺带装配运行期配图调度（#56/#57），
+        # 那里要读每会话生图上限与任务 TTL——这两个属性不能省。
+        media_max_images_per_session = 0
+        media_asset_job_ttl_seconds = 900
 
         @staticmethod
         def llm_model_config():
             # errx Error 没有 .model 属性 → ModelServiceFactory.build 抛 AttributeError
             return new(999001)
 
-    orig_settings = routes_mod.get_settings
-    routes_mod.get_settings = lambda: _StubSettings
-    routes_mod._application = None
-    cap = _capture("wenjing.api.routes")
+    orig_settings = composition.get_settings
+    composition.get_settings = lambda: _StubSettings
+    composition.reset_container()
+    cap = _capture("wenjing.composition")
     try:
-        app_obj = routes_mod.get_application()
+        app_obj = composition.get_container().session_application
         from app.infrastructure.llm.fake import DeterministicAgentLLM
 
         assert isinstance(app_obj._agent_llm, DeterministicAgentLLM)
     finally:
-        _release("wenjing.api.routes", cap)
-        routes_mod.get_settings = orig_settings
-        routes_mod._application = None
+        _release("wenjing.composition", cap)
+        composition.get_settings = orig_settings
+        composition.reset_container()
     assert "llm_factory_build_failed_fallback_fake" in cap.text
 
 
 def test_scripts_llm_fallback_logs_warning():
-    import app.controllers.scripts as scripts_mod
+    from app import composition
 
     class _StubSettings:
         llm_api_key = "sk-test"
         llm_model = ""
         rag_search_provider = "null"
+        # #48 后 ScriptLibrary 的 scene_designer 经 lambda 延迟构建，
+        # 构造期不再触碰媒体配置；stub 无需 media_* 属性（与上面那条不同：
+        # session_application 会在构造期装配配图调度，所以那边必须给）。
 
         @staticmethod
         def llm_model_config():
             return new(999001)
 
-    orig_settings = scripts_mod.get_settings
-    scripts_mod.get_settings = lambda: _StubSettings
-    scripts_mod._library = None
-    cap = _capture("wenjing.api.scripts")
+    orig_settings = composition.get_settings
+    composition.get_settings = lambda: _StubSettings
+    composition.reset_container()
+    cap = _capture("wenjing.composition")
     try:
-        library = scripts_mod.get_script_library()
+        library = composition.get_container().script_library
         assert library._script_llm is None
     finally:
-        _release("wenjing.api.scripts", cap)
-        scripts_mod.get_settings = orig_settings
-        scripts_mod._library = None
+        _release("wenjing.composition", cap)
+        composition.get_settings = orig_settings
+        composition.reset_container()
     assert "script_llm_build_failed_fallback_degraded" in cap.text
 
 

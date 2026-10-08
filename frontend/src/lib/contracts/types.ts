@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.0.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.7.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -60,12 +60,14 @@ export type EventType =
   | "player_action_recorded"
   | "agent_reactions_done"
   | "stage_transitioned"
-  | "rollback_executed";
+  | "rollback_executed"
+  | "asset_ready";
 
 export type ErrorDomain =
   | "input"
   | "content"
   | "search"
+  | "media"
   | "llm"
   | "game"
   | "session"
@@ -127,7 +129,8 @@ export type GenerationNode =
   | "divide_events"
   | "design_characters"
   | "write_script"
-  | "final_audit";
+  | "final_audit"
+  | "design_assets";
 
 export type GenerationNodeStatusValue =
   | "pending"
@@ -247,7 +250,8 @@ export type UsagePurpose =
   | "doubter"
   | "divide_events"
   | "character_design"
-  | "script_writing";
+  | "script_writing"
+  | "image_review";
 
 export interface UsageAggregateRow {
   schema_version: string;
@@ -398,6 +402,43 @@ export interface Playability {
   reason: string;
 }
 
+/** 稳定资产引用（ADR-0005 §3）：URL-free，访问经鉴权端点签发预签名 URL。 */
+export interface AssetRef {
+  asset_id: string;
+  kind: "background" | "avatar" | "fullbody";
+  status: "pending" | "ready" | "failed";
+}
+
+/** 素材署名/许可元数据（ADR-0005 §6）。 */
+export interface AssetCredit {
+  author: string;
+  license: string;
+  source_url: string;
+  license_url: string;
+}
+
+/** 资产预签名 URL 物化响应（GET /api/assets/{id}/url）。 */
+export interface AssetUrlResponse {
+  schema_version: string;
+  asset_id: string;
+  url: string;
+  expires_at: string;
+}
+
+/**
+ * 语音识别结果（#64 / ADR-0005 §11）。
+ *
+ * 拿到 `text` 后当作普通 `free_input` 命令提交——服务端**不**代劳：
+ * `POST /api/sessions/{id}/commands` 是唯一的游戏输入入口，语音不开旁路。
+ */
+export interface TranscribeResponse {
+  schema_version: string;
+  /** 识别出的文本（学生说的话）。 */
+  text: string;
+  /** 音频时长（毫秒）；0=未知。 */
+  duration_ms: number;
+}
+
 export interface CharacterProfile {
   name: string;
   public_background: string;
@@ -405,6 +446,10 @@ export interface CharacterProfile {
   speech_style?: SpeechStyle | null;
   knowledge_boundary: KnowledgeBoundary;
   is_player_playable: Playability;
+  avatar_asset?: AssetRef | null;
+  fullbody_asset?: AssetRef | null;
+  avatar_credit?: AssetCredit | null;
+  fullbody_credit?: AssetCredit | null;
 }
 
 export interface Beat {
@@ -419,6 +464,8 @@ export interface Scene {
   title: string;
   participants: string[];
   beats: Beat[];
+  background_asset?: AssetRef | null;
+  background_credit?: AssetCredit | null;
 }
 
 export interface ScriptPackage {
@@ -498,12 +545,22 @@ export interface GateReview {
   package: ScriptPackage | null;
 }
 
+/** 教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。 */
+export interface AssetOp {
+  schema_version: string;
+  op: "remove" | "regenerate" | "search_replace" | "bind_upload";
+  subject_key: string;
+  kind: "background" | "avatar" | "fullbody";
+  asset_id?: string | null;
+}
+
 export interface GateEdits {
   schema_version: string;
   dossier: MaterialDossier | null;
   division: EventDivisionDraft | null;
   profiles: CharacterProfile[] | null;
   package: ScriptPackage | null;
+  asset_ops: AssetOp[];
 }
 
 // ===== admin prompt 管理（PromptMgr 组件）=====
@@ -601,11 +658,17 @@ export interface RuntimeState {
   stage: StageValue;
   phase: string | null;
   scene_id: number | null;
+  /** 当前场景稳定键（#53）：脚本场景 `scene:{id}`；运行期新场景单调 key。 */
+  scene_key: string | null;
+  /** 当前场景标题（#53）：重连后由引擎按游标重建。 */
+  scene_title: string | null;
   beat_cursor: number | null;
   plot_context: Record<string, unknown>;
   character_memories: Record<string, string[]>;
   active_interaction: ActiveInteraction | null;
   stage3_goals: Stage3Goal[];
+  /** 当前背景图稳定引用（#53）：URL 经鉴权端点签发。 */
+  current_asset: AssetRef | null;
 }
 
 export interface GameSnapshot {
@@ -638,10 +701,71 @@ export interface ServerMessage {
     | "character_speech"
     | "system"
     | "interaction"
+    | "asset_ready"
     | "error";
   session_id: string;
   seq: number;
   payload: ServerMessagePayloads;
+}
+
+/**
+ * 瞬态流式消息（#60 / ADR-0005 §10）：**有 type 无 seq**。
+ *
+ * `stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →
+ * `stream_end{stream_id}`。它描述"此刻屏幕上滚动的字幕"，不进 outbox、不参与
+ * `confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的 `character_speech`
+ * ——收到它即丢弃对应 `stream_id` 的流缓冲（终态规则）。
+ */
+export interface StreamMessage {
+  type: "stream_start" | "stream_delta" | "stream_end";
+  session_id: string;
+  payload: StreamMessagePayload;
+}
+
+export interface StreamMessagePayload {
+  stream_id: string;
+  /** 仅 stream_start 携带：本条流属于哪个角色。 */
+  speaker?: string;
+  /** 仅 stream_delta 携带。 */
+  text?: string;
+}
+
+/**
+ * 音轨开始（#63 / ADR-0005 §11）：**有 type 无 seq**，与 `StreamMessage` 同类。
+ *
+ * 紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言
+ * 一条音轨，多角色并发时挂多个 `<audio>`；后端不混音。
+ */
+export interface AudioStartMessage {
+  type: "audio_start";
+  session_id: string;
+  payload: AudioStartPayload;
+}
+
+export interface AudioStartPayload {
+  track_id: string;
+  /** 本条音轨属于哪个角色。 */
+  speaker: string;
+  /** MIME（`audio/mpeg` 等）：直接喂 `new Blob([bytes], { type: codec })`。 */
+  codec: string;
+  sample_rate: number;
+}
+
+export interface AudioEndMessage {
+  type: "audio_end";
+  session_id: string;
+  payload: { track_id: string };
+}
+
+/**
+ * 运行期配图就绪（#56）：命令外事件路径推送。
+ * `scene_key` 与 `RuntimeState.scene_key` 同源；`current_asset` 与 narrative
+ * 消息同形，前端复用同一套换背景逻辑。
+ */
+export interface AssetReadyPayload {
+  category: "asset_ready";
+  scene_key: string | null;
+  current_asset: AssetRef;
 }
 
 export interface ContentBlockPayload {
@@ -661,13 +785,24 @@ export interface InteractionPayload {
 export type ServerMessagePayloads =
   | ContentBlockPayload
   | InteractionPayload
+  | AssetReadyPayload
   | ErrorEnvelope
   | Record<string, unknown>;
 
 export type ClientMessage =
   | SubmitCommandMessage
   | ConfirmMessagesMessage
-  | ResyncRequestMessage;
+  | ResyncRequestMessage
+  | CancelAudioMessage;
+
+/**
+ * 客户端打断（barge-in，#62 / ADR-0005 §11）：停播并放掉这条音轨。
+ * **不抢占 LLM**——命令串行、事件同事务，服务端在生成中收不到新命令。
+ */
+export interface CancelAudioMessage {
+  type: "cancel_audio";
+  track_id: string;
+}
 
 export interface SubmitCommandMessage {
   type: "submit_command";

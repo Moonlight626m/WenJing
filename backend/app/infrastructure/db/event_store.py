@@ -6,7 +6,7 @@
   同一会话同一内存分支恒映射到同一 UUID（天然幂等，恢复后不冲突）。
 
 事务边界（#5 竖切接缝）：
-- `write_pending(session, session_id)` 只做插入不提交，供 SessionApplication 把
+- `write_pending(session, session_id)` 只做插入不提交，供 SessionStore（`commit`）把
   命令行 + 事件行 + head/version 放进同一事务；返回插入的行（含 DB 自增 id）。
 - `flush` = write_pending + commit（兼容旧回调式落库）。
 - flush 按分支分组、沿血缘序（父先于子）写入；为每个非主分支补建

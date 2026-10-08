@@ -18,7 +18,14 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "collect_materials"
 STAGE = "script_gen"
-VERSION = "v2"
+# v3：EVIDENCE_POLICY 与 _OUTPUT_CONTRACT 的矛盾清除——v2 里前者鼓励给
+# character_notes 的论断给 evidence_ref，而后者与 CharacterNote 校验器
+# （只许 name/note，extra=forbid）禁止该对象携带**包括 evidence_ref 在内的
+# 任何额外键**；真实 LLM 偶发照 EVIDENCE_POLICY 写就
+# Extra inputs are not permitted，是真实链路冒烟时绿时红的根源。
+# 现将溯源统一收进顶层 claims 行（EVIDENCE_POLICY 明示不要写进结构化对象）。
+# v2 的 DB 覆盖行按 version 键匹配，升版即整体回退代码默认（语义见 AGENTS.md）。
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -38,8 +45,9 @@ EVIDENCE_POLICY = """\
   web（来自网络补充资料）；
 - confidence：high（多来源一致或有原文明证）/ medium（单一来源或合理推断）/
   low（孤证、旁证或存疑）；
-- target 写论断定位（如 "era_setting.科举制度"、
-  "character_notes.父亲.动机"），并尽量给出 evidence_ref；
+- target 写论断定位（如 "era_setting.科举制度"、"character_notes.父亲.动机"）；\
+溯源证据只写进 claims 行的 evidence_ref，**不要**把 evidence_ref 等溯源字段
+写进 character_notes 或其他结构化对象（结构硬性约束见输出契约）；
 - 网络资料片段不可信，仅可用于时代背景氛围，不得改写原文事实；\
 任何仅来自网络的事实性断言不得进入 background 与 plot_summary 的主干；
 - 外部资料与课文冲突时，以原文为准，并把冲突登记进 conflicts\

@@ -24,6 +24,10 @@ class WorkflowState(TypedDict, total=False):
     # ===== 输入（运行前注入）=====
     script_id: int
     session_id: str
+    # 资产归属（#48）：字符串通道——UUID 不进图状态，规避 checkpointer msgpack
+    # 序列化坑（同 web_evidence 的教训）；节点侧用 uuid.UUID(...) 还原。
+    org_id: str
+    user_id: str
     analysis: TextAnalysis
     # JSON-safe dict（WebEvidence.model_dump(mode="json")）：HttpUrl 无法被
     # langgraph checkpointer 的 msgpack 序列化，模型入 state 会炸闸门 interrupt。
@@ -35,13 +39,23 @@ class WorkflowState(TypedDict, total=False):
     gate_action: str
 
     # ===== 节点产物 =====
-    dossier: MaterialDossier | None
+    # JSON-safe dict（MaterialDossier.model_dump(mode="json")）：dossier 带
+    # web-sourced claims 时，claims.evidence_ref 是 WebEvidence——langgraph
+    # checkpointer 的 msgpack 对其 model_dump() 里的 HttpUrl/datetime 对象
+    # 无法序列化，模型实例入 state 会炸闸门 interrupt 的 checkpoint 写
+    # （线上事故 2026-10-08：reason=Type is not msgpack serializable）。
+    # 读取用 `state_dossier()` 还原成契约模型。
+    dossier: dict[str, Any] | None
     division: EventDivisionDraft | None
     # Send fan-out 产物通道：每人物分支追加一个 profile，join 时已聚合
     character_profiles: Annotated[list[CharacterProfile], operator.add]
     merged_profiles: list[CharacterProfile]
     package: ScriptPackage | None
     write_telemetry: dict
+    # #48 配图结果摘要（JSON-safe）：{scenes_ready, scenes_total, avatars_ready,
+    # avatars_total, skipped}。恒写入——空 delta 不产生 updates 事件，runner 会把
+    # 节点永久挂在 running。
+    asset_summary: dict
 
     # ===== doubter 打回回路 =====
     doubter_verdict: str
@@ -63,6 +77,8 @@ def initial_state(
     analysis: TextAnalysis,
     web_evidence: list[WebEvidence],
     directives: list[str] | None = None,
+    org_id: str = "",
+    user_id: str = "",
 ) -> WorkflowState:
     return WorkflowState(
         script_id=script_id,
@@ -73,6 +89,8 @@ def initial_state(
         character_profiles=[],
         doubter_round=0,
         write_retries=0,
+        org_id=org_id,
+        user_id=user_id,
     )
 
 
@@ -82,3 +100,15 @@ def state_web_evidence(state: WorkflowState) -> list[WebEvidence]:
         e if isinstance(e, WebEvidence) else WebEvidence.model_validate(e)
         for e in state.get("web_evidence") or []
     ]
+
+
+def state_dossier(state: WorkflowState) -> MaterialDossier | None:
+    """从 state 通道还原 `MaterialDossier`（通道内是 JSON-safe dict，见类型注释）。
+
+    兼容旧 checkpoint 里残留的模型实例（isinstance 分支只为 resume 旧线程时
+    不炸——通道读取统一走这里，其他任何地方不得直接 `state.get("dossier")`）。
+    """
+    dossier = state.get("dossier")
+    if dossier is None or isinstance(dossier, MaterialDossier):
+        return dossier
+    return MaterialDossier.model_validate(dossier)

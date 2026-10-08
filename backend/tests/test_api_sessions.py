@@ -37,7 +37,7 @@ _MATERIAL_TEXT = (
 )
 
 _REGISTER = {
-    "schema_version": "2.0.0",
+    "schema_version": "2.4.0",
     "email": "sessions.teacher@wenjing.local",
     "phone": None,
     "password": "supersecret1",
@@ -170,7 +170,7 @@ def _make_playable(client: TestClient) -> str:
     material = client.post(
         "/api/materials",
         json={
-            "schema_version": "2.0.0",
+            "schema_version": "2.4.0",
             "source": "paste",
             "filename": None,
             "raw_text": _MATERIAL_TEXT,
@@ -182,7 +182,7 @@ def _make_playable(client: TestClient) -> str:
     script = client.post(
         "/api/scripts",
         json={
-            "schema_version": "2.0.0",
+            "schema_version": "2.4.0",
             "material_id": material.json()["id"],
             "name": "会话测试剧本",
             "description": None,
@@ -238,6 +238,36 @@ def test_rest_error_envelopes(client):
     assert bad.json()["code"].startswith("PROTOCOL_") or "code" in bad.json()
 
 
+def test_command_endpoint_returns_an_envelope_for_malformed_bodies(client):
+    """非法 `PlayerCommand` 必须是业务信封，不能是 500（#66）。
+
+    `POST /api/sessions/{id}/commands` 是契约里明写的**唯一**游戏输入入口，畸形
+    请求体是常规客户端错误。裸 `ValidationError` 会被 Starlette 兜成 500 + 纯文本，
+    前端拿不到 `code` 也就无法提示；WS 路径早就有这层转换，REST 路径漏了。
+    """
+    sid, role = _full_setup(client)
+    url = f"/api/sessions/{sid}/commands"
+    headers = _csrf(client)
+
+    # 四种都是 PlayerCommand 的常规校验项，不是边角输入
+    bodies = [
+        {"session_id": sid, "command_id": "not-a-uuid", "kind": "select_role",
+         "payload": {"role_name": role}},
+        {"session_id": sid, "kind": "select_role", "payload": {}},
+        {"session_id": sid, "kind": "not_a_kind", "payload": {}},
+        {"session_id": sid, "kind": "select_role", "payload": "oops"},
+    ]
+    for body in bodies:
+        resp = client.post(url, json=body, headers=headers)
+        assert resp.status_code == 400, (body, resp.status_code, resp.text)
+        envelope = resp.json()
+        assert envelope["code"] == "PROTOCOL_MALFORMED_MESSAGE", body
+        assert envelope["domain"] == "protocol", body
+        assert envelope["message"], body
+        # 校验细节必须带出来，否则前端只能显示一句"消息格式错误"，无从排查
+        assert envelope["details"], body
+
+
 # ===== WS =====
 
 
@@ -291,6 +321,11 @@ def test_ws_init_command_and_resync(client):
         init = ws.receive_json()
         assert init["payload"]["stage"] == "stage2_reenacting"
         assert init["payload"]["player_role"] == role
+        # #53：重连的权威快照携带当前场景（背景随 current_asset；
+        # 本测试剧本无配图 → None，属无图降级，但仍须有场景键与标题）
+        assert init["payload"]["scene_key"] == "scene:1"
+        assert init["payload"]["scene_title"]
+        assert init["payload"]["current_asset"] is None
 
 
 def test_ws_rejects_unknown_session(client):
@@ -312,3 +347,54 @@ def test_ws_rejects_malformed_message(client):
             "PROTOCOL_MALFORMED_MESSAGE",
             "PROTOCOL_UNKNOWN_COMMAND",
         )
+
+
+def test_ws_delivers_commandless_pushed_message(client):
+    """#56：命令外事件（运行期配图就绪）经 hub 投递到已连接会话。
+
+    WS 循环原来只 await 客户端消息，推送会被永远压在队列里；这里断言的正是
+    「等收」与「等推」并行这件事。投递经 `client.portal` 在应用事件循环内执行
+    —— 跨线程操作 asyncio.Queue 既非线程安全也不保证唤醒。
+    """
+    import uuid as _uuid
+
+    from app.composition import get_container
+
+    sid = _make_playable(client)
+    hub = get_container().event_hub
+    asset_id = str(_uuid.uuid4())
+    message = {
+        "type": "asset_ready",
+        "seq": 42,
+        "session_id": sid,
+        "payload": {
+            "category": "asset_ready",
+            "scene_key": "scene:1",
+            "current_asset": {"asset_id": asset_id, "kind": "background", "status": "ready"},
+        },
+    }
+
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        assert ws.receive_json()["type"] == "session_init"
+        assert client.portal is not None
+        delivered = client.portal.call(hub.publish, _uuid.UUID(sid), [message])
+        assert delivered == 1
+        pushed = ws.receive_json()  # 若循环只在等客户端消息，这里会挂住
+
+    assert pushed["type"] == "asset_ready"
+    assert pushed["payload"]["scene_key"] == "scene:1"
+    assert pushed["payload"]["current_asset"]["asset_id"] == asset_id
+
+
+def test_hub_subscription_is_released_on_disconnect(client):
+    """连接关闭即注销：否则投递会攒进再也没人读的队列（每连接一次泄漏）。"""
+    import uuid as _uuid
+
+    from app.composition import get_container
+
+    sid = _make_playable(client)
+    hub = get_container().event_hub
+    with client.websocket_connect(f"/ws/{sid}") as ws:
+        ws.receive_json()
+        assert hub.subscriber_count(_uuid.UUID(sid)) == 1
+    assert hub.subscriber_count(_uuid.UUID(sid)) == 0

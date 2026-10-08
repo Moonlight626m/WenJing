@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+from app.infrastructure.models.asset import Asset
+from app.infrastructure.models.asset_job import AssetJob
 from app.infrastructure.models.auth_session import AuthSession
 from app.infrastructure.models.command import CommandRecord, CommandStatus
 from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION, GameEventRecord
 from app.infrastructure.models.event_branch import EventBranchRecord
 from app.infrastructure.models.llm_usage import LlmUsage
 from app.infrastructure.models.material import Material
+from app.infrastructure.models.media_usage import MediaUsage
 from app.infrastructure.models.org import Org
 from app.infrastructure.models.prompt import PromptTemplate
 from app.infrastructure.models.script import Script
@@ -21,6 +24,8 @@ from app.infrastructure.models.snapshot import Snapshot
 from app.infrastructure.models.user import User
 
 __all__ = [
+    "Asset",
+    "AssetJob",
     "Session",
     "Material",
     "Script",
@@ -35,11 +40,14 @@ __all__ = [
     "User",
     "AuthSession",
     "LlmUsage",
+    "MediaUsage",
     "PromptTemplate",
 ]
 
 # 确保做元数据收集时模型已全部导入（Base.metadata 上注册）
 _ = (
+    Asset,
+    AssetJob,
     Session,
     Material,
     Script,
@@ -52,5 +60,6 @@ _ = (
     User,
     AuthSession,
     LlmUsage,
+    MediaUsage,
     PromptTemplate,
 )

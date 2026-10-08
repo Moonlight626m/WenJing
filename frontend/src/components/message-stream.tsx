@@ -8,8 +8,8 @@ import type { ChatMessage } from "@/stores/gameStore";
 function ContentMessage({ message }: { message: ChatMessage }) {
   if (message.kind === "system") {
     return (
-      <div className="my-2 text-center text-xs text-zinc-500 dark:text-zinc-400">
-        <span className="rounded-full bg-zinc-100 px-3 py-1 dark:bg-zinc-800">
+      <div className="my-2 text-center text-xs text-white/70">
+        <span className="rounded-full bg-white/10 px-3 py-1">
           {message.text}
         </span>
       </div>
@@ -18,17 +18,17 @@ function ContentMessage({ message }: { message: ChatMessage }) {
   if (message.kind === "character_speech") {
     return (
       <div className="my-2 flex flex-col items-start gap-1">
-        <span className="text-xs font-medium text-amber-700 dark:text-amber-400">
-          {message.speaker ?? "角色"}
+        <span className="text-xs font-medium text-amber-300">
+          {message.speaker ?? "角色"}：
         </span>
-        <div className="max-w-[85%] rounded-2xl rounded-tl-sm bg-amber-50 px-4 py-2 text-sm text-zinc-800 dark:bg-amber-950/40 dark:text-zinc-200">
+        <div className="max-w-[85%] text-sm leading-relaxed text-white/95 [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]">
           <ReactMarkdown>{message.text}</ReactMarkdown>
         </div>
       </div>
     );
   }
   return (
-    <div className="my-3 text-sm leading-relaxed text-zinc-800 dark:text-zinc-200">
+    <div className="my-3 text-sm leading-relaxed text-white/90 [text-shadow:0_1px_3px_rgba(0,0,0,0.8)]">
       <ReactMarkdown>{message.text}</ReactMarkdown>
     </div>
   );
@@ -52,7 +52,7 @@ export function MessageStream({
       {messages.map((m) => (
         <div key={m.key} className="relative" data-testid="message-row">
           {showSeq && (
-            <span className="absolute top-1 -left-8 text-[10px] text-zinc-300 dark:text-zinc-600">
+            <span className="absolute top-1 -left-8 text-[10px] text-white/30">
               {m.seq}
             </span>
           )}

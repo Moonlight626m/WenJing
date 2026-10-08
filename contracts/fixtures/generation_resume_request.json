@@ -1,10 +1,24 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.7.0",
   "directives": [
     "孔乙己的迂腐要更突出"
   ],
   "edits": {
-    "schema_version": "2.0.0"
+    "schema_version": "2.7.0",
+    "asset_ops": [
+      {
+        "schema_version": "2.7.0",
+        "op": "regenerate",
+        "subject_key": "scene:1",
+        "kind": "background"
+      },
+      {
+        "schema_version": "2.7.0",
+        "op": "remove",
+        "subject_key": "character:孔乙己",
+        "kind": "avatar"
+      }
+    ]
   },
   "action": "approve"
 }

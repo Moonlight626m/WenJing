@@ -3,6 +3,7 @@ import type {
   CommandKind,
   CommandPayloadByKind,
 } from "@/lib/contracts/types";
+import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const STORAGE_KEY = "wenjing.sessions";
 const MAX_RECORDS = 10;
@@ -74,7 +75,7 @@ export function buildCommand<K extends CommandKind>(
   payload: CommandPayloadByKind[K]
 ): PlayerCommand {
   return {
-    schema_version: "2.0.0",
+    schema_version: CONTRACTS_SCHEMA_VERSION,
     command_id: crypto.randomUUID(),
     session_id: sessionId,
     kind,

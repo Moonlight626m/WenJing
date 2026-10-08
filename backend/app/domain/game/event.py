@@ -33,6 +33,8 @@ EVENT_PLAYER_ACTION = "player_action"
 EVENT_CHARACTER_SPEECH = "character_speech"
 EVENT_SYSTEM = "system"
 EVENT_ROLLBACK = "rollback"
+# 场景资产就绪（ADR-0005 §9，issue #55）：命令外事件路径写入，重放派生资产索引。
+EVENT_ASSET_READY = "asset_ready"
 
 MAIN_BRANCH_ID = 1
 

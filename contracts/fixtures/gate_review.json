@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.7.0",
   "gate": "pre_write",
   "dossier": null,
   "evidence": [],
@@ -48,7 +48,7 @@
   },
   "profiles": [
     {
-      "schema_version": "2.0.0",
+      "schema_version": "2.7.0",
       "name": "我",
       "public_background": "离家买药的青年",
       "personality_traits": [
@@ -73,7 +73,7 @@
       }
     },
     {
-      "schema_version": "2.0.0",
+      "schema_version": "2.7.0",
       "name": "母亲",
       "public_background": "病中的母亲",
       "personality_traits": [
@@ -108,5 +108,75 @@
       }
     }
   ],
-  "package": null
+  "package": {
+    "schema_version": "2.7.0",
+    "title": "冬日买药",
+    "characters": [
+      {
+        "schema_version": "2.7.0",
+        "name": "我",
+        "public_background": "离家买药的青年",
+        "personality_traits": [
+          {
+            "label": "重情",
+            "evidence": "回头看见母亲在门口流泪",
+            "behavior": "遇离别总要回头再看一眼"
+          }
+        ],
+        "knowledge_boundary": {
+          "knows": [
+            "母亲病了要买药"
+          ],
+          "not_knows": [
+            "母亲在家哭泣的场面"
+          ]
+        },
+        "is_player_playable": {
+          "value": true,
+          "reason": "戏份适中，动机清晰"
+        },
+        "avatar_asset": {
+          "asset_id": "3f2b9c4e-1a5d-4b8e-9f60-2c7a8d1e4b33",
+          "kind": "avatar",
+          "status": "ready"
+        }
+      }
+    ],
+    "scenes": [
+      {
+        "scene_id": 1,
+        "title": "冬日启程",
+        "participants": [
+          "我",
+          "母亲"
+        ],
+        "beats": [
+          {
+            "beat_id": 1,
+            "description": "母亲病了，我出门买药",
+            "is_key_event": true,
+            "evidence_refs": []
+          },
+          {
+            "beat_id": 2,
+            "description": "母亲叮嘱路上小心",
+            "is_key_event": true,
+            "evidence_refs": []
+          }
+        ],
+        "background_asset": {
+          "asset_id": "8a1d5f2b-6c3e-4d90-a2b7-5e9f0c1d8a44",
+          "kind": "background",
+          "status": "ready"
+        }
+      }
+    ],
+    "teaching_focus": [
+      "体会母亲的慈爱与牵挂"
+    ],
+    "playable_roles": [
+      "我"
+    ],
+    "stage2_ending_beat_id": 2
+  }
 }

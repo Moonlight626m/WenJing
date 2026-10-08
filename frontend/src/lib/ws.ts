@@ -3,6 +3,7 @@
 import useWebSocket, { ReadyState } from "react-use-websocket";
 import { useEffect } from "react";
 
+import { audioSession, toArrayBuffer } from "@/lib/audio-session";
 import { wsBaseUrl } from "@/lib/config";
 import { logger } from "@/lib/logger";
 import { useGameStore } from "@/stores/gameStore";
@@ -14,12 +15,13 @@ export { wsBaseUrl };
  * - 连接建立后服务端先发 session_init（权威快照，从 DB 重建）；
  *   客户端随即以本地确认水位发送 resync_request 获取补发（含当前交互点）；
  * - 断线指数退避自动重连，重连后同样经 session_init + resync 恢复；
- * - 所有入站消息统一进入 gameStore.handleServerMessage（去重/确认/命令对账）。
+ * - 所有入站消息统一进入 gameStore.handleServerMessage（去重/确认/命令对账）；
+ * - **二进制帧**是音轨音频（#63），不走 JSON 通道，直接进 audioSession 的缓冲。
  */
 export function useGameChannel(sessionId: string | null) {
   const url = sessionId ? `${wsBaseUrl()}/ws/${sessionId}` : null;
 
-  const { sendJsonMessage, lastJsonMessage, readyState } = useWebSocket(url, {
+  const { sendJsonMessage, lastJsonMessage, lastMessage, readyState } = useWebSocket(url, {
     shouldReconnect: () => true,
     reconnectAttempts: 12,
     reconnectInterval: (attempt) => Math.min(500 * 2 ** attempt, 15000),
@@ -40,9 +42,29 @@ export function useGameChannel(sessionId: string | null) {
       logger.warning(`ws 断线（将自动重连） /ws/${sessionId} state=${ReadyState[readyState]}`);
       store.setConnection("reconnecting");
     }
-  }, [readyState, sessionId]);  useEffect(() => {
+  }, [readyState, sessionId]);
+
+  useEffect(() => {
     if (lastJsonMessage != null) {
       useGameStore.getState().handleServerMessage(lastJsonMessage);
     }
   }, [lastJsonMessage]);
+
+  // 音轨二进制帧（#63）：WS 的两种帧类型在传输层就是分开的，音频不该绕 JSON。
+  useEffect(() => {
+    const data = lastMessage?.data;
+    if (data == null || typeof data === "string") return;
+    let cancelled = false;
+    void toArrayBuffer(data).then((buffer) => {
+      if (!cancelled && buffer) audioSession.pushBinary(buffer);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lastMessage]);
+
+  // 断线：在途音轨属于上一条连接，丢弃（权威文本由事件流补全）。
+  useEffect(() => {
+    if (readyState !== ReadyState.OPEN) audioSession.reset();
+  }, [readyState]);
 }

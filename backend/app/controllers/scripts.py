@@ -6,15 +6,16 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 
+from app.composition import get_container
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UserRole
 from app.contracts.material import MaterialInput
-from app.contracts.script import ScriptPackage
+from app.contracts.review import validate_subject_key
+from app.contracts.script import AssetRef, ScriptPackage
 from app.contracts.script_library import (
     GenerationResumeRequest,
     MaterialPublic,
@@ -25,57 +26,23 @@ from app.contracts.script_library import (
     ScriptSummary,
 )
 from app.controllers.auth_deps import Principal, require_role
-from app.infrastructure.config import get_settings
-from app.infrastructure.diagnostics.logging import exc_reason
+from app.domain.game.media import AssetKind
+from app.infrastructure.errx import codes, new
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.services.script_library import ScriptLibrary
 from app.services.script_projection import script_summary
 
 router = APIRouter(prefix="/api", tags=["scripts"])
 
-_logger = logging.getLogger("wenjing.api.scripts")
-
-_library: ScriptLibrary | None = None
-_checkpointer = None
-
-
-def set_generation_checkpointer(saver) -> None:
-    """lifespan 注入 AsyncPostgresSaver（闸门恢复用；None = 无 checkpointer 降级）。"""
-    global _checkpointer
-    _checkpointer = saver
+# 教师上传图片上限（#49）：生图 provider 常见输出在 4MB 内，上传放宽到 8MB。
+_MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+# 允许的图片 MIME（转码侧 Pillow 支持 png/jpeg/webp 输入）。
+_ALLOWED_IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp")
 
 
 def get_script_library() -> ScriptLibrary:
-    """进程级 ScriptLibrary 单例（与 SessionApplication 同源 LLM 配置）。"""
-    global _library
-    if _library is None:
-        from app.infrastructure.db.session import SessionLocal
-        from app.infrastructure.llm.factory import ModelServiceFactory
-        from app.infrastructure.rag.service import RagService, build_search_provider
-        from app.infrastructure.usage import UsageRecorder
-
-        settings = get_settings()
-        script_llm = None
-        if settings.llm_api_key:
-            try:
-                script_llm = ModelServiceFactory.build(settings.llm_model_config())
-            except Exception as exc:
-                # 上游组件（真实 provider）构建失败，回落到下游（无 LLM 降级模式）前先告警
-                _logger.warning(
-                    "script_llm_build_failed_fallback_degraded",
-                    extra={"wj_extra": {"reason": exc_reason(exc)}},
-                )
-                script_llm = None
-        _library = ScriptLibrary(
-            session_factory=SessionLocal,
-            script_llm=script_llm,
-            rag=RagService(search_provider=build_search_provider(settings.rag_search_provider)),
-            model_name=settings.llm_model,
-            usage_recorder=UsageRecorder(session_factory=SessionLocal),
-            workflow_checkpointer=_checkpointer,
-            workflow_enabled=script_llm is not None,
-        )
-    return _library
+    """进程级 ScriptLibrary（由组合根 `app.composition` 装配）。"""
+    return get_container().script_library
 
 
 _Teacher = Annotated[Principal, Depends(require_role(UserRole.TEACHER))]
@@ -196,6 +163,49 @@ async def resume_script_generation(
     """教师闸门恢复（#34）：审阅后从断点继续，指令/编辑/终审动作注入 workflow。"""
     row = await library.resume_generation(script_id, principal.actor, resume=body)
     return await _detail(library, row, principal.actor)
+
+
+@router.post(
+    "/scripts/{script_id}/assets/upload",
+    status_code=201,
+    response_model=AssetRef,
+)
+async def upload_script_asset(
+    script_id: int,
+    subject_key: Annotated[str, Form()],
+    kind: Annotated[str, Form()],
+    image: Annotated[UploadFile, File()],
+    principal: _Teacher,
+    library: Annotated[ScriptLibrary, Depends(get_script_library)],
+) -> AssetRef:
+    """教师自有素材上传（#49）：先落库 READY，resume 时经 bind_upload 绑定槽位。
+
+    仅草稿可传（发布即冻结，与剧本编辑同一冻结语义）；大小上限 8MB、仅常见
+    图片类型——multipart 表单进不了 Pydantic 模型，边界校验在此处做，错误统一
+    走 errx 信封（`error_response` 是 REST 错误唯一出口）。
+    """
+    _bad = codes.INP_INVALID_MEDIA_INPUT
+    try:
+        validate_subject_key(subject_key)
+    except ValueError as exc:
+        raise new(_bad, extra={"reason": str(exc)}) from exc
+    if kind not in AssetKind._value2member_map_:
+        raise new(_bad, extra={"reason": f"bad kind: {kind!r}"})
+    if image.content_type not in _ALLOWED_IMAGE_TYPES:
+        raise new(_bad, extra={"reason": f"unsupported type: {image.content_type}"})
+    data = await image.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise new(
+            codes.MEDIA_UPLOAD_TOO_LARGE, extra={"size": len(data), "limit": _MAX_UPLOAD_BYTES}
+        )
+    return await library.upload_asset(
+        script_id,
+        principal.actor,
+        subject_key=subject_key,
+        kind=kind,
+        image_bytes=data,
+        content_type=image.content_type,
+    )
 
 
 @router.post(

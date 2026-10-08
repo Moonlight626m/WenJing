@@ -8,6 +8,7 @@
 #   BACKEND_HOST/BACKEND_PORT (默认 127.0.0.1:8000)
 #   FRONTEND_HOST/FRONTEND_PORT (默认 127.0.0.1:3000)
 #   START_DB=0           不尝试启动 docker compose 的 db
+#   START_MEDIA=0        不尝试启动 docker compose 的 MinIO（对象存储）
 #   WENJING_LLM_API_KEY  透传给后端（留空则用确定性 fake）
 set -uo pipefail
 
@@ -22,6 +23,7 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 START_DB="${START_DB:-1}"
+START_MEDIA="${START_MEDIA:-1}"
 
 BACKEND_URL="http://${BACKEND_HOST}:${BACKEND_PORT}"
 FRONTEND_URL="http://${FRONTEND_HOST}:${FRONTEND_PORT}"
@@ -84,6 +86,17 @@ start_db() {
   warn "未确认 PostgreSQL 健康，继续启动服务"
 }
 
+start_minio() {
+  [ "$START_MEDIA" = "1" ] || { warn "START_MEDIA=0，跳过本地 MinIO 启动"; return 0; }
+  if ! command -v docker >/dev/null 2>&1; then
+    warn "未找到 docker，跳过本地 MinIO（假定 WENJING_MEDIA_STORAGE_* 指向的存储可用）"
+    return 0
+  fi
+  log "启动 MinIO 对象存储 (docker compose --profile media up -d minio minio-init) ..."
+  (cd "$ROOT" && docker compose --profile media up -d minio minio-init) \
+    || warn "docker compose 启动 minio 失败，继续（假定外部对象存储可用）"
+}
+
 migrate() {
   [ -f "$BACKEND_DIR/.env" ] || {
     log "backend/.env 不存在，从 .env.example 复制"
@@ -140,6 +153,7 @@ status() {
 
 cmd_start() {
   start_db
+  start_minio
   migrate
   start_backend
   start_frontend

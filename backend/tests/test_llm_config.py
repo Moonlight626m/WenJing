@@ -49,6 +49,28 @@ def test_opencodego_default_base_url_and_model():
     assert service.model == "glm-5.3-flash"
 
 
+def test_ecnu_default_base_url_and_model():
+    """华东师大开放平台：OpenAI 格式，端点/模型由登记表决定（#56 期间接入）。"""
+    cfg = ModelConfig(provider="ecnu", api_key="k")
+    assert cfg.base_url == "https://chat.ecnu.edu.cn/open/api/v1"
+    assert cfg.model == "ecnu-plus"
+
+    service = ModelServiceFactory.build(cfg)
+    assert isinstance(service, ChatLLMService)
+    assert service.provider == "ecnu"
+
+
+def test_settings_llm_model_config_ecnu():
+    """`.env` 里只写 provider + key 也能起（模型回落登记表默认值）。"""
+    settings = Settings(
+        llm_provider="ecnu", llm_api_key="k", llm_model="", llm_base_url=""
+    )
+    cfg = settings.llm_model_config()
+    assert cfg.provider == "ecnu"
+    assert cfg.base_url == KNOWN_PROVIDERS["ecnu"]["base_url"]
+    assert cfg.model == KNOWN_PROVIDERS["ecnu"]["default_model"]
+
+
 def test_explicit_base_url_overrides_provider_default():
     cfg = ModelConfig(provider="deepseek", api_key="k", base_url="http://localhost:9999/v1")
     assert cfg.base_url == "http://localhost:9999/v1"

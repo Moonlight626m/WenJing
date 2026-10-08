@@ -14,7 +14,7 @@ app/
 └── schemas/   # 消息协议 Pydantic schema
 ```
 
-> 详细设计见仓库 `design/` 目录（`design_00` 起）。
+> 现行决策见 `docs/adr/`；MVP 期设计见 `docs/archive/design/`（历史参考，非现行规格）。
 
 ## 开发命令
 

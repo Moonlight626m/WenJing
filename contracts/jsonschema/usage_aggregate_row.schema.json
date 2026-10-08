@@ -10,7 +10,8 @@
         "doubter",
         "divide_events",
         "character_design",
-        "script_writing"
+        "script_writing",
+        "image_review"
       ],
       "title": "UsagePurpose",
       "type": "string"
@@ -20,7 +21,7 @@
   "description": "单个 (org, purpose) 分组的 token 聚合行。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.7.0",
       "title": "Schema Version",
       "type": "string"
     },

@@ -1,11 +1,140 @@
 {
   "$defs": {
+    "AssetCredit": {
+      "additionalProperties": false,
+      "description": "素材署名/许可元数据（ADR-0005 §6）：供教师端展示与学生端折叠署名。\n\n默认仅采用免署名许可（CC0/PD）；采用需署名许可时向最终用户展示。",
+      "properties": {
+        "schema_version": {
+          "default": "2.7.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "author": {
+          "default": "",
+          "title": "Author",
+          "type": "string"
+        },
+        "license": {
+          "default": "",
+          "title": "License",
+          "type": "string"
+        },
+        "source_url": {
+          "default": "",
+          "title": "Source Url",
+          "type": "string"
+        },
+        "license_url": {
+          "default": "",
+          "title": "License Url",
+          "type": "string"
+        }
+      },
+      "title": "AssetCredit",
+      "type": "object"
+    },
+    "AssetOp": {
+      "additionalProperties": false,
+      "description": "教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。\n\n- `subject_key`：配图主体键（#48 命名）——`scene:{scene_id}` /\n  `character:{name}`，与 AssetRef 所在槽位一一对应；\n- `asset_id`：仅 `bind_upload` 用（上传端点先落库、resume 再绑定）；\n  其余操作按 subject_key 定位槽位，忽略该字段。\n\n生效语义（节点侧实现）：\n- `remove`：清空槽位 AssetRef（资产行留存；ADR-0005 明确删除/回收暂不立项）；\n- `regenerate`：重新配图（绕开该主体的既有资产缓存与同字节检索候选）；\n- `search_replace`：仅开放版权检索替换（不走付费生成；失败保留旧图）；\n- `bind_upload`：绑定教师上传的资产（upload 端点产出）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.7.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "remove",
+            "regenerate",
+            "search_replace",
+            "bind_upload"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "subject_key": {
+          "minLength": 1,
+          "title": "Subject Key",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "background",
+            "avatar",
+            "fullbody"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "asset_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asset Id"
+        }
+      },
+      "required": [
+        "op",
+        "subject_key",
+        "kind"
+      ],
+      "title": "AssetOp",
+      "type": "object"
+    },
+    "AssetRef": {
+      "additionalProperties": false,
+      "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.7.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "asset_id": {
+          "format": "uuid",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "background",
+            "avatar",
+            "fullbody"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "ready",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset_id",
+        "kind",
+        "status"
+      ],
+      "title": "AssetRef",
+      "type": "object"
+    },
     "Beat": {
       "additionalProperties": false,
       "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -112,7 +241,7 @@
       "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -147,6 +276,50 @@
         },
         "is_player_playable": {
           "$ref": "#/$defs/Playability"
+        },
+        "avatar_asset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fullbody_asset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "avatar_credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetCredit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fullbody_credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetCredit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -161,7 +334,7 @@
       "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -283,10 +456,10 @@
     },
     "GateEdits": {
       "additionalProperties": false,
-      "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。",
+      "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。\n\n`asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一\nsubject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -337,6 +510,13 @@
             }
           ],
           "default": null
+        },
+        "asset_ops": {
+          "items": {
+            "$ref": "#/$defs/AssetOp"
+          },
+          "title": "Asset Ops",
+          "type": "array"
         }
       },
       "title": "GateEdits",
@@ -375,7 +555,7 @@
       "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -458,7 +638,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -524,7 +704,7 @@
       "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -547,7 +727,7 @@
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -572,6 +752,28 @@
           },
           "title": "Beats",
           "type": "array"
+        },
+        "background_asset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "background_credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetCredit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -629,7 +831,7 @@
       "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -722,7 +924,7 @@
       "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -767,7 +969,7 @@
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.7.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -817,7 +1019,7 @@
   "description": "教师闸门恢复（#34）：指导指令 + 结构化编辑随恢复注入 workflow。\n\n- directives：自然语言指导，原样透传下游 agent（教学判断优先）。\n- edits：教师直接编辑后的中间产物（覆盖对应 state 通道，不重新考证）。\n- action：仅终审闸门有意义——approve=通过落库；reject=打回剧本书写重做。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.7.0",
       "title": "Schema Version",
       "type": "string"
     },

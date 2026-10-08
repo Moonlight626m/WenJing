@@ -1,9 +1,11 @@
 "use client";
 
+import { audioSession } from "@/lib/audio-session";
 import { create } from "zustand";
 
 import type {
   ActiveInteraction,
+  AssetRef,
   CharacterProfile,
   CommandKind,
   CommandPayloadByKind,
@@ -42,15 +44,98 @@ export interface PendingCommand {
 
 export interface WireMessage {
   type: string;
-  seq: number;
+  /** 会话内单调递增的确认水位；**瞬态消息没有它**（见 `LiveStream`）。 */
+  seq?: number;
   session_id?: string;
   payload: Record<string, unknown>;
+}
+
+/**
+ * 流式字幕的**瞬态**缓冲（#60/#61）：只有 `stream_id`，没有 `seq`，也不进消息流。
+ *
+ * 它描述的是"此刻屏幕上滚动的字幕"，权威文本永远是随后那条 `character_speech`
+ * ——终态规则：收到它即丢弃对应角色的缓冲（见 `settleStreams`）。`ended` 标记
+ * `stream_end` 已到但持久发言尚未到，此时该行退回普通字幕的停留/淡出节奏，
+ * 万一持久发言永远不来（角色反应失败）也不会留一条永不消失的字幕。
+ */
+export interface LiveStream {
+  streamId: string;
+  speaker: string;
+  text: string;
+  ended: boolean;
+}
+
+/**
+ * `stream_*` 消息 → 新的流缓冲；与本条无关时返回 null（调用方保持原引用）。
+ *
+ * 纯函数，便于不起浏览器直接断言（`tests/e2e/streaming.spec.ts`）。
+ */
+export function applyStreamMessage(
+  streams: LiveStream[],
+  message: WireMessage
+): LiveStream[] | null {
+  const payload = (message.payload ?? {}) as Record<string, unknown>;
+  const streamId = typeof payload.stream_id === "string" ? payload.stream_id : "";
+  if (!streamId) return null;
+  const index = streams.findIndex((item) => item.streamId === streamId);
+
+  if (message.type === "stream_start") {
+    if (index >= 0) return null; // 重复的 start（重发/串线）不重置已有文本
+    return [
+      ...streams,
+      {
+        streamId,
+        speaker: typeof payload.speaker === "string" ? payload.speaker : "角色",
+        text: "",
+        ended: false,
+      },
+    ];
+  }
+  if (index < 0) return null; // 没见过的 stream_id：start 没到就来的增量一律丢弃
+
+  if (message.type === "stream_delta") {
+    const text = typeof payload.text === "string" ? payload.text : "";
+    if (!text) return null;
+    return streams.map((item, i) =>
+      i === index ? { ...item, text: item.text + text } : item
+    );
+  }
+  if (message.type === "stream_end") {
+    return streams.map((item, i) => (i === index ? { ...item, ended: true } : item));
+  }
+  return null;
+}
+
+/** 终态规则（ADR-0005 §10）：该角色的持久发言到达 → 丢弃它的流缓冲。 */
+export function settleStreams(
+  streams: LiveStream[],
+  speaker: string | null
+): LiveStream[] {
+  if (streams.length === 0) return streams;
+  return streams.filter((item) => item.speaker !== speaker);
 }
 
 type Sender = (message: unknown) => void;
 
 /** 命令发出后无响应的等待窗口；超时用同一 command_id 重发（服务端幂等对账）。 */
 export const RESEND_DELAY_MS = 120_000;
+
+/**
+ * 运行期配图就绪（#56）的应用规则：返回应写入的状态，或 null 表示这条要丢掉。
+ *
+ * 丢掉两种情形：**场景已过期**（配图在玩家走开之后才到，换上会闪回上一幕的背景）
+ * 与载荷缺字段。纯函数，便于不起浏览器直接断言（`tests/e2e/asset-ready.spec.ts`）。
+ */
+export function applyAssetReady(
+  state: { sceneKey: string | null; currentAsset: AssetRef | null },
+  payload: Record<string, unknown>
+): { currentAsset: AssetRef } | null {
+  const sceneKey = typeof payload.scene_key === "string" ? payload.scene_key : null;
+  const asset = payload.current_asset;
+  if (!sceneKey || sceneKey !== state.sceneKey) return null;
+  if (asset == null || typeof asset !== "object") return null;
+  return { currentAsset: asset as AssetRef };
+}
 
 const STAGES: StageValue[] = [
   "init",
@@ -79,17 +164,30 @@ interface GameStore {
   scriptTitle: string | null;
   playableRoles: string[];
   characters: CharacterProfile[];
+  /** 当前场景稳定键（#53）：背景切换/淡入的判定来源。 */
+  sceneKey: string | null;
+  /** 当前场景标题（#53）：随 plot_advancement 更新。 */
+  sceneTitle: string | null;
+  /** 当前背景稳定引用（#53）：页面据此经鉴权端点换预签名 URL。 */
+  currentAsset: AssetRef | null;
   selectedRole: string | null;
   messages: ChatMessage[];
+  /** 在途的流式字幕（#61）：只有 stream_id，没有 seq，不入消息流。 */
+  streams: LiveStream[];
   interaction: ActiveInteraction | null;
   allowedCommands: CommandKind[];
   pending: PendingCommand | null;
   connection: Connection;
   sender: Sender | null;
+  /** 音频是否静音（#63）。只影响本地播放，不影响服务端合成与计量。 */
+  audioMuted: boolean;
 
   resetSession: (sessionId: string) => void;
   setConnection: (connection: Connection) => void;
   setSender: (sender: Sender) => void;
+  setAudioMuted: (muted: boolean) => void;
+  /** barge-in（#63 / ADR-0005 §11）：停播全部音轨并通知服务端放掉它们。 */
+  bargeIn: () => string[];
   setScriptInfo: (pkg: ScriptPackage) => void;
   setStatusInfo: (status: {
     stage: string;
@@ -156,13 +254,18 @@ export const useGameStore = create<GameStore>((set, get) => {
     scriptTitle: null,
     playableRoles: [],
     characters: [],
+    sceneKey: null,
+    sceneTitle: null,
+    currentAsset: null,
     selectedRole: null,
     messages: [],
+    streams: [],
     interaction: null,
     allowedCommands: [],
     pending: null,
     connection: "idle",
     sender: null,
+    audioMuted: false,
 
     resetSession: (sessionId) => {
       clearResendTimer();
@@ -173,16 +276,39 @@ export const useGameStore = create<GameStore>((set, get) => {
         playerRole: null,
         plotLog: [],
         messages: [],
+        streams: [],
         interaction: null,
         allowedCommands: [],
         pending: null,
         connection: "connecting",
+        sceneKey: null,
+        sceneTitle: null,
+        currentAsset: null,
       });
     },
 
     setConnection: (connection) => set({ connection }),
 
     setSender: (sender) => set({ sender }),
+
+    setAudioMuted: (muted) => {
+      audioSession.setMuted(muted);
+      set({ audioMuted: muted });
+    },
+
+    bargeIn: () => {
+      // 停播是**客户端**行为（ADR-0005 §11）：服务端在生成中收不到新命令，
+      // 这里只通知它把还没发完的音轨丢掉。已经写进 socket 的字节收不回来，
+      // 真正的"停"是上面那句 `stopAll`。
+      const stopped = audioSession.bargeIn();
+      const sender = get().sender;
+      if (sender) {
+        for (const trackId of stopped) {
+          sender({ type: "cancel_audio", track_id: trackId });
+        }
+      }
+      return stopped;
+    },
 
     setScriptInfo: (pkg) =>
       set({
@@ -206,6 +332,21 @@ export const useGameStore = create<GameStore>((set, get) => {
       const msg = raw as WireMessage;
       const seq = typeof msg.seq === "number" ? msg.seq : 0;
       const payload = (msg.payload ?? {}) as Record<string, unknown>;
+
+      // 瞬态流式字幕（#60/#61）：没有 seq，不进消息流、不推进确认水位、不结算
+      // pending——它只影响"此刻屏幕上的字幕"。
+      if (msg.type.startsWith("stream_")) {
+        const next = applyStreamMessage(get().streams, msg);
+        if (next) set({ streams: next });
+        return;
+      }
+
+      // 音轨控制帧（#63）：与 `stream_*` 同类——瞬态、无 seq、不进消息流、不推进
+      // 确认水位。音频字节本身走**二进制帧**（`lib/ws.ts`），不经过这里。
+      if (msg.type === "audio_start" || msg.type === "audio_end") {
+        audioSession.handleControl(msg.type, payload);
+        return;
+      }
 
       if (msg.type === "error") {
         markCommandSettled();
@@ -232,6 +373,19 @@ export const useGameStore = create<GameStore>((set, get) => {
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
             : []) as CommandKind[],
+          // 场景背景（#53）：权威快照携带，重连即恢复当前背景与场景标题
+          // 重连的权威快照：在途流属于**上一条连接**，一并丢弃（字幕的收束
+          // 由随后的 character_speech 事件负责，不靠流缓冲）
+          streams: [],
+          sceneKey:
+            typeof payload.scene_key === "string" ? payload.scene_key : null,
+          sceneTitle:
+            typeof payload.scene_title === "string" ? payload.scene_title : null,
+          currentAsset:
+            payload.current_asset != null &&
+            typeof payload.current_asset === "object"
+              ? (payload.current_asset as AssetRef)
+              : null,
         });
         // 权威重建后按本地确认水位请求补发（首连为 0 → 服务端从 DB 全量重建）。
         // session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
@@ -240,6 +394,15 @@ export const useGameStore = create<GameStore>((set, get) => {
             type: "resync_request",
             last_confirmed_seq: maxSeq(get().messages),
           });
+        return;
+      }
+
+      if (msg.type === "asset_ready") {
+        // 命令外事件（#56）：不是命令响应，故不 markCommandSettled，也不进消息流。
+        // 确认水位仍由 chat 消息的 maxSeq 推进——把配图的 seq 也算进去会在它与
+        // 命令消息乱序到达时把尚未收到的叙事消息一并确认掉。
+        const next = applyAssetReady(get(), payload);
+        if (next) set(next);
         return;
       }
 
@@ -260,6 +423,10 @@ export const useGameStore = create<GameStore>((set, get) => {
       let interaction = state.interaction;
       let allowedCommands = state.allowedCommands;
       let stage = state.stage;
+      let sceneKey = state.sceneKey;
+      let sceneTitle = state.sceneTitle;
+      let currentAsset = state.currentAsset;
+      let streams = state.streams;
 
       // 终局批次可能多条消息共享同一 seq（如"进入阶段：ended"+"已结束"），
       // 去重键需包含文本，否则第二条会被误判重复
@@ -278,16 +445,33 @@ export const useGameStore = create<GameStore>((set, get) => {
         }
       } else if (!messages.some((m) => m.key === key)) {
         const text = typeof payload.text === "string" ? payload.text : "";
+        const speaker =
+          typeof payload.speaker === "string" ? payload.speaker : null;
         messages = [
           ...messages,
-          {
-            key,
-            seq,
-            kind: msg.type as ChatKind,
-            text,
-            speaker: typeof payload.speaker === "string" ? payload.speaker : null,
-          },
+          { key, seq, kind: msg.type as ChatKind, text, speaker },
         ];
+        // 终态规则：这条持久发言就是该角色流缓冲的归宿，接收即丢弃缓冲，
+        // 屏幕上不会同时留下"滚动中的"与"最终的"两份文本
+        if (msg.type === "character_speech") {
+          streams = settleStreams(streams, speaker);
+        }
+        if (msg.type === "narrative") {
+          // 场景切换（#53）：narrative 消息携带 scene_key/scene_title/current_asset，
+          // GameStage 按 sceneKey 变化触发淡入、按 currentAsset 换背景
+          const nextSceneKey =
+            typeof payload.scene_key === "string" ? payload.scene_key : null;
+          if (nextSceneKey) {
+            sceneKey = nextSceneKey;
+            sceneTitle =
+              typeof payload.scene_title === "string" ? payload.scene_title : null;
+            if (payload.current_asset != null && typeof payload.current_asset === "object") {
+              currentAsset = payload.current_asset as AssetRef;
+            } else {
+              currentAsset = null; // 该场景无图 → 降级为渐变
+            }
+          }
+        }
         if (msg.type === "system") {
           const stageMatch = /进入阶段：(\S+)/.exec(text);
           if (stageMatch) stage = asStage(stageMatch[1]);
@@ -298,7 +482,16 @@ export const useGameStore = create<GameStore>((set, get) => {
         }
       }
 
-      set({ messages, interaction, allowedCommands, stage });
+      set({
+        messages,
+        streams,
+        interaction,
+        allowedCommands,
+        stage,
+        sceneKey,
+        sceneTitle,
+        currentAsset,
+      });
 
       // 确认水位推进：通知服务端修剪本连接 outbox
       get()
