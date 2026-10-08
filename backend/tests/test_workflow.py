@@ -286,7 +286,88 @@ async def test_materials_gate_resume_without_directives_proceeds() -> None:
     assert runner.snapshot().status == "succeeded"
 
 
-async def test_pre_write_gate_pauses_and_review_carries_artifacts() -> None:
+async def test_dossier_with_web_claims_survives_checkpoint_write() -> None:
+    """回归：素材集带 web-sourced claims 时，interrupt 的 checkpoint 写不再炸
+    msgpack（2026-10-08 线上事故：Type is not msgpack serializable）。
+
+    根因：dossier 通道存模型实例时，checkpointer 的 ormsgpack 沿
+    model_dump()（python 模式）递归，claims.evidence_ref（WebEvidence）的
+    HttpUrl/datetime 对象序列化不了。修复后通道存 JSON-safe dict。
+    MemorySaver 不走 msgpack，必须用真 AsyncPostgresSaver 才能踩到该路径
+    （未连 DB 则 skip，同 test_db_event_store 的门控约定）。
+    """
+    import os
+
+    analysis = make_analysis()
+
+    # ScriptedWorkflowLLM 的 dossier claims 恒空，遮不住该路径——注入 web 证据形状
+    dossier = json.loads(_DOSSIER_JSON)
+    dossier["claims"] = [
+        {
+            "target": "background",
+            "source_type": "web",
+            "confidence": "medium",
+            "evidence_ref": {
+                "source_type": "web",
+                "url": "https://example.com/evidence",
+                "title": "网络证据",
+                "fetched_at": "2026-10-08T00:00:00Z",
+                "content_hash": "a" * 64,
+                "excerpt": "证据摘录",
+            },
+        }
+    ]
+
+    class _WebClaimsLLM(ScriptedWorkflowLLM):
+        async def chat(self, messages, *, session_id="", purpose=None):  # noqa: ANN001
+            name = getattr(purpose, "value", purpose)
+            if name == UsagePurpose.COLLECT_MATERIALS.value:
+                return json.dumps(dossier, ensure_ascii=False)
+            return await super().chat(messages, session_id=session_id, purpose=purpose)
+
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg_pool import AsyncConnectionPool
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    db_url = os.environ.get(
+        "WENJING_DATABASE_URL",
+        "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing",
+    )
+    engine = create_async_engine(db_url, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("select 1"))
+    except Exception:
+        pytest.skip("PostgreSQL 未可用，跳过 checkpoint 写回归测试")
+    finally:
+        await engine.dispose()
+
+    conninfo = db_url.replace("+asyncpg", "")
+    pool = AsyncConnectionPool(conninfo=conninfo, open=False, min_size=1)
+    try:
+        saver = AsyncPostgresSaver(pool)
+        await pool.open()
+        await saver.setup()
+        runner_ = WorkflowRunner(
+            WorkflowNodes(_WebClaimsLLM(analysis), teacher_gates=True),
+            checkpointer=saver,
+        )
+        final = await runner_.run(
+            initial_state(
+                script_id=1,
+                session_id="reg-msgpack",
+                analysis=analysis,
+                web_evidence=[],
+            ),
+            thread_id="reg-msgpack-dossier",
+        )
+        # 线上事故点：materials 闸门 interrupt 的 checkpoint 写成功且停在闸门
+        assert final.get("package") is None
+        assert runner_.review is not None
+        assert runner_.review["dossier"]["background"]
+    finally:
+        await pool.close()
     """#34 中段闸门：逐闸恢复到中段后停，审阅载荷带 division+profiles。"""
     analysis = make_analysis()
     llm = ScriptedWorkflowLLM(analysis)
@@ -609,4 +690,4 @@ async def test_collect_materials_real_llm_smoke() -> None:
         web_evidence=[],
     )
     result = await nodes.collect_materials(state)
-    assert result["dossier"].background
+    assert result["dossier"]["background"]

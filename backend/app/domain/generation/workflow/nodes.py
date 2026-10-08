@@ -36,7 +36,11 @@ from app.domain.game.media import (
 )
 from app.domain.generation.json_text import extract_json
 from app.domain.generation.stage1 import Stage1Generator
-from app.domain.generation.workflow.state import WorkflowState, state_web_evidence
+from app.domain.generation.workflow.state import (
+    WorkflowState,
+    state_dossier,
+    state_web_evidence,
+)
 from app.domain.generation.workflow.types import (
     EventDivisionDraft,
     MaterialDossier,
@@ -260,7 +264,7 @@ class WorkflowNodes:
     @staticmethod
     def _source_digest(state: WorkflowState) -> str:
         parts = [WorkflowNodes._analysis_digest(state["analysis"])]
-        dossier = state.get("dossier")
+        dossier = state_dossier(state)
         if dossier is not None:
             parts.append("【素材集结论（已过 doubter）】\n" + dossier.model_dump_json())
         return "\n\n".join(parts)
@@ -294,11 +298,16 @@ class WorkflowNodes:
             len(dossier.character_notes),
             len(dossier.teaching_analysis),
         )
-        return {"dossier": dossier, "doubter_feedback": None}
+        return {
+            # 通道存 JSON-safe dict：dossier 带 web claims 时 checkpointer 的
+            # msgpack 序列化不了 model_dump() 里的 HttpUrl/datetime 对象（#68）。
+            "dossier": dossier.model_dump(mode="json"),
+            "doubter_feedback": None,
+        }
 
     async def verify_materials(self, state: WorkflowState) -> dict[str, Any]:
         """doubter 质询素材集（骨架复用 doubter.v1；#30 框架化到全节点）。"""
-        dossier = state.get("dossier")
+        dossier = state_dossier(state)
         if dossier is None:  # 防御：打回回路丢失产物时直接失败
             raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "dossier missing"})
         logger.info("[script-gen][verify_materials] doubter checking materials...")
@@ -379,11 +388,12 @@ class WorkflowNodes:
         - 编辑语义（#34 裁决）：教师改后的 dossier 直接覆盖 state 通道，
           下游划分/书写以编辑稿为准，不重新考证；指令原样透传下游。
         """
+        dossier_snapshot = state_dossier(state)
         payload: dict[str, Any] = {
             "gate": "materials",
             "dossier": (
-                state["dossier"].model_dump(mode="json")
-                if state.get("dossier") is not None
+                dossier_snapshot.model_dump(mode="json")
+                if dossier_snapshot is not None
                 else None
             ),
             "evidence": list(state.get("web_evidence") or []),
@@ -397,7 +407,8 @@ class WorkflowNodes:
         )
         out: dict[str, Any] = {"directives": self._merge_directives(state, directives)}
         if edits.dossier is not None:
-            out["dossier"] = edits.dossier
+            # 通道存 JSON-safe dict（同 collect_materials 返回值；#68）
+            out["dossier"] = edits.dossier.model_dump(mode="json")
             logger.info(
                 "[script-gen][materials_gate] dossier edited by teacher "
                 "(background=%d chars, notes=%d)",
@@ -893,7 +904,7 @@ class WorkflowNodes:
 
     async def divide_events(self, state: WorkflowState) -> dict[str, Any]:
         analysis = state["analysis"]
-        dossier = state.get("dossier")
+        dossier = state_dossier(state)
         dossier_json = dossier.model_dump_json() if dossier is not None else "{}"
         directives = state.get("directives") or []
         logger.info(
@@ -967,7 +978,7 @@ class WorkflowNodes:
     def design_characters(self, state: WorkflowState) -> list[Send]:
         """按原文戏份选出主要人物，Send fan-out 并行生成设定（#32 深化）。"""
         analysis = state["analysis"]
-        dossier = state.get("dossier")
+        dossier = state_dossier(state)
         dossier_json = dossier.model_dump_json() if dossier is not None else "{}"
         key_participants: dict[str, int] = {}
         for ke in analysis.key_events:
@@ -1052,7 +1063,7 @@ class WorkflowNodes:
         )
         analysis = state["analysis"]
         extra_context: list[str] = []
-        dossier = state.get("dossier")
+        dossier = state_dossier(state)
         if dossier is not None:
             extra_context.append("【素材集结论】\n" + dossier.model_dump_json())
         if division is not None:

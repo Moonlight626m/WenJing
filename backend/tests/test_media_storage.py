@@ -38,8 +38,18 @@ def test_build_object_storage_s3_requires_credentials():
     """provider=s3 但配置不全时启动即报错（不静默回落 AWS 默认端点）。"""
     from app.infrastructure.errx import Error
 
+    # 显式置空：Settings 会读 backend/.env（本机若配了真实 MinIO 凭证，
+    # 不置空时这里不会触发缺凭证报错，测试就带上本机配置形状了）
     with pytest.raises(Error):
-        build_object_storage(Settings(media_storage_provider="s3"))
+        build_object_storage(
+            Settings(
+                media_storage_provider="s3",
+                media_storage_endpoint="",
+                media_storage_access_key="",
+                media_storage_secret_key="",
+                media_storage_bucket="",
+            )
+        )
 
 
 def test_build_object_storage_s3_satisfies_port():
