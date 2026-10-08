@@ -10,6 +10,11 @@ MVP 时期的模块设计文档（`design.md`、`design_00_tech_decisions.md`、
 
 **已被取代 / 过期说明（重要）：**
 
+- `media-scene-visualization.md`：**已实施完毕**（2026-10 归档）。方案已由
+  `docs/adr/0005-media-asset-streaming-architecture.md` 接受并执行（epic #38、#39–#64，
+  仅 #52 待视觉验收）。注意文内「一、现状事实」写于 2026-09-22，**实现后已全部不成立**
+  ——当时称无对象存储、无 `UploadFile`、契约无视觉字段、前端无图；这些如今都已落地，
+  勿据以判断现状。文中的讨论过程与 `codebase-design` 评审修订仍是有效的历史出处。
 - `design_07_session_manager_and_infra_seams.md`：**已过期**。其「长驻 run + asyncio.Task」形态
   已被 #7 的 GameRuntime command/step 取代；`StoragePort` 等 seam 的落地以 ADR-0005 为准。
 - `design_03_game_engine.md`、`design_04_data_persistence.md`：被实际实现（command/step 运行时、

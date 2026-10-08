@@ -47,6 +47,32 @@
 
 运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
 
+### 运行期流式与音频（ADR-0005 §10/§11）
+
+事件流里**只有最终完整文本**；`stream_*` 与 `audio_*` 是 WS 瞬态消息，没有 `seq`、不进 outbox，断线重连靠 `resync` 补完整消息而非逐字回放。
+
+出口全是**连接级**，在 `controllers/routes.py` 的 `_handle` 里建；运行时只认一个 `speech_sink` 参数，并不知道 tee 的存在：
+
+```
+LLM token 流 ──StreamTee──┬─ StreamChannel → JSON 帧 `stream_*`（逐段，有界缓冲 + drop-oldest）
+                          └─ 分句器 → TtsSynthesizer → AudioTrackChannel → 控制帧 + 二进制帧
+```
+
+分句在 `domain/game/streaming.py`（`SENTENCE_ENDINGS`），合成与音色映射在 `domain/game/tts.py`，识别在 `domain/game/asr.py`。
+
+四条读单个文件看不出来的约束：
+
+- **一条命令结束时 `AudioTrackChannel` 只 `flush` 不 `aclose`**。它是连接级的，每条命令都关会让第二条命令起的音频全被静默吞掉（现象：只有第一个角色有声音）。
+- **二进制帧不带 `track_id`**，「帧归谁」全靠「一条音轨的帧在流上连续」这条不变量；服务端由 `TtsSynthesizer` 保证同轨 start/chunk/end 之间没有 `await`。
+- **轨的粒度是「句」不是「发言」**。ADR §11 说的「按 speaker 各推一条流」指的是**不混音**，实现落成一句一轨（合成按句排队、每句合完即开轨），同一角色的 N 句就是 N 条轨，靠 per-speaker 链保序——换来 TTFT 等于「首句」而非「整段发言」。
+- **`null` provider 下音频静默跳过**（收到空字节就不开轨），字幕照滚。无 key 的开发环境没有配音**不是故障**。
+
+**barge-in 的实质只在客户端**：服务端 `cancel_audio` 只能丢掉尚未发出的帧——命令串行且 WS 接收循环在命令期间不读新消息，客户端发不出「生成中途」的取消。真正的「停」是前端 `stopAll()`（`<audio>.pause()`）。
+
+**ASR 只转文本、不落音频**：`POST /api/sessions/{id}/transcribe` 在请求内用完即弃，不写对象存储、不进事件流，日志里只有字节数；识别结果由前端当普通 `free_input` 提交——命令端点仍是唯一游戏输入入口，语音不开旁路。
+
+ADR-0005 §10/§11 末尾带 2026-10-01 的「实现注记」，记着决策落地时澄清的地方（与正文措辞有出入时先读注记）。
+
 ### 剧本生成 workflow（ADR-0003）
 
 ```
@@ -63,6 +89,8 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 ## 陷阱与约定
 
 **`make test` 会清空所连的库**：集成测试结束 `drop_all` 全部业务表并删 `alembic_version`（`tests/conftest.py`），交还空库。别对想留数据的库跑；跑了补 `make migrate && make seed`。手动起后端**不会**自动迁移（只有生产入口默认 `alembic upgrade head`）。
+
+**`make test` 在 `WENJING_LLM_API_KEY` 有值时会打到真实 provider**（`test_api_sessions.py` 的 `client` fixture 经 `get_container()` → `_build_agent_llm()` 拿到真家伙），被限流时表现为「整套跑 25 分钟像卡住」，实为外部调用排队而非死锁。要快跑或让结果确定就 `WENJING_LLM_API_KEY= make test`——置空走 `DeterministicAgentLLM`，同一套用例 70 秒跑完。
 
 **外部依赖不可用时集成测试静默 skip**，**全绿不代表跑过**。两类：PostgreSQL（`test_db_event_store`、`test_migrations`、`test_full_flow`、`test_api_sessions` 等）→ 先 `make db-up && make migrate`；MinIO（`test_media_storage.py` 的对象存储集成用例）→ 先 `make media-up`。只有 MinIO 这类有 `WENJING_TEST_MINIO=1` 把静默跳过变成硬失败（CI 用它）；PG 那类没有这个开关，库没起就是纯绿。
 
@@ -81,6 +109,14 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 **契约单源四处，但只有三处受保护**：`backend/app/contracts/`（Pydantic，唯一事实源）→ `contracts/fixtures/`（**手工维护的样例载荷**，不是生成物）→ `contracts/jsonschema/`（`scripts/export_contracts.py` 的导出产物）→ `frontend/src/lib/contracts/types.ts`（手工镜像）。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 断言导出与 fixtures 都不过期，但**完全不管 `types.ts`**——它没有生成器，得自己同步。流程见 `docs/contract-change-process.md`。
 
 **测试约定**：`asyncio_mode = "auto"`（async 测试不用加 `@pytest.mark.asyncio`）；HTTP 打桩用 `httpx.MockTransport`；联网 / 真实 LLM 测试按 env 门控（无 key `pytest.skip`，开关如 `WENJING_TEST_IMAGE_SEARCH=1`）；`caplog` 在整套跑时不可靠，测日志用 monkeypatch 把模块 `logger` 换成自建 probe（见 `tests/test_rag.py::_ProbeLogger`）。
+
+**单次 LLM 调用的超时与重试**（#65）：`llm_timeout_seconds`（缺省 240）是**整次** non-streaming 调用的预算，流式另有 `STREAM_IDLE_TIMEOUT_CAP = 150.0` 封顶相邻 chunk 的空闲间隔——**调大前者不会顺带拉长后者**。超时单列 `LLM_TIMEOUT`（4004），只重试超时（默认 1 次、指数退避 2s，置 `llm_timeout_retries=0` 可关），provider 报错不重试。流式**只在还没交出任何一片时**才重试，守卫是「是否 yield 过」而非「可见文本段数」——工具分片的 `content` 为空，只数文本会漏判，重开一条流会让消费端把同一段工具参数累加两遍。
+
+**超时/失败异常的措辞一律走 `errx.exc_reason`（`类型: 消息`）**，不要用 `str(e)`：`str(TimeoutError())` 是空串，日志与对外信封会一起丢掉现场。同理，`errx.Error` 已被 `domain/` 包过的地方（如 `agents/character.py`）要 `except Error: raise`——再包一层会把码抹平成 `LLM_CALL_FAILED`，上层就看不出该调超时还是该换 key。
+
+**游戏输入只有 REST `POST /api/sessions/{id}/commands` 这一个入口**（`contracts/commands.py` 的模块 docstring 这么写），语音、WS 都只是它的包装。请求体不合 `PlayerCommand` 时返回 `PROTOCOL_MALFORMED_MESSAGE` 信封（400），不是裸 500——`pydantic.ValidationError` 不在 `except WJError` 的作用域内，新增 `model_validate` 时记得翻译（#66）。
+
+**`LLMService` 端口有四条通道**，改 agent/LLM 时别只改一条：`chat` / `chat_with_tools` / `astream`（只吐可见文本）/ `astream_with_tools`（`StreamChunk`，`content` 与 `tool_calls` 是**两条独立通道**，都照发）。忽略 `tool_call_chunks` 指的是「不把它当可见文本下发」，不是不产出——LangGraph 的工具节点靠它组装 tool_calls，丢掉工具轮永不触发。
 
 **配置一律走 `infrastructure/config.py`**（pydantic-settings，env 前缀 `WENJING_`）；完整可选项见 `backend/.env.example`，provider 选 `null` 时对应端口是安全空实现。
 

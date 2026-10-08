@@ -2,13 +2,14 @@
 
 - 状态：已接受（2026-09-22 grilling 决策；同日经 `codebase-design` 评审修订 B1–B5 等）
 - 日期：2026-09-22
-- 执行跟踪：epic #38，tickets #39–#64（见 `docs/design/media-scene-visualization.md` 附录映射）
+- 执行跟踪：epic #38，tickets #39–#64（已实施完毕，仅 #52 待视觉验收；附录映射见
+  `docs/archive/design/media-scene-visualization.md`）
 - 关联：ADR-0003（生成期不做逐 token 流式，本 ADR 对**运行期**修订之）、
   ADR-0004（运行期角色 Agent 工具化，本 ADR §10 处理其流式兼容）、
   issue #36（契约 breaking 升级，前置）、#21（命令路径无状态化 + 乐观锁 CAS，本 ADR §5 需兼容）、
   `docs/archive/design/design_07_session_manager_and_infra_seams.md`（`StoragePort` 接缝，已过期）、
   `docs/research/jd-cloud-deployment.md`（OSS 选型）、
-  `docs/design/media-scene-visualization.md`（讨论纪要 + 评审修订 + 落地计划）
+  `docs/archive/design/media-scene-visualization.md`（讨论纪要 + 评审修订 + 落地计划，**已归档**）
 
 ## 背景
 

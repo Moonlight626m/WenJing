@@ -8,7 +8,7 @@
 | 位置 | 内容 | 状态 |
 |------|------|------|
 | `docs/adr/` | 架构决策记录（ADR-0001…0006） | 现行，冲突时以此为准 |
-| `docs/design/` | 专题设计（如 `media-scene-visualization.md`） | 现行 |
+| `docs/design/` | 专题设计 | 现行 |
 | `docs/agents/` | agent skills 配置：issue tracker / triage labels / domain docs | 现行 |
 | `docs/contract-change-process.md` | 契约变更流程（四处单源） | 现行 |
 | `docs/research/` | 技术 / 部署调研快照（带日期，非规格，不追改） | 参考 |
@@ -20,9 +20,9 @@
 任务追踪在 GitHub Issues，不在本目录：
 
 - **Epic #38** 场景视觉化与多媒体（ADR-0005）：背景图 / 生成与检索 / 对象存储 / 流式与音频。
-  子任务 **#39–#64**，按依赖前沿推进；
-  设计见 `docs/adr/0005-media-asset-streaming-architecture.md` 与
-  `docs/design/media-scene-visualization.md`。
+  子任务 **#39–#64**，按依赖前沿推进；已推进到 M6，仅 **#52**（游玩页舞台）等视觉验收。
+  决策见 `docs/adr/0005-media-asset-streaming-architecture.md`；讨论纪要与落地计划已随
+  实现完成归档至 `docs/archive/design/media-scene-visualization.md`。
 - 历史交付（MVP #2–#13、多用户化 #17–#26、剧本生成 workflow #27–#36）见 git 历史与
   ADR-0002 / ADR-0003。
 
