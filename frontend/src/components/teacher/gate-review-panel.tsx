@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import {
   AssetReviewSection,
@@ -19,6 +19,33 @@ import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 const TEXT_FIELD =
   "w-full rounded-lg border border-amber-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-amber-500 dark:border-amber-800";
 const LABEL = "text-xs font-medium text-amber-700 dark:text-amber-300";
+
+/** 闸门面板的分区卡：标题 + 可选副标 + 内容（视觉切割避免产物/指令/操作混排）。 */
+function PanelBlock({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-amber-200 p-3 dark:border-amber-900">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <h3 className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+          {title}
+        </h3>
+        {hint && (
+          <span className="text-[11px] text-amber-700/60 dark:text-amber-300/60">
+            {hint}
+          </span>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export interface GateResumePayload {
   directives: string[];
@@ -165,7 +192,10 @@ export function GateReviewPanel({
       </p>
 
       {gate === "materials" && (
-        <>
+        <PanelBlock
+          title="素材结论"
+          hint="编辑稿直接用于下游生成，不重新考证"
+        >
           <button
             type="button"
             onClick={() => setMaterialsOpen((open) => !open)}
@@ -184,14 +214,13 @@ export function GateReviewPanel({
           {materialsOpen && review && review.evidence.length > 0 && (
             <EvidenceList items={review.evidence} />
           )}
-        </>
+        </PanelBlock>
       )}
 
       {gate === "pre_write" && (
         <>
           {review?.division && (
-            <div className="flex flex-col gap-2">
-              <span className={LABEL}>场景划分（可编辑场景名与参与人物）</span>
+            <PanelBlock title="场景划分" hint="可编辑场景名与参与人物">
               {review.division.scenes.map((scene, i) => (
                 <div
                   key={i}
@@ -226,11 +255,10 @@ export function GateReviewPanel({
                   </p>
                 </div>
               ))}
-            </div>
+            </PanelBlock>
           )}
           {profiles.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <span className={LABEL}>人物设定（可编辑形象与语言风格）</span>
+            <PanelBlock title="人物设定" hint="可编辑形象与语言风格">
               {profiles.map((profile, i) => (
                 <div
                   key={profile.name}
@@ -309,13 +337,13 @@ export function GateReviewPanel({
                   />
                 </div>
               ))}
-            </div>
+            </PanelBlock>
           )}
         </>
       )}
 
       {isFinal && packageDraft && (
-        <div className="flex flex-col gap-2">
+        <PanelBlock title="剧本内容" hint="可编辑标题与场景名，通过即落库">
           <label className="flex flex-col gap-1">
             <span className={LABEL}>剧本标题</span>
             <input
@@ -343,32 +371,36 @@ export function GateReviewPanel({
               />
             </label>
           ))}
-        </div>
+        </PanelBlock>
       )}
 
       {isFinal && packageDraft && (
-        <AssetReviewSection
-          scriptId={scriptId ?? 0}
-          scenes={packageDraft.scenes}
-          characters={packageDraft.characters}
-          drafts={assetOpDrafts}
-          onDraftsChange={setAssetOpDrafts}
-          disabled={busy !== null}
-        />
+        <PanelBlock title="配图审批" hint="逐槽重新生成/检索替换/上传/删除，通过后生效">
+          <AssetReviewSection
+            scriptId={scriptId ?? 0}
+            scenes={packageDraft.scenes}
+            characters={packageDraft.characters}
+            drafts={assetOpDrafts}
+            onDraftsChange={setAssetOpDrafts}
+            disabled={busy !== null}
+          />
+        </PanelBlock>
       )}
 
-      <textarea
-        value={directives}
-        onChange={(e) => setDirectives(e.target.value)}
-        rows={3}
-        placeholder={
-          isFinal
-            ? "打回时的指导意见（每行一条），例如：\n结尾要落在父亲转身之后"
-            : "每行一条指导指令（可选），例如：\n孔乙己的迂腐要更突出"
-        }
-        className={TEXT_FIELD}
-      />
-      <div className="flex items-center gap-3">
+      <PanelBlock title={isFinal ? "打回指导意见" : "指导指令"} hint="每行一条（可选）">
+        <textarea
+          value={directives}
+          onChange={(e) => setDirectives(e.target.value)}
+          rows={3}
+          placeholder={
+            isFinal
+              ? "例如：\n结尾要落在父亲转身之后"
+              : "例如：\n孔乙己的迂腐要更突出"
+          }
+          className={TEXT_FIELD}
+        />
+      </PanelBlock>
+      <div className="flex flex-wrap items-center gap-3">
         {isFinal ? (
           <>
             <button

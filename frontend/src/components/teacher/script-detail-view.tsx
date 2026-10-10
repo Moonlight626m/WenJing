@@ -5,10 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { FormError } from "@/components/auth/form-error";
+import { Skeleton, SkeletonCard } from "@/components/skeleton";
 import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
 import { GenerationProgress } from "@/components/teacher/generation-progress";
 import { ScriptPreview } from "@/components/teacher/script-preview";
 import {
+  cancelScriptGeneration,
   deleteScript,
   formatApiError,
   getScriptDetail,
@@ -16,6 +18,7 @@ import {
   regenerateScript,
   resumeScriptGeneration,
   startScriptGeneration,
+  subscribeGenerationProgress,
   unpublishScript,
 } from "@/lib/api";
 import {
@@ -74,17 +77,25 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     };
   }, [scriptId, reloadToken]);
 
-  // 生成进行中：轮询详情直到 succeeded/failed
+  // 生成进行中：SSE 实时快照（每次落库即达），配慢轮询兜底（SSE 静默丢失/
+  // 代理缓冲时保证最终可见；权威终态始终是 GET 详情）。
   useEffect(() => {
     if (!running) return;
+    const closeStream = subscribeGenerationProgress(scriptId, (snapshot) => {
+      // SSE 帧只带 generation：把它合入当前详情，整包字段保持不换
+      setDetail((prev) => (prev ? { ...prev, generation: snapshot } : prev));
+    });
     const timer = setInterval(() => {
       getScriptDetail(scriptId)
         .then((next) => setDetail(next))
         .catch(() => {
-          // 轮询期间的瞬时错误忽略，下一轮或手动操作会重试
+          // 兜底轮询的瞬时错误忽略，下一轮或手动操作会重试
         });
-    }, 1500);
-    return () => clearInterval(timer);
+    }, 10000);
+    return () => {
+      closeStream();
+      clearInterval(timer);
+    };
   }, [running, scriptId]);
 
   const refresh = useCallback(async () => {
@@ -133,6 +144,11 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     }
   }
 
+  /** 教师停止运行中的生成：任务取消 + 详情回写失败终态。 */
+  async function handleCancel() {
+    await run("cancel", () => cancelScriptGeneration(scriptId));
+  }
+
   if (!detail) {
     return (
       <div className="flex flex-col gap-3">
@@ -153,7 +169,7 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
             </div>
           </>
         ) : (
-          <p className="text-sm text-zinc-400">加载剧本…</p>
+          <DetailSkeleton />
         )}
       </div>
     );
@@ -296,12 +312,37 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
           )}
 
           {status === "draft" && running && (
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">
-              生成进行中，完成后即可预览与发布。
-            </span>
+            <>
+              <button
+                type="button"
+                onClick={() => void handleCancel()}
+                disabled={busy !== null}
+                className="rounded-lg border border-red-300 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+              >
+                {busy === "cancel" ? "停止中…" : "停止生成"}
+              </button>
+              <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                生成进行中，完成后即可预览与发布；可随时停止。
+              </span>
+            </>
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+/** 详情页加载骨架：标题条 + 生成进度卡 + 操作卡（加载中即成型的版式预期）。 */
+function DetailSkeleton() {
+  return (
+    <div className="flex flex-col gap-6" aria-label="加载剧本…" role="status">
+      <div className="flex items-center gap-3">
+        <Skeleton className="h-5 w-16" />
+        <Skeleton className="h-6 w-48" />
+        <Skeleton className="h-5 w-14 rounded-full" />
+      </div>
+      <SkeletonCard lines={2} />
+      <SkeletonCard />
     </div>
   );
 }

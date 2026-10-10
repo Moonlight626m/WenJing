@@ -42,6 +42,7 @@ export const GENERATION_NODE_LABELS: Record<string, string> = {
   design_characters: "人物设定",
   write_script: "剧本书写",
   final_audit: "总审",
+  design_assets: "配图设计",
 };
 
 /** 生成节点名别名（详情页进度条使用）。 */

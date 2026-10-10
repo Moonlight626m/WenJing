@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { FormError } from "@/components/auth/form-error";
+import { Skeleton, SkeletonCard } from "@/components/skeleton";
 import { formatApiError, listMyScripts } from "@/lib/api";
 import { scriptStatusLabel, scriptVisibilityLabel } from "@/lib/labels";
 import type { ScriptStatus, ScriptSummary } from "@/lib/contracts/types";
@@ -91,7 +92,19 @@ export function TeacherLibrary() {
   }
 
   if (items === null) {
-    return <p className="text-sm text-zinc-400">加载剧本库…</p>;
+    return (
+      <div className="flex flex-col gap-8" aria-label="加载剧本库…" role="status">
+        {[0, 1].map((section) => (
+          <section key={section} className="flex flex-col gap-3">
+            <Skeleton className="h-4 w-32" />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SkeletonCard lines={2} />
+              <SkeletonCard lines={2} />
+            </div>
+          </section>
+        ))}
+      </div>
+    );
   }
 
   return (

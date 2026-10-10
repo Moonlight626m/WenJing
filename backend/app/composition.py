@@ -41,6 +41,7 @@ from app.infrastructure.usage import UsageRecorder
 from app.services.admin import AdminService
 from app.services.assets import AssetAccessService
 from app.services.auth import AuthService
+from app.services.progress_hub import GenerationProgressHub
 from app.services.scene_assets import SceneAssetScheduler
 from app.services.script_library import ScriptLibrary
 from app.services.session_events import SessionEventHub
@@ -241,6 +242,8 @@ class Container:
                 usage_recorder=UsageRecorder(session_factory=self.session_factory),
                 workflow_checkpointer=self.checkpointer,
                 workflow_enabled=script_llm is not None,
+                # 生成进度广播（教师端 SSE 推送）：hub 与生成任务同进程
+                progress_hub=GenerationProgressHub(),
                 # 生成期配图（#48）：design_assets 节点经此编排检索→审核→回退生成。
                 # 传 lambda 延迟到首次生成才构建媒体栈（ScriptLibrary 可能在
                 # 无媒体配置的测试桩下被构造）。

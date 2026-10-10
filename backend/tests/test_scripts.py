@@ -16,6 +16,7 @@ HTTP 只验证 API 表面与状态机。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import uuid
 
@@ -26,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
+from app.contracts.generation import GenerationStatus
 from app.contracts.review import AssetOp, GateEdits
 from app.contracts.script import ScriptPackage
 from app.contracts.script_library import GenerationResumeRequest
@@ -289,6 +291,63 @@ def test_generate_endpoint_accepts(client):
     detail = client.get(f"/api/scripts/{script_id}").json()
     assert detail["generation"] is not None
     assert detail["generation"]["status"] in ("running", "succeeded")
+
+
+def test_cancel_running_generation(client):
+    """教师停止运行中的生成：取消任务 → attempt 回写 failed + 教师可读文案。
+
+    在独立事件循环用服务级 API 驱动（generate → 不完等 → cancel → 核对终态），
+    HTTP 层面验证 cancel 端点状态机：未运行时 409、学生 403。
+    """
+    me = _register(client, "cancel-teacher@wenjing.local")["me"]
+    material_id = _import_material(client)
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            library = ScriptLibrary(session_factory=factory, script_llm=None)
+            material = await library.get_material(material_id, actor)
+            script = await library.create_script(
+                actor, material_id=material.id, name="取消流程", description=None
+            )
+            await library.start_generation(script.id, actor)
+            task = library._tasks[script.id]  # noqa: SLF001 取消需要拿到运行中任务
+            assert not task.done()
+            row = await library.cancel_generation(script.id, actor)
+            assert row.id == script.id
+            progress = await library.progress(script.id)
+            assert progress is not None
+            assert progress.status.value == GenerationStatus.FAILED.value
+            assert "停止" in (progress.error or "")
+            # 被取消任务应很快终结（CancelledError 由 done callback 吸收）
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    # HTTP 面：未运行时再取消 → 409（CONTENT_SCRIPT_NOT_RUNNING，信封单出口）。
+    # 用数学上不会撞全局 library 残留任务的剧本：同一 creative 流程再造一份，
+    # 从未 generate 过（_fresh truncate 后前测残留 _tasks[1] 会吞掉 id=1 的取消）。
+    script2_id = _create_script(client, material_id, name="取消重复")
+    resp = _post(client, f"/api/scripts/{script2_id}/generation/cancel")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "CONTENT_SCRIPT_NOT_RUNNING"
+
+    # 学生不可取消
+    student = _register(client, "cancel-student@wenjing.local", role="student")
+    _act_as(client, student)
+    resp = _post(client, f"/api/scripts/{script2_id}/generation/cancel")
+    assert resp.status_code == 403
 
 
 def test_same_material_multiple_independent_scripts(client):

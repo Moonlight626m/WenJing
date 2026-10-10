@@ -53,6 +53,7 @@ from app.infrastructure.models.material import Material as MaterialRecord
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.script_generation import ScriptGeneration as ScriptGenerationRecord
 from app.infrastructure.rag.service import RagService
+from app.services.progress_hub import GenerationProgressHub
 
 logger = logging.getLogger("wenjing.scripts.library")
 
@@ -158,6 +159,7 @@ class ScriptLibrary:
         workflow_checkpointer=None,
         workflow_enabled: bool = False,
         scene_designer=None,
+        progress_hub: GenerationProgressHub | None = None,
     ) -> None:
         self._factory = session_factory
         self._script_llm = script_llm
@@ -167,6 +169,8 @@ class ScriptLibrary:
         self._usage_recorder = usage_recorder
         self._workflow_checkpointer = workflow_checkpointer
         self._workflow_enabled = workflow_enabled
+        # 生成进度广播（教师端 SSE）：组合根注入；None = 无订阅能力（仅落库）
+        self._progress_hub = progress_hub
         # 场景资产编排（#48）：组合根注入；None = 无媒体配置，生成期不出图。
         # 可传零参 callable（组合根的延迟构建）：**首次生成**时才调用求值，
         # 避免构造 ScriptLibrary 就急切建起整套媒体栈（测试桩 settings 无媒体字段）。
@@ -175,6 +179,11 @@ class ScriptLibrary:
             scene_designer
         )
         self._tasks: dict[int, asyncio.Task] = {}
+
+    @property
+    def progress_hub(self) -> GenerationProgressHub | None:
+        """SSE 订阅入口（controllers 用）；None = hub 未配置。"""
+        return self._progress_hub
 
     # ===== 素材导入 =====
 
@@ -255,17 +264,28 @@ class ScriptLibrary:
         if self._tasks.get(script_id) is task:
             self._tasks.pop(script_id, None)
         if task.cancelled():
-            # 在途任务被取消（删除/重排）：attempt 显式标记失败，避免永远挂在 running。
-            # fire-and-forget 须持有引用防 GC（S7）；行已被 CASCADE 删除时 _save_progress 自动跳过。
+            # 在途任务被取消（教师停止/删除/重排）：attempt 显式标记失败，避免
+            # 永远挂在 running。cancel_generation 已先行写入教师可读文案与
+            # failed 终态——这里只兜底「没有终态行」的路径，不覆盖既有终态。
+            # fire-and-forget 须持有引用防 GC（S7）；行已被 CASCADE 删除时跳过。
             cleanup = asyncio.get_running_loop().create_task(
-                self._save_progress(
-                    attempt_id,
-                    status=GenerationStatus.FAILED.value,
-                    error="cancelled",
-                )
+                self._mark_failed_if_unset(attempt_id)
             )
             _background_tasks.add(cleanup)
             cleanup.add_done_callback(_background_tasks.discard)
+
+    async def _mark_failed_if_unset(self, attempt_id: int) -> None:
+        """attempt 无终态时置 failed（error=cancelled）；已是终态则不动。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptGenerationRecord, attempt_id)
+            if row is None or row.status != GenerationStatus.RUNNING.value:
+                return
+            snapshot = GenerationProgress.model_validate(row.progress)
+            snapshot.status = GenerationStatus.FAILED
+            snapshot.error = "cancelled"
+        await self._save_progress(
+            attempt_id, status=GenerationStatus.FAILED.value, progress=snapshot
+        )
 
     async def start_generation(self, script_id: int, actor: Actor) -> ScriptRecord:
         """校验并调度后台生成任务（非阻塞）；仅草稿可生成/重生。"""
@@ -280,6 +300,48 @@ class ScriptLibrary:
         task = self._tasks.get(script_id)
         if task is not None:
             await task
+
+    async def cancel_generation(self, script_id: int, actor: Actor) -> ScriptRecord:
+        """教师停止运行中的生成（教师端可打断，#68）：取消进程内任务并回写终态。
+
+        - 任务取消后 `_on_task_done` 会把 attempt 标记 FAILED（error="cancelled"）；
+          这里再把对外进度快照的 error 改写为教师可读文案，避免教师端只看到
+          一个含糊的 "cancelled"；
+        - 与 regenerate/删除共用 `_schedule_generation` 的取消语义：同 id 新任务
+          建立前旧任务先取消，不会并发双写；
+        - 不在运行中（已是 awaiting_review/succeeded 等）→ SCR_NOT_RUNNING，
+          教师端按钮只对 running 展示，此为兜底防并发双击。
+        """
+        script = await self._load_owned(script_id, actor)
+        task = self._tasks.get(script_id)
+        if task is None or task.done():
+            raise new(codes.SCR_NOT_RUNNING, extra={"id": script_id})
+        task.cancel()
+        # 立即回写对外可见状态，不等 done_callback（教师端取消后马上刷新详情）
+        await self._mark_last_attempt_cancelled(script_id)
+        return script
+
+    async def _mark_last_attempt_cancelled(self, script_id: int) -> None:
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            return
+        snapshot = GenerationProgress.model_validate(row.progress)
+        snapshot.status = GenerationStatus.FAILED
+        snapshot.error = "已由教师停止生成"
+        await self._save_progress(
+            row.id, status=GenerationStatus.FAILED.value, progress=snapshot
+        )
+        # SSE 订阅者即时收束：广播完整契约形状的终态快照
+        if self._progress_hub is not None:
+            await self._progress_hub.publish(script_id, snapshot.model_dump(mode="json"))
 
     async def regenerate(self, script_id: int, actor: Actor) -> ScriptRecord:
         script = await self._load_owned(script_id, actor)
@@ -437,7 +499,7 @@ class ScriptLibrary:
         runner = WorkflowRunner(
             self._build_nodes(script),
             checkpointer=self._workflow_checkpointer,
-            progress_sink=self._attempt_sink(attempt_id),
+            progress_sink=self._attempt_sink(attempt_id, script.id),
         )
         final = await runner.run(
             initial_state(
@@ -472,9 +534,18 @@ class ScriptLibrary:
             scene_designer=designer,
         )
 
-    def _attempt_sink(self, attempt_id: int):
+    def _attempt_sink(self, attempt_id: int, script_id: int):
+        """进度落库 + SSE 广播的 sink。
+
+        广播 key 是剧本（不是 attempt——重生成/恢复换 attempt，详情页订阅不变）。
+        """
+        hub = self._progress_hub
+
         async def sink(snapshot: GenerationProgress) -> None:
+            payload = snapshot.model_dump(mode="json")
             await self._save_progress(attempt_id, progress=snapshot)
+            if hub is not None:
+                await hub.publish(script_id, payload)
 
         return sink
 
@@ -618,7 +689,7 @@ class ScriptLibrary:
             runner = WorkflowRunner(
                 self._build_nodes(script),
                 checkpointer=self._workflow_checkpointer,
-                progress_sink=self._attempt_sink(attempt_id),
+                progress_sink=self._attempt_sink(attempt_id, script.id),
                 doubter_events=doubter_events,
             )
             final = await runner.resume(

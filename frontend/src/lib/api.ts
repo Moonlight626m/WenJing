@@ -6,6 +6,7 @@ import type {
   AuthSessionInfo,
   ErrorEnvelope,
   GenerationResumeRequest,
+  GenerationProgress,
   LoginRequest,
   MaterialInput,
   MaterialPublic,
@@ -22,6 +23,13 @@ import type {
 import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** 生成尝试的终态：SSE 收到即收流（后端同款三元组的镜像，见 controllers/scripts.py）。 */
+const FINAL_GENERATION_STATUSES = new Set([
+  "succeeded",
+  "failed",
+  "awaiting_review",
+]);
 
 function readCsrfToken(): string | null {
   if (typeof document === "undefined") return null;
@@ -129,12 +137,9 @@ export interface SessionStatus {
   head_sequence: number;
   playable_roles: string[];
   selected_role: string | null;
-  generation: GenerationProgress | null;
-}
-
-export interface GenerationProgress {
-  status: "idle" | "running" | "succeeded" | "failed";
-  phases: { name: string; state: string; detail: string | null }[];
+  // #33 退役遗留：旧「已生成完才有值」的占位形状，无人消费；新代码用
+  // contracts 的 GenerationProgress（lib/contracts/types）
+  generation: import("@/lib/contracts/types").GenerationProgress | null;
 }
 
 export interface RuntimeUpdateDto {
@@ -230,6 +235,59 @@ export function resumeScriptGeneration(
 
 export function regenerateScript(scriptId: number): Promise<ScriptDetail> {
   return request(`/api/scripts/${scriptId}/regenerate`, { method: "POST" });
+}
+
+/** 教师停止运行中的生成：取消进程内任务并回写失败终态（含教师可读原因）。 */
+export function cancelScriptGeneration(scriptId: number): Promise<ScriptDetail> {
+  return request(`/api/scripts/${scriptId}/generation/cancel`, {
+    method: "POST",
+  });
+}
+
+/**
+ * 订阅生成进度 SSE 流（教师详情页实时增强，权威终态仍在 GET 详情）。
+ *
+ * 返回关闭函数；收到终态帧（succeeded/failed/awaiting_review）后流会由
+ * 服务端收束，onSnapshot 不再触发。网络/鉴权错误经 onError 上报后由
+ * 调用方决定回落轮询还是静默。
+ */
+export function subscribeGenerationProgress(
+  scriptId: number,
+  onSnapshot: (snapshot: GenerationProgress) => void,
+  onDone?: () => void
+): () => void {
+  // 原生 EventSource 而非 request() 统一通道：SSE 是流式只读响应，不存在
+  // JSON envelope/CSRF 语义（GET 无需 CSRF）；错误语义为「断线自动重连」。
+  const source = new EventSource(
+    `${apiBaseUrl()}/api/scripts/${scriptId}/generation/stream`,
+    { withCredentials: true }
+  );
+  let done = false;
+  const finishOnce = () => {
+    if (done) return;
+    done = true;
+    onDone?.();
+  };
+  source.onmessage = (event) => {
+    try {
+      const parsed = JSON.parse(event.data) as GenerationProgress;
+      onSnapshot(parsed);
+      if (FINAL_GENERATION_STATUSES.has(parsed.status)) {
+        source.close();
+        finishOnce();
+      }
+    } catch (err) {
+      logger.warning("generation SSE 帧解析失败", err);
+    }
+  };
+  source.onerror = () => {
+    // 浏览器会自动重连；终态后的收束由服务端保证，这里只记日志
+    logger.info("generation SSE 断开（浏览器自动重连）");
+  };
+  return () => {
+    source.close();
+    finishOnce();
+  };
 }
 
 export function publishScript(

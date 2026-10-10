@@ -75,6 +75,7 @@ _CODE_MAP: dict[int, str] = {
     codes.SCR_NOT_EDITABLE: "CONTENT_SCRIPT_NOT_EDITABLE",
     codes.SCR_MATERIAL_NOT_FOUND: "CONTENT_MATERIAL_NOT_FOUND",
     codes.SCR_NOT_READY: "CONTENT_SCRIPT_NOT_READY",
+    codes.SCR_NOT_RUNNING: "CONTENT_SCRIPT_NOT_RUNNING",
 }
 
 
@@ -142,6 +143,7 @@ def safe_message(err: Any) -> str:
         codes.SCR_NOT_EDITABLE: "当前状态不允许该操作（仅草稿可编辑/删除/重新生成）。",
         codes.SCR_MATERIAL_NOT_FOUND: "素材不存在或不属于当前账号。",
         codes.SCR_NOT_READY: "该剧本尚未生成完成，暂时无法开始游玩。",
+        codes.SCR_NOT_RUNNING: "生成任务不在运行中，无法停止。",
     }.get(mapped)
     if base:
         return base

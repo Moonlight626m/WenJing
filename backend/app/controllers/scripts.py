@@ -4,11 +4,13 @@
 创作/发布类端点要求 `teacher`；读取详情按可见性放行任意登录用户（供 #21 学生端复用）。
 """
 
-from __future__ import annotations
-
+import asyncio
+import json
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.composition import get_container
 from app.contracts.content import TextAnalysis
@@ -29,6 +31,7 @@ from app.controllers.auth_deps import Principal, require_role
 from app.domain.game.media import AssetKind
 from app.infrastructure.errx import codes, new
 from app.infrastructure.models.script import Script as ScriptRecord
+from app.services.progress_hub import GenerationProgressHub
 from app.services.script_library import ScriptLibrary
 from app.services.script_projection import script_summary
 
@@ -163,6 +166,62 @@ async def resume_script_generation(
     """教师闸门恢复（#34）：审阅后从断点继续，指令/编辑/终审动作注入 workflow。"""
     row = await library.resume_generation(script_id, principal.actor, resume=body)
     return await _detail(library, row, principal.actor)
+
+
+@router.post(
+    "/scripts/{script_id}/generation/cancel", status_code=202, response_model=ScriptDetail
+)
+async def cancel_script_generation(
+    script_id: int,
+    principal: _Teacher,
+    library: Annotated[ScriptLibrary, Depends(get_script_library)],
+) -> ScriptDetail:
+    """教师停止运行中的生成（教师端可打断）：取消进程内任务并回写失败终态。"""
+    row = await library.cancel_generation(script_id, principal.actor)
+    return await _detail(library, row, principal.actor)
+
+
+@router.get("/scripts/{script_id}/generation/stream")
+async def stream_script_generation(
+    script_id: int,
+    request: Request,
+    principal: _Viewer,
+    library: Annotated[ScriptLibrary, Depends(get_script_library)],
+) -> StreamingResponse:
+    """生成进度 SSE 流：实时增强通道，权威终态仍在 attempt 落库面（GET 详情）。
+
+    - 订阅即先推一帧当前快照，避免空窗，之后每次落库都广播；
+    - 仅 owner 持续收取（生成进度按归属可见，与详情同语义）；终态
+      （succeeded/failed/awaiting_review 暂停）推完即收流，客户端无需断开；
+    - 客户端断开（可打断按钮、离开页面）即注销。
+    """
+    row = await library.get_script(script_id, principal.actor)
+    if row.owner_user_id != principal.actor.user_id:
+        raise new(codes.AUTH_FORBIDDEN, extra={"reason": "not script owner"})
+
+    async def event_source() -> AsyncGenerator[str, None]:
+        with library.progress_hub.subscribe(script_id) as queue:
+            snapshot = await library.progress(script_id)
+            if snapshot is not None:
+                yield f"data: {snapshot.model_dump_json()}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    # 心跳帧：SSE 注释行，防中间代理断空闲连接
+                    yield ": keepalive\n\n"
+                    continue
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if payload.get("status") in GenerationProgressHub.FINAL_STATUSES:
+                    return
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post(

@@ -96,6 +96,7 @@ SCR_NOT_FOUND = 12001               # 剧本不存在
 SCR_NOT_EDITABLE = 12002            # 当前状态不允许该操作（非草稿删除/重生、发布后改内容）
 SCR_MATERIAL_NOT_FOUND = 12003      # 素材不存在或不属于当前用户
 SCR_NOT_READY = 12004               # 剧本尚无生成内容，暂不可游玩（issue #21）
+SCR_NOT_RUNNING = 12005             # 生成任务不在运行中，无法取消
 
 
 def register_all() -> None:
@@ -296,5 +297,10 @@ def register_all() -> None:
     register(
         SCR_NOT_READY,
         "script {id} has no generated content to play",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_NOT_RUNNING,
+        "script {id} generation is not running",
         is_affect_stability=False,
     )
