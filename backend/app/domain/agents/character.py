@@ -299,7 +299,10 @@ class CharacterAgentManager:
 
     def create_agents(self, characters: list[CharacterSetting]) -> None:
         for setting in characters:
-            self.agents[setting.name] = CharacterAgent(setting, self.llm, self.world)
+            # 机制层知识边界：每个角色拿**自己**的裁剪视图（在场/可公开），
+            # 未裁剪的全局视图不进任何 agent 的工具闭包。
+            scoped = self.world.bind(setting.name)
+            self.agents[setting.name] = CharacterAgent(setting, self.llm, scoped)
             if setting.is_player_playable:
                 self.player_role = setting.name
 

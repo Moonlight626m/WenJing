@@ -65,6 +65,12 @@ class _RState:
     beat_cursor: int = 0
     stage3_round_taken: int = 0
     plot_log: list[str] = field(default_factory=list)
+    # 公开发言台账（机制层知识边界）：(speaker, scene_key, 摘要)。只知道
+    # 「谁在哪个场景说了什么」——per-character 世界视图据此答题
+    # 「我在场时听到了谁的话」，未公开/不在场的一切不进任何角色的输入。
+    # 快照与重放的对账来源同 timeline：export_state 存元组列表，
+    # character_speech 事件重放时重建。
+    speech_log: list[tuple[str, str | None, str]] = field(default_factory=list)
     # 当前矛盾/关键处境（D5 方向确认产物；供角色 Agent 的 view_current_direction 工具）
     direction: dict[str, str] = field(default_factory=dict)
     # 当前场景稳定键（#53 / ADR-0005 §8）：脚本场景 `scene:{scene_id}`。
@@ -184,6 +190,16 @@ class GameRuntime:
                 count += 1
         return None
 
+    def _scene_by_key(self, scene_key: str) -> Scene | None:
+        """场景稳定键（`scene:{scene_id}`）→ 场景设定；解析不到返回 None。"""
+        if not scene_key.startswith("scene:"):
+            return None
+        try:
+            scene_id = int(scene_key[len("scene:") :])
+        except ValueError:
+            return None
+        return next((s for s in self.script.scenes if s.scene_id == scene_id), None)
+
     def export_state(self) -> dict:
         s = self.state
         # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
@@ -196,6 +212,7 @@ class GameRuntime:
             "beat_cursor": s.beat_cursor,
             "stage3_round_taken": s.stage3_round_taken,
             "plot_log": list(s.plot_log),
+            "speech_log": [list(t) for t in s.speech_log],
             "direction": dict(s.direction),
             "scene_key": s.scene_key,
             "scene_title": scene.title if scene is not None else None,
@@ -219,6 +236,7 @@ class GameRuntime:
         s.beat_cursor = int(state_dump.get("beat_cursor", 0))
         s.stage3_round_taken = int(state_dump.get("stage3_round_taken", 0))
         s.plot_log = list(state_dump.get("plot_log", []))
+        s.speech_log = [tuple(entry) for entry in state_dump.get("speech_log", [])]
         s.direction = dict(state_dump.get("direction") or {})
         s.scene_key = state_dump.get("scene_key")
         s.ended = bool(state_dump.get("ended", False))
@@ -307,6 +325,14 @@ class GameRuntime:
         elif etype == evt.EVENT_PLAYER_ACTION:
             if self.state.stage == StageValue.STAGE3_EXTENDING.value:
                 self.state.stage3_round_taken += 1
+        elif etype == evt.EVENT_CHARACTER_SPEECH:
+            # 公开发言台账重放（机制层知识边界）：重连/回溯后「谁在哪个场景说了
+            # 什么」据此重建；speaker 与当前 scene_key 是事件自带/状态现有的。
+            speaker = payload.get("speaker")
+            if speaker:
+                self.state.speech_log.append(
+                    (str(speaker), self.state.scene_key, str(payload.get("text", "")))
+                )
 
     # ===== 生命周期 =====
 
@@ -631,6 +657,7 @@ class GameRuntime:
             # 落库的永远是**最终答复**；前端屏幕上已经滚过的那份是临时文本，
             # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
             self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
+            self.state.speech_log.append((name, self.state.scene_key, res))
 
     async def _react(self, name: str, action: PlayerAction, stage: str) -> str:
         """单角色反应；配了流出口就开一条流，逐段推给客户端。

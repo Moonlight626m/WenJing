@@ -18,22 +18,26 @@ from langchain_core.tools import BaseTool, tool
 
 @runtime_checkable
 class WorldView(Protocol):
-    """角色 Agent 可见的世界只读视图（由游戏引擎实现）。"""
+    """单个角色可见的世界只读视图（由游戏引擎实现）。
+
+    `viewer` 是该视图绑定的角色名：实现方**必须**据此裁剪——这不是隐私装饰，
+    是机制层知识边界：角色经工具查到的输入，只允许包含其在场/可公开的信息。
+    """
 
     def progress(self) -> dict[str, Any]:
         """当前世界进度：stage / phase / beat_cursor / total_beats / player_role / ended。"""
 
     def plot_log(self, limit: int = 5) -> list[str]:
-        """最近的剧情推进摘要（时间正序）。"""
+        """该角色**在场**时的剧情推进与听到的公开发言（时间正序，最近优先）。"""
 
     def direction(self) -> dict[str, str]:
-        """当前矛盾与关键处境（conflict / context）。"""
+        """当前核心矛盾与关键处境（conflict / context）。"""
 
     def outline(self) -> list[dict[str, Any]]:
-        """剧本大纲：每个场景的标题、参与角色与情节点。"""
+        """剧本大纲：**该角色参与**的场景与情节点；不参与的场景不可见。"""
 
     def roster(self) -> list[dict[str, Any]]:
-        """在场角色名册：名字、公开背景、是否为玩家角色。"""
+        """在场角色名册（公开信息）：名字、公开背景、是否为玩家角色。"""
 
 
 class MemoryView(Protocol):
@@ -43,9 +47,7 @@ class MemoryView(Protocol):
     rejected: list[str]
 
 
-def build_character_tools(
-    *, memory: MemoryView, world: WorldView
-) -> list[BaseTool]:
+def build_character_tools(*, memory: MemoryView, world: WorldView) -> list[BaseTool]:
     """为单个角色构造工具集（闭包捕获该角色的记忆与共享世界视图）。"""
 
     @tool
@@ -76,9 +78,7 @@ def build_character_tools(
     @tool
     def view_my_memory() -> str:
         """查看你自己的私有记忆：先前提议与自我行动日志。"""
-        return _dump(
-            {"personal_log": memory.personal_log[-10:], "rejected": memory.rejected[-10:]}
-        )
+        return _dump({"personal_log": memory.personal_log[-10:], "rejected": memory.rejected[-10:]})
 
     return [
         view_world_progress,
