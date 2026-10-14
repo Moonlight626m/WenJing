@@ -89,6 +89,42 @@ def test_temperature_and_max_tokens_pass_through():
     assert service._max_tokens == 64
 
 
+def test_sdk_retries_disabled_by_default():
+    """SDK 自身的重试必须关闭（缺省 0）。
+
+    回归：`_client` 曾不传 `max_retries`，SDK 缺省值 2 直接生效——它对 429/408/409/5xx
+    会自动重试，且带 `Retry-After` 时按 `MAX_RETRY_AFTER_DELAY` 睡最长 120s。整段睡眠
+    发生在 `asyncio.wait_for` 预算**之内**，还占着 `_semaphore` 的名额：一条要并发跑
+    N 个角色提议 + 若干轮验证的选角命令，能被单个 429 按住数分钟，前端表现为
+    「生成首幕中…」永不跳转。而 #65 的既定语义（`_may_retry`）是「4xx 不重试」，
+    SDK 这层重试等于把它做废——重试策略必须单源。
+    """
+    cfg = ModelConfig(provider="openai", api_key="k")
+    assert cfg.max_retries is None  # 未显式设置
+
+    service = ModelServiceFactory.build(cfg)
+    assert service._max_retries == 0  # 工厂不透传 → ChatLLMService 缺省关闭
+
+
+async def test_client_passes_max_retries_to_sdk():
+    """真正落地的判据：交给 OpenAI 客户端的必须就是 0，而不是「我们以为传了」。"""
+    service = ChatLLMService(model="m", api_key="k", provider="openai")
+    async with service._client("sess-1") as client:
+        assert client.max_retries == 0
+
+
+def test_sdk_max_retries_can_be_configured():
+    """仍可经 ModelConfig 显式调回（排查用），并透传到 service。"""
+    cfg = ModelConfig(provider="openai", api_key="k", max_retries=1)
+    assert ModelServiceFactory.build(cfg)._max_retries == 1
+
+
+def test_settings_llm_max_retries_default_zero():
+    settings = Settings(llm_api_key="k")
+    assert settings.llm_max_retries == 0
+    assert settings.llm_model_config().max_retries == 0
+
+
 def test_settings_llm_model_config_deepseek():
     settings = Settings(
         llm_provider="deepseek", llm_api_key="k", llm_model="", llm_base_url=""

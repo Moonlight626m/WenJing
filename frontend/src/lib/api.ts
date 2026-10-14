@@ -24,7 +24,17 @@ import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-/** 生成尝试的终态：SSE 收到即收流（后端同款三元组的镜像，见 controllers/scripts.py）。 */
+/**
+ * 游戏命令的客户端等待上限（毫秒）。
+ *
+ * 命令是**同步长任务**：选角那一条要等后端跑完 N 个角色提议 + 若干轮验证（真实
+ * LLM，并发受 `WENJING_MAX_CONCURRENT_LLM` 限制）才返回，前端拿到响应才跳转。
+ * 单次 LLM 调用的预算本身是 `WENJING_LLM_TIMEOUT_SECONDS`（缺省 240s），故这里取
+ * 同量级：正常生成远快于此，撞到它说明是真的卡住了——宁可报错也不要无限转圈。
+ */
+const COMMAND_TIMEOUT_MS = 240_000;
+
+/** 生成尝试的终态：SSE 收到即收流（后端同款三元组的镜像，见 services/progress_hub.py）。 */
 const FINAL_GENERATION_STATUSES = new Set([
   "succeeded",
   "failed",
@@ -63,7 +73,23 @@ export function formatApiError(err: unknown): string {
   return String(err);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** `request()` 的可选开关。 */
+interface RequestOptions {
+  /**
+   * 请求超时（毫秒）。缺省**不设**——只有已知的同步长任务才该设（见
+   * `COMMAND_TIMEOUT_MS`），其余端点保持原有行为。
+   *
+   * 超时只解除客户端的等待，服务端会把命令跑完并落库；因此超时后重试必须复用
+   * 同一个 `command_id`，否则幂等闸认不出是同一条命令（见 `roles` 页的复用）。
+   */
+  timeoutMs?: number;
+}
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  options?: RequestOptions
+): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase();
   const isFormData = init?.body instanceof FormData;
   const headers: Record<string, string> = {
@@ -76,14 +102,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (csrf) headers["X-CSRF-Token"] = csrf;
   }
 
+  const timeoutMs = options?.timeoutMs;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer =
+    controller && timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
   let resp: Response;
   try {
     resp = await fetch(`${apiBaseUrl()}${path}`, {
       ...init,
       credentials: "include",
       headers,
+      ...(controller ? { signal: controller.signal } : {}),
     });
   } catch (err) {
+    if (controller?.signal.aborted) {
+      logger.error(`请求超时 ${method} ${path}（${timeoutMs}ms）`);
+      throw new ApiError(
+        {
+          error_id: "timeout",
+          code: "REQUEST_TIMEOUT",
+          domain: "internal",
+          message: `等待超过 ${Math.round((timeoutMs ?? 0) / 1000)} 秒仍未响应；服务端可能仍在生成，可稍后重试或直接继续游玩`,
+          retryable: true,
+          details: null,
+        },
+        0
+      );
+    }
     logger.error(`请求失败（网络） ${method} ${path}`, err);
     throw new ApiError(
       {
@@ -96,6 +142,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
       0
     );
+  } finally {
+    if (timer !== null) clearTimeout(timer);
   }
   if (!resp.ok) {
     const body = await resp.text();
@@ -174,10 +222,16 @@ export function submitCommandRest(
   sessionId: string,
   command: import("@/lib/contracts/types").PlayerCommand
 ): Promise<RuntimeUpdateDto> {
-  return request(`/api/sessions/${sessionId}/commands`, {
-    method: "POST",
-    body: JSON.stringify(command),
-  });
+  // 命令是唯一游戏输入入口，也是唯一同步长任务端点（首轮要跑完所有角色的提议与
+  // 验证），故只有它带超时；见 COMMAND_TIMEOUT_MS。
+  return request(
+    `/api/sessions/${sessionId}/commands`,
+    {
+      method: "POST",
+      body: JSON.stringify(command),
+    },
+    { timeoutMs: COMMAND_TIMEOUT_MS }
+  );
 }
 
 // ===== 剧本库（教师创作，backend/app/api/scripts.py 镜像）=====

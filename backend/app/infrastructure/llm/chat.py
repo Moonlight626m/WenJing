@@ -63,6 +63,7 @@ class ChatLLMService:
         timeout_seconds: float = 30,
         timeout_retries: int = 1,
         retry_backoff_seconds: float = 2.0,
+        max_retries: int = 0,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -77,6 +78,7 @@ class ChatLLMService:
         self._stream_timeout = min(timeout_seconds, STREAM_IDLE_TIMEOUT_CAP)
         self._timeout_retries = max(0, timeout_retries)
         self._retry_backoff = max(0.0, retry_backoff_seconds)
+        self._max_retries = max(0, max_retries)
 
     # ===== 失败分类与重试（#65）=====
 
@@ -160,13 +162,24 @@ class ChatLLMService:
 
     @contextlib.asynccontextmanager
     async def _client(self, session_id: str) -> AsyncIterator[Any]:
-        """每请求一个 OpenAI 客户端（provider 头随会话），退出时确保关闭。"""
+        """每请求一个 OpenAI 客户端（provider 头随会话），退出时确保关闭。
+
+        `max_retries` 显式覆盖 SDK 缺省值（2）：SDK 的自动重试只对 429/408/409/5xx
+        生效，且**带 `Retry-After` 时最长会睡 120s**（`MAX_RETRY_AFTER_DELAY`），
+        整段睡眠还发生在 `asyncio.wait_for` 预算**之内**、并占着 `_semaphore` 的名额。
+        对一条要并发跑「N 个角色提议 + 若干轮验证」的选角命令来说，一个 429 就能把
+        有 3 个名额的信号量按住两分多钟，学生端表现为「生成首幕中…」永不跳转。
+
+        #65 的既定语义是「只重试超时，provider 的 4xx 不重试」（见 `_may_retry`），
+        让 SDK 再叠一层重试等于把这条语义作废：重试策略在这里是**单源**的。
+        """
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
             default_headers=self._provider_headers(session_id),
+            max_retries=self._max_retries,
         )
         try:
             yield client

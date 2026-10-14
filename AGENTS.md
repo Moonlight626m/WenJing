@@ -125,7 +125,3 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 - Issue tracker：GitHub Issues，用 `gh` CLI。见 `docs/agents/issue-tracker.md`。
 - Triage labels：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。见 `docs/agents/triage-labels.md`。
 - Domain docs：单上下文布局，`CONTEXT.md` 在仓库根、ADR 在 `docs/adr/`。见 `docs/agents/domain.md`。
-
-### 回复语言
-
-回复用户时的最终总结部分请使用中文。

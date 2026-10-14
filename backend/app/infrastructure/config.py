@@ -146,6 +146,11 @@ class Settings(BaseSettings):
     # 不重试，一次慢调用即整轮剧本生成失败。只重试超时，provider 报错不重试。
     llm_timeout_retries: int = 1
     llm_retry_backoff_seconds: float = 2.0
+    # OpenAI SDK 自身的重试次数（缺省 0 = 关闭，不要调大）。SDK 的 429 重试按
+    # `Retry-After` 最长睡 120s，且睡眠发生在 `wait_for` 预算之内、还占着并发名额，
+    # 会把一条要并发跑 N 个角色的命令按住数分钟（现象：学生端「生成首幕中…」不跳转）。
+    # 重试策略的单源是上面的 `llm_timeout_retries`；详见 `ChatLLMService._client`。
+    llm_max_retries: int = 0
     player_timeout_seconds: int = 300
     max_events_in_memory: int = 5000
     checkpoint_interval: int = 20
@@ -168,6 +173,7 @@ class Settings(BaseSettings):
             timeout_seconds=self.llm_timeout_seconds,
             timeout_retries=self.llm_timeout_retries,
             retry_backoff_seconds=self.llm_retry_backoff_seconds,
+            max_retries=self.llm_max_retries,
             max_concurrency=self.max_concurrent_llm,
         )
 

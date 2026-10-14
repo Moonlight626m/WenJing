@@ -70,5 +70,8 @@ class GenerationProgressHub:
                     "generation_progress_queue_full script_id=%s", script_id
                 )
 
+    def subscriber_count(self, script_id: int) -> int:
+        return len(self._by_script.get(str(script_id), ()))
 
-__all__ = ["GenerationProgressHub"]
+
+__all__ = ["FINAL_STATUSES", "GenerationProgressHub"]

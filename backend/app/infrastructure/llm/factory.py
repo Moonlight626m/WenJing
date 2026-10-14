@@ -64,6 +64,8 @@ class ModelConfig:
     #: 超时重试次数与退避基数（#65）；见 `ChatLLMService`。
     timeout_retries: int | None = None
     retry_backoff_seconds: float | None = None
+    #: OpenAI SDK 自身的重试次数（缺省 0，即关闭）；见 `ChatLLMService._client`。
+    max_retries: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -108,4 +110,8 @@ class ModelServiceFactory:
             kwargs["retry_backoff_seconds"] = config.retry_backoff_seconds
         elif "retry_backoff_seconds" in config.extra:
             kwargs["retry_backoff_seconds"] = config.extra["retry_backoff_seconds"]
+        if config.max_retries is not None:
+            kwargs["max_retries"] = config.max_retries
+        elif "max_retries" in config.extra:
+            kwargs["max_retries"] = config.extra["max_retries"]
         return ChatLLMService(**kwargs)

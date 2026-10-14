@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -9,7 +9,7 @@ import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
 import { ToastHost } from "@/components/toast-host";
-import type { CharacterProfile } from "@/lib/contracts/types";
+import type { CharacterProfile, PlayerCommand } from "@/lib/contracts/types";
 
 function RolesContent() {
   const router = useRouter();
@@ -26,6 +26,9 @@ function RolesContent() {
   const [playableRoles, setPlayableRoles] = useState<string[]>([]);
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // 超时/失败后的重试复用同一 command_id：服务端可能已经跑完并落库，命令表的幂等
+  // 闸据此返回首次结果，而不是再跑一轮（选角后立刻重跑会多推一个 beat）。
+  const pending = useRef<{ role: string; command: PlayerCommand } | null>(null);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -75,11 +78,16 @@ function RolesContent() {
   async function handleSelect(role: string) {
     if (!sessionId || submitting) return;
     setSubmitting(true);
+    // 换了角色就换命令；同一角色重试沿用旧 command_id（见 pending 的注释）
+    if (pending.current?.role !== role) {
+      pending.current = {
+        role,
+        command: buildCommand(sessionId, "select_role", { role_name: role }),
+      };
+    }
     try {
-      await submitCommandRest(
-        sessionId,
-        buildCommand(sessionId, "select_role", { role_name: role })
-      );
+      await submitCommandRest(sessionId, pending.current.command);
+      pending.current = null;
       router.push(`/game?id=${sessionId}`);
     } catch (err) {
       push({
@@ -127,6 +135,12 @@ function RolesContent() {
         </div>
       )}
 
+      {submitting && (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          正在为所有角色生成首幕（含提议与校验），通常需要十几秒，请勿关闭页面。
+        </p>
+      )}
+
       <div className="flex flex-col gap-3">
         {characters.map((c) => {
           const isSelected = c.name === selectedRole;
@@ -171,7 +185,7 @@ function RolesContent() {
                 disabled={submitting || isSelected}
                 className="shrink-0 rounded-lg bg-zinc-900 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-40 dark:bg-zinc-100 dark:text-black"
               >
-                {isSelected ? "已选择" : submitting ? "提交中…" : "扮演此角色"}
+                {isSelected ? "已选择" : submitting ? "生成首幕中…" : "扮演此角色"}
               </button>
             </div>
           );

@@ -31,7 +31,7 @@ from app.controllers.auth_deps import Principal, require_role
 from app.domain.game.media import AssetKind
 from app.infrastructure.errx import codes, new
 from app.infrastructure.models.script import Script as ScriptRecord
-from app.services.progress_hub import GenerationProgressHub
+from app.services.progress_hub import FINAL_STATUSES
 from app.services.script_library import ScriptLibrary
 from app.services.script_projection import script_summary
 
@@ -204,6 +204,9 @@ async def stream_script_generation(
             snapshot = await library.progress(script_id)
             if snapshot is not None:
                 yield f"data: {snapshot.model_dump_json()}\n\n"
+                # 已落终态的生成：首帧即收流，否则只挂着一串心跳
+                if snapshot.status in FINAL_STATUSES:
+                    return
             while True:
                 if await request.is_disconnected():
                     return
@@ -214,7 +217,7 @@ async def stream_script_generation(
                     yield ": keepalive\n\n"
                     continue
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                if payload.get("status") in GenerationProgressHub.FINAL_STATUSES:
+                if payload.get("status") in FINAL_STATUSES:
                     return
 
     return StreamingResponse(
