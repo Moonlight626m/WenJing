@@ -66,14 +66,59 @@ class SessionStore:
         async with self._factory() as s:
             return await s.get(CommandRecord, command_id) is not None
 
+    async def command_status(self, command_id: uuid.UUID) -> str | None:
+        """幂等闸的**细分**版：命令的落地状态（未受理为 None）。
+
+        后台命令（select_role 202 化）要求区分「已完成（对账返回当前状态）」与
+        「仍在跑（返回进行中形态，不能对账假装完成）」——两者在 commands 表里
+        都有行，`has_command` 分不开。同步命令落库时直接写 SUCCEEDED，不受影响。
+        """
+        async with self._factory() as s:
+            row = await s.get(CommandRecord, command_id)
+            return row.status if row is not None else None
+
+    async def claim_command(self, command: PlayerCommand, session_id: uuid.UUID) -> bool:
+        """登记一条后台命令为 RECEIVED（独立事务）；已登记返回 False。
+
+        202 化的**占位**路径：先留台账再派后台任务，重复提交的 command_id 在
+        这里被拦下（后台任务还没写 SUCCEEDED/FAILED 时，重发 safe no-op）。
+        """
+        async with self._factory() as s:
+            exists = await s.get(CommandRecord, command.command_id)
+            if exists is not None:
+                return False
+            s.add(
+                CommandRecord(
+                    command_id=command.command_id,
+                    session_id=session_id,
+                    kind=command.kind.value,
+                    payload=command.payload,
+                    status=CommandStatus.RECEIVED.value,
+                )
+            )
+            await s.commit()
+        return True
+
+    async def settle_command(self, command_id: uuid.UUID, *, status: str) -> None:
+        """后台命令收口：RECEIVED → SUCCEEDED / FAILED（独立事务）。
+
+        进程崩溃时行可能永远停在 RECEIVED：此时事件没落、运行时状态未推进，
+        玩家重发同一 command_id 安全——`submit_async` 的 claim 已拦不住（行存在），
+        由上层按 FAILED/RECEIVED 语义各自处理（见 `SessionApplication.submit_async`）。
+        """
+        async with self._factory() as s:
+            row = await s.get(CommandRecord, command_id)
+            if row is None:
+                return
+            row.status = status
+            await s.commit()
+
     async def load_package(self, session_id: uuid.UUID) -> ScriptPackage | None:
         """只取会话引用的剧本包（状态查询/初始化用）；无生成内容返回 None。"""
         async with self._factory() as s:
             sess = await s.get(SessionRecord, session_id)
             script_id = sess.script_id if sess is not None else None
-            row = (
-                await s.get(ScriptRecord, script_id) if script_id is not None else None
-            )
+            row = await s.get(ScriptRecord, script_id) if script_id is not None else None
         if row is None or row.script_data is None:
             return None
         try:
@@ -95,9 +140,7 @@ class SessionStore:
             sess = await s.get(SessionRecord, session_id, with_for_update=True)
             version = sess.version if sess is not None else 0
             script_id = sess.script_id if sess is not None else None
-            script_row = (
-                await s.get(ScriptRecord, script_id) if script_id is not None else None
-            )
+            script_row = await s.get(ScriptRecord, script_id) if script_id is not None else None
             if sess is None or script_row is None or script_row.script_data is None:
                 raise new(
                     codes.SESS_NOT_FOUND,
@@ -123,9 +166,7 @@ class SessionStore:
             try:
                 events = await store.restore_active_branch(s, str(session_id))
             except SQLAlchemyError as exc:
-                raise wrap(
-                    exc, codes.PER_WRITE_FAILED, extra={"op": "restore_events"}
-                ) from exc
+                raise wrap(exc, codes.PER_WRITE_FAILED, extra={"op": "restore_events"}) from exc
             except ValueError as exc:
                 raise wrap(
                     exc, codes.PER_CORRUPT_SNAPSHOT, extra={"reason": "events corrupt"}
@@ -186,15 +227,21 @@ class SessionStore:
                 # 2) 持锁后写事件与命令（同事务；任何失败整体回滚）
                 rows = await store.write_pending(s, str(session_id))
                 if command is not None:
-                    s.add(
-                        CommandRecord(
-                            command_id=command.command_id,
-                            session_id=session_id,
-                            kind=command.kind.value,
-                            payload=command.payload,
-                            status=CommandStatus.SUCCEEDED.value,
+                    existing = await s.get(CommandRecord, command.command_id)
+                    if existing is not None:
+                        # 后台命令（202 化）claim 先写过 RECEIVED 占位行：
+                        # 收口即原地升格，不再插入（主键冲突）
+                        existing.status = CommandStatus.SUCCEEDED.value
+                    else:
+                        s.add(
+                            CommandRecord(
+                                command_id=command.command_id,
+                                session_id=session_id,
+                                kind=command.kind.value,
+                                payload=command.payload,
+                                status=CommandStatus.SUCCEEDED.value,
+                            )
                         )
-                    )
                 await s.flush()
                 head_db = rows[-1].id if rows else sess.head_event_id
 
@@ -208,9 +255,7 @@ class SessionStore:
                 if player_role is not _UNSET:
                     values["player_role"] = player_role
                 await s.execute(
-                    update(SessionRecord)
-                    .where(SessionRecord.id == session_id)
-                    .values(**values)
+                    update(SessionRecord).where(SessionRecord.id == session_id).values(**values)
                 )
                 if rows and runtime_state is not None:
                     export = runtime_state()
@@ -245,9 +290,7 @@ class SessionStore:
                 EventBranchRecord,
             ):
                 await s.execute(delete(model).where(model.session_id == session_id))
-            await s.execute(
-                delete(SessionRecord).where(SessionRecord.id == session_id)
-            )
+            await s.execute(delete(SessionRecord).where(SessionRecord.id == session_id))
             await s.commit()
 
 

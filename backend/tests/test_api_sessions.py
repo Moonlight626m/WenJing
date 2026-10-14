@@ -64,9 +64,7 @@ async def _db_available() -> bool:
 
 def _execute(sql: str, **params) -> None:
     async def _run():
-        engine = create_async_engine(
-            _DB_URL, pool_timeout=5, connect_args={"timeout": 5}
-        )
+        engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
         try:
             async with engine.begin() as conn:
                 await conn.execute(text(sql), params)
@@ -114,15 +112,11 @@ def _csrf(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("wenjing_csrf")}
 
 
-async def _create_and_init_session(
-    user_id: str, org_id: str, script_id: int
-) -> str:
+async def _create_and_init_session(user_id: str, org_id: str, script_id: int) -> str:
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     try:
-        svc = SessionApplication(
-            session_factory=factory, agent_llm=DeterministicAgentLLM()
-        )
+        svc = SessionApplication(session_factory=factory, agent_llm=DeterministicAgentLLM())
         actor = Actor(
             user_id=uuid.UUID(user_id),
             org_id=uuid.UUID(org_id),
@@ -144,12 +138,8 @@ def _generate_direct(client: TestClient, script_id: int) -> None:
     me = client.get("/api/auth/me").json()
 
     async def _run() -> None:
-        engine = create_async_engine(
-            _DB_URL, pool_timeout=5, connect_args={"timeout": 5}
-        )
-        factory = async_sessionmaker(
-            engine, class_=AsyncSession, expire_on_commit=False
-        )
+        engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             actor = Actor(
                 user_id=uuid.UUID(me["id"]),
@@ -211,7 +201,7 @@ def test_rest_full_flow(client):
     body = client.get(f"/api/sessions/{sid}").json()
     role = body["playable_roles"][0]
 
-    update = client.post(
+    receipt = client.post(
         f"/api/sessions/{sid}/commands",
         json={
             "session_id": sid,
@@ -220,8 +210,26 @@ def test_rest_full_flow(client):
         },
         headers=_csrf(client),
     )
-    assert update.status_code == 200, update.text
-    assert update.json()["state"]["stage"] == "stage2_reenacting"
+    assert receipt.status_code == 200, receipt.text
+    body = receipt.json()
+    # select_role 202 化：受理立刻返回；命令在后台 task 收尾后状态才推进
+    assert body["accepted"] is True
+    assert body["async_state"] == "accepted"
+    assert body["awaited_command_id"]
+    assert body["stage"] in ("stage1_complete", "stage2_reenacting")
+
+    # TestClient 的后台 task 跑在它自己的 portal loop 里，等它收尾要轮询
+    # commands 表状态（而不是在另一个 loop 里 drain）
+    import time
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        row = client.get(f"/api/sessions/{sid}")
+        if row.json().get("selected_role") == role:
+            break
+        time.sleep(0.05)
+    assert row.json()["stage"] == "stage2_reenacting"
+    assert row.json()["selected_role"] == role
 
 
 def test_rest_error_envelopes(client):
@@ -251,8 +259,12 @@ def test_command_endpoint_returns_an_envelope_for_malformed_bodies(client):
 
     # 四种都是 PlayerCommand 的常规校验项，不是边角输入
     bodies = [
-        {"session_id": sid, "command_id": "not-a-uuid", "kind": "select_role",
-         "payload": {"role_name": role}},
+        {
+            "session_id": sid,
+            "command_id": "not-a-uuid",
+            "kind": "select_role",
+            "payload": {"role_name": role},
+        },
         {"session_id": sid, "kind": "select_role", "payload": {}},
         {"session_id": sid, "kind": "not_a_kind", "payload": {}},
         {"session_id": sid, "kind": "select_role", "payload": "oops"},

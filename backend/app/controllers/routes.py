@@ -101,8 +101,7 @@ async def health_ready() -> Response:
             content={"status": "unavailable", "problems": problems},
         )
     return Response(
-        content='{"status":"ok","checks":{"postgres":%s}}'
-        % ("true" if db_ok else "false"),
+        content='{"status":"ok","checks":{"postgres":%s}}' % ("true" if db_ok else "false"),
         media_type="application/json",
     )
 
@@ -119,9 +118,7 @@ async def create_session(
 ) -> SessionStatusResponse:
     """从可见剧本开局（#21）：建会话并初始化运行时，直接返回状态（含可扮演角色）。"""
     try:
-        return await get_application().open_session(
-            actor=principal.actor, script_id=body.script_id
-        )
+        return await get_application().open_session(actor=principal.actor, script_id=body.script_id)
     except WJError as exc:
         return _error_response(exc)
 
@@ -144,9 +141,7 @@ async def session_status(
 ) -> dict[str, Any]:
     """会话状态查询（#5）：stage/分支/head/可扮演角色。"""
     try:
-        resp = await get_application().get_status(
-            _ensure_uuid(session_id), actor=principal.actor
-        )
+        resp = await get_application().get_status(_ensure_uuid(session_id), actor=principal.actor)
     except WJError as exc:
         return _error_response(exc)
     return resp.model_dump(mode="json")
@@ -164,22 +159,40 @@ async def submit_command(
     游戏输入入口，非法请求体是常规客户端错误，不是服务端故障。裸 `ValidationError`
     会被 Starlette 兜成 500 + 纯文本，前端拿不到 `code` 也就无法提示。
     WS 路径早就这么处理了（`_handle` 里的 `client_message_adapter`），这里补齐。
+
+    **长命令异步受理**（select_role 202 化）：`select_role` 要在同步路径里跑完
+    N 个角色提议 + 若干轮验证（真实 LLM，分钟级），REST 同步等会把前端按在
+    「生成首幕中…」上数分钟（#65 现场）。这类命令改走 `submit_async`：先留
+    RECEIVED 台账再派后台 task，本端点立刻返回受理回执（`accepted=true` +
+    `pending=true`，HTTP 200——信封体系没有 202 的既有先例，状态语义放 body）；
+    命令结果作为完整 WS 消息经 event_hub 推给在线连接，端点返回的 RuntimeUpdate
+    是受理时刻的当前状态（不包含本次命令的产出）。前端据此切换为「 submits +
+    等 WS/轮询 」的异步流程。
     """
     from app.contracts.commands import PlayerCommand
 
+    application = get_application()
     try:
         try:
             command = PlayerCommand.model_validate(body)
         except ValidationError as exc:
-            raise new(
-                codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]}
-            ) from exc
+            raise new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]}) from exc
         if str(command.session_id) != session_id:
             raise new(
                 codes.PRT_MALFORMED_MESSAGE,
                 extra={"reason": "command.session_id mismatch"},
             )
-        update = await get_application().submit_command(
+        if command.kind.value in application.ASYNC_COMMAND_KINDS:
+            receipt = await application.submit_async(
+                _ensure_uuid(session_id), command, actor=principal.actor
+            )
+            update = await application.get_status(_ensure_uuid(session_id), actor=principal.actor)
+            payload = update.model_dump(mode="json")
+            payload["accepted"] = receipt.claimed
+            payload["async_state"] = receipt.state
+            payload["awaited_command_id"] = str(command.command_id)
+            return payload
+        update = await application.submit_command(
             _ensure_uuid(session_id), command, actor=principal.actor
         )
     except WJError as exc:
@@ -214,9 +227,7 @@ async def transcribe_speech(
         max_bytes = container.settings.media_asr_max_bytes
         data = await audio.read(max_bytes + 1)
         if len(data) > max_bytes:
-            raise new(
-                codes.MEDIA_ASR_INVALID, extra={"size": len(data), "limit": max_bytes}
-            )
+            raise new(codes.MEDIA_ASR_INVALID, extra={"size": len(data), "limit": max_bytes})
         transcript = await container.asr_transcriber.transcribe(
             TranscriptionRequest(
                 audio_bytes=data,
@@ -243,9 +254,7 @@ def _origin_allowed(ws: WebSocket) -> bool:
     origin = ws.headers.get("origin")
     if not origin:
         return True
-    allowed = {
-        o.strip() for o in get_settings().cors_origins.split(",") if o.strip()
-    }
+    allowed = {o.strip() for o in get_settings().cors_origins.split(",") if o.strip()}
     return origin in allowed
 
 
@@ -298,9 +307,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         try:
             parsed = client_message_adapter.validate_python(data)
         except Exception as exc:
-            await _send_error(
-                new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]})
-            )
+            await _send_error(new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)[:120]}))
             return
 
         if parsed.type == "submit_command":
@@ -369,9 +376,7 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
         elif parsed.type == "resync_request":
             last = parsed.last_confirmed_seq
             # session_init 是连接引导消息（每次连接都会重发），不参与补发
-            replay = [
-                m for m in outbox if m["seq"] > last and m["type"] != "session_init"
-            ]
+            replay = [m for m in outbox if m["seq"] > last and m["type"] != "session_init"]
             if not replay:
                 replay = await application.replay_after(sid, last, actor=actor)
             for msg in replay:
