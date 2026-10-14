@@ -62,9 +62,7 @@ def test_ecnu_default_base_url_and_model():
 
 def test_settings_llm_model_config_ecnu():
     """`.env` 里只写 provider + key 也能起（模型回落登记表默认值）。"""
-    settings = Settings(
-        llm_provider="ecnu", llm_api_key="k", llm_model="", llm_base_url=""
-    )
+    settings = Settings(llm_provider="ecnu", llm_api_key="k", llm_model="", llm_base_url="")
     cfg = settings.llm_model_config()
     assert cfg.provider == "ecnu"
     assert cfg.base_url == KNOWN_PROVIDERS["ecnu"]["base_url"]
@@ -87,6 +85,18 @@ def test_temperature_and_max_tokens_pass_through():
     service = ModelServiceFactory.build(cfg)
     assert service._temperature == 0.2
     assert service._max_tokens == 64
+
+
+def test_llm_log_response_body_passed_through():
+    """响应全文进日志的开关从 Settings 一路透传到 service；缺省 true 维持旧行为。"""
+    settings = Settings(llm_api_key="k", llm_log_response_body=False)
+    cfg = settings.llm_model_config()
+    assert cfg.log_response_body is False
+    service = ModelServiceFactory.build(cfg)
+    assert service._log_response_body is False
+
+    default = ModelServiceFactory.build(ModelConfig(provider="openai", api_key="k"))
+    assert default._log_response_body is True
 
 
 def test_sdk_retries_disabled_by_default():
@@ -126,9 +136,7 @@ def test_settings_llm_max_retries_default_zero():
 
 
 def test_settings_llm_model_config_deepseek():
-    settings = Settings(
-        llm_provider="deepseek", llm_api_key="k", llm_model="", llm_base_url=""
-    )
+    settings = Settings(llm_provider="deepseek", llm_api_key="k", llm_model="", llm_base_url="")
     cfg = settings.llm_model_config()
     assert cfg.provider == "deepseek"
     assert cfg.api_key == "k"

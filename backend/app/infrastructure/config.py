@@ -14,6 +14,7 @@ _ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 #: 这样「配置默认值」与「调度器默认值」只有一个来源，不会各改各的。
 MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT = 900
 
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ENV_FILE, env_prefix="WENJING_", extra="ignore")
 
@@ -151,6 +152,9 @@ class Settings(BaseSettings):
     # 会把一条要并发跑 N 个角色的命令按住数分钟（现象：学生端「生成首幕中…」不跳转）。
     # 重试策略的单源是上面的 `llm_timeout_retries`；详见 `ChatLLMService._client`。
     llm_max_retries: int = 0
+    # 模型响应全文是否进 LLM 结构化日志（接 chat 层 `log_response_body`）：与
+    # `log_body`（访问日志层）同一语义域的学生台词隐私开关，生产环境建议同关。
+    llm_log_response_body: bool = True
     player_timeout_seconds: int = 300
     max_events_in_memory: int = 5000
     checkpoint_interval: int = 20
@@ -174,6 +178,7 @@ class Settings(BaseSettings):
             timeout_retries=self.llm_timeout_retries,
             retry_backoff_seconds=self.llm_retry_backoff_seconds,
             max_retries=self.llm_max_retries,
+            log_response_body=self.llm_log_response_body,
             max_concurrency=self.max_concurrent_llm,
         )
 

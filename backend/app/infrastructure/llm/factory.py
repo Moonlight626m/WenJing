@@ -66,6 +66,8 @@ class ModelConfig:
     retry_backoff_seconds: float | None = None
     #: OpenAI SDK 自身的重试次数（缺省 0，即关闭）；见 `ChatLLMService._client`。
     max_retries: int | None = None
+    #: 模型响应全文是否进 `llm_call_end` 日志（接 `settings.log_body`，同一单源）。
+    log_response_body: bool | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -114,4 +116,8 @@ class ModelServiceFactory:
             kwargs["max_retries"] = config.max_retries
         elif "max_retries" in config.extra:
             kwargs["max_retries"] = config.extra["max_retries"]
+        if config.log_response_body is not None:
+            kwargs["log_response_body"] = config.log_response_body
+        elif "log_response_body" in config.extra:
+            kwargs["log_response_body"] = config.extra["log_response_body"]
         return ChatLLMService(**kwargs)

@@ -64,6 +64,7 @@ class ChatLLMService:
         timeout_retries: int = 1,
         retry_backoff_seconds: float = 2.0,
         max_retries: int = 0,
+        log_response_body: bool = True,
     ) -> None:
         self.provider = provider
         self.model = model
@@ -79,6 +80,10 @@ class ChatLLMService:
         self._timeout_retries = max(0, timeout_retries)
         self._retry_backoff = max(0.0, retry_backoff_seconds)
         self._max_retries = max(0, max_retries)
+        # 模型响应全文进 `llm_call_end` 日志的开关：学生台词会随「建模响应全文 =
+        # 业务层关键信息」的字段一起进结构化日志（存储/检索方都看得见），生产环境
+        # 建议关闭（装配处接 `settings.log_body`，与访问日志同一单源）。
+        self._log_response_body = log_response_body
 
     # ===== 失败分类与重试（#65）=====
 
@@ -329,14 +334,10 @@ class ChatLLMService:
                         yield StreamChunk(content=text, tool_calls=calls, usage=usage)
                 except Exception as exc:
                     if not emitted and self._may_retry(exc, attempt):
-                        await self._wait_before_retry(
-                            "llm_stream_retry", exc, attempt, session_id
-                        )
+                        await self._wait_before_retry("llm_stream_retry", exc, attempt, session_id)
                         attempt += 1
                         continue
-                    self._log_failure(
-                        "llm_stream_failed", exc, attempt, session_id, chunks=chunks
-                    )
+                    self._log_failure("llm_stream_failed", exc, attempt, session_id, chunks=chunks)
                     raise self._failure(
                         exc,
                         timeout=self._stream_timeout,
@@ -384,9 +385,7 @@ class ChatLLMService:
             while True:
                 try:
                     resp = await asyncio.wait_for(
-                        client.chat.completions.create(
-                            **self._request(messages, tools=tools)
-                        ),
+                        client.chat.completions.create(**self._request(messages, tools=tools)),
                         timeout=self._timeout,
                     )
                     message = resp.choices[0].message
@@ -396,15 +395,11 @@ class ChatLLMService:
                 except Exception as exc:
                     # 非流式调用是整次幂等的，重试不会产生重复输出（#65）。
                     if self._may_retry(exc, attempt):
-                        await self._wait_before_retry(
-                            "llm_call_retry", exc, attempt, session_id
-                        )
+                        await self._wait_before_retry("llm_call_retry", exc, attempt, session_id)
                         attempt += 1
                         continue
                     self._log_failure("llm_call_failed", exc, attempt, session_id)
-                    raise self._failure(
-                        exc, timeout=self._timeout, retry_count=attempt
-                    ) from exc
+                    raise self._failure(exc, timeout=self._timeout, retry_count=attempt) from exc
                 break
             logger.info(
                 "llm_call_end",
@@ -414,7 +409,9 @@ class ChatLLMService:
                         "provider": self.provider,
                         "model": self.model,
                         "purpose": purpose.value,
-                        "content": content,  # 模型响应全文（业务层关键信息）
+                        # 模型响应全文（业务层关键信息）；关闭开关时只打有无，
+                        # 全文可能是学生台词，是否落日志见 `log_response_body`
+                        "content": content if self._log_response_body else bool(content),
                         "tool_calls": [c.name for c in calls],
                         "prompt_tokens": usage.prompt_tokens if usage else None,
                         "completion_tokens": usage.completion_tokens if usage else None,
