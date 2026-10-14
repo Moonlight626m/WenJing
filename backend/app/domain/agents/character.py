@@ -31,6 +31,14 @@ logger = logging.getLogger("wenjing.agents.character")
 #: 可见文本增量回调（同步签名；WS 出口由调用方自行缓冲/下发）。
 OnDelta = Callable[[str], None]
 
+#: 阶段任务指令（PhaseDirector 式集中，jubensha-ai 调研参考点 #4）：
+#: stage 别名 → 该阶段的任务框架。运行期所有角色通用、随阶段切换——与 identity
+#: （全场不变）的区别就在这里。新增阶段在此登记一行，不要在各调用点散装 if。
+STAGE_DIRECTIVES: dict[str, str] = {
+    "stage2": "你处于剧情还原阶段，按课文原情节行动。",
+    "stage3": "你处于剧情续写阶段，设定内自由发挥。",
+}
+
 
 @dataclass
 class CharacterMemory:
@@ -238,11 +246,7 @@ class CharacterAgent:
         return _final_text(list(merged.values()))
 
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
-        stage_hint = {
-            "stage2": "你处于剧情还原阶段，按课文原情节行动。",
-            "stage3": "你处于剧情续写阶段，设定内自由发挥。",
-        }.get(stage, "")
-        parts = [stage_hint]
+        parts = [STAGE_DIRECTIVES.get(stage, "")]
         if extra:
             parts.append(extra)
         parts.append(f"任务：{instruction}（必要时先用工具查询世界进度与剧情上下文）")
