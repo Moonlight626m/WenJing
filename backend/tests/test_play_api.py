@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -79,10 +80,7 @@ def _move_to_new_org(email: str) -> None:
             async with engine.begin() as conn:
                 oid = _uuid.uuid4()
                 await conn.execute(
-                    text(
-                        "insert into orgs (id, name, created_at) "
-                        "values (:id, :name, now())"
-                    ),
+                    text("insert into orgs (id, name, created_at) values (:id, :name, now())"),
                     {"id": oid, "name": f"isolated-{oid}"},
                 )
                 await conn.execute(
@@ -173,9 +171,7 @@ def _generate_direct(account: dict, script_id: int) -> None:
         from app.services.script_library import ScriptLibrary
 
         engine = _engine()
-        factory = async_sessionmaker(
-            engine, class_=AsyncSession, expire_on_commit=False
-        )
+        factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             actor = Actor(
                 user_id=_uuid.UUID(account["me"]["id"]),
@@ -192,9 +188,7 @@ def _generate_direct(account: dict, script_id: int) -> None:
     asyncio.run(_run())
 
 
-def _make_script(
-    client: TestClient, account: dict, *, name: str, generate: bool = True
-) -> int:
+def _make_script(client: TestClient, account: dict, *, name: str, generate: bool = True) -> int:
     _act_as(client, account)
     material = client.post(
         "/api/materials",
@@ -241,8 +235,17 @@ def _square_ids(client: TestClient, account: dict) -> set[int]:
     return {item["id"] for item in resp.json()["items"]}
 
 
-def _play_to_terminal(client: TestClient, sid: str, account: dict, *, max_steps: int = 20):
-    """按阶段提交合法命令直到终局，返回观察到的阶段集合。"""
+def _play_to_terminal(client: TestClient, sid: str, account: dict, *, max_steps: int = 30):
+    """按阶段提交合法命令直到终局，返回观察到的阶段集合。
+
+    select_role 已 202 化（受理即返回，后台执行）：受理后不读 `state`（回执
+    只有 stage 快照），靠下一轮循环的 status 查询观察推进。
+    """
+
+    def _submit(body: dict) -> None:
+        resp = client.post(f"/api/sessions/{sid}/commands", json=body, headers=_csrf(account))
+        assert resp.status_code == 200, resp.text
+
     observed: set[str] = set()
     for _ in range(max_steps):
         status = client.get(f"/api/sessions/{sid}").json()
@@ -264,14 +267,7 @@ def _play_to_terminal(client: TestClient, sid: str, account: dict, *, max_steps:
             body = {"session_id": sid, "kind": "choose_option", "payload": {"option_id": "0"}}
         else:
             raise AssertionError(f"未预期阶段 {stage}")
-        resp = client.post(
-            f"/api/sessions/{sid}/commands", json=body, headers=_csrf(account)
-        )
-        assert resp.status_code == 200, resp.text
-        new_stage = resp.json()["state"]["stage"]
-        observed.add(new_stage)
-        if new_stage == "ended":
-            return observed
+        _submit(body)
     raise AssertionError("未在步数上限内终局")
 
 
@@ -355,9 +351,10 @@ def test_my_games_list_and_resume(client):
     assert games[0]["script_name"] == "我的游戏剧本"
     assert games[0]["stage"] == "stage1_complete"
 
-    # 选角：命令路径无状态，每次从 DB 重建
+    # 选角：命令路径无状态，每次从 DB 重建。
+    # select_role 已 202 化：受理即返回（快照还是 stage1），等后台执行收尾。
     role = created.json()["playable_roles"][0]
-    upd = client.post(
+    receipt = client.post(
         f"/api/sessions/{sid}/commands",
         json={
             "session_id": sid,
@@ -366,8 +363,14 @@ def test_my_games_list_and_resume(client):
         },
         headers=_csrf(student),
     )
-    assert upd.status_code == 200, upd.text
-    assert upd.json()["state"]["stage"] == "stage2_reenacting"
+    assert receipt.status_code == 200, receipt.text
+    assert receipt.json()["accepted"] is True
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/sessions/{sid}").json()
+        if status["stage"] == "stage2_reenacting":
+            break
+        time.sleep(0.05)
 
     # 「刷新」：重新查询状态与列表一致
     status = client.get(f"/api/sessions/{sid}").json()
@@ -441,9 +444,7 @@ def test_open_session_rejects_bad_requests(client):
 
     # 已登录但缺 CSRF
     _act_as(client, teacher)
-    missing = client.post(
-        "/api/sessions", json={"schema_version": "2.4.0", "script_id": 1}
-    )
+    missing = client.post("/api/sessions", json={"schema_version": "2.4.0", "script_id": 1})
     assert missing.status_code == 403
     assert missing.json()["code"] == "AUTH_CSRF_FAILED"
 
