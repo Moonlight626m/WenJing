@@ -37,7 +37,7 @@ class CharacterMemory:
     """角色的分层记忆。MVP 简化为工作记忆 + 个人日志 + 剧情上下文。"""
 
     working_memory: list[dict] = field(default_factory=list)  # 最近对话
-    personal_log: list[str] = field(default_factory=list)     # 私有事件
+    personal_log: list[str] = field(default_factory=list)  # 私有事件
     plot_context: str = ""
     current_direction: dict[str, str] = field(default_factory=dict)
     rejected: list[str] = field(default_factory=list)  # 被驳回提议描述（防重复）
@@ -79,8 +79,10 @@ class CharacterIdentity:
         if self.speech_style:
             parts.append(f"说话风格：{self.speech_style}。")
         if self.knowledge_boundary:
-            parts.append(f"{self.knowledge_boundary}。超出边界的信息，"
-                         "以符合身份的方式回应（困惑、岔开或按你的立场表态）。")
+            parts.append(
+                f"{self.knowledge_boundary}。超出边界的信息，"
+                "以符合身份的方式回应（困惑、岔开或按你的立场表态）。"
+            )
         parts.append(
             "你可以调用工具查询当前世界进度与剧情上下文；需要这些信息时先查询，"
             "再给出符合身份的行动，不要凭空编造未发生的情节。"
@@ -91,9 +93,7 @@ class CharacterIdentity:
 class CharacterAgent:
     """单个角色 Agent：identity + memory + LangChain 工具调用执行器。"""
 
-    def __init__(
-        self, setting: CharacterSetting, llm: LLMService, world: WorldView
-    ) -> None:
+    def __init__(self, setting: CharacterSetting, llm: LLMService, world: WorldView) -> None:
         self.identity = CharacterIdentity(setting)
         self.memory = CharacterMemory()
         self.llm = llm
@@ -133,9 +133,7 @@ class CharacterAgent:
         调用方用返回值持久化 `character_speech`，由终态规则覆盖前端已渲染的临时文本。
         """
         detail = player_action.text or f"选项 {player_action.option_id}"
-        extra = (
-            f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。"
-        )
+        extra = f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。"
         if on_delta is None:
             text = await self._run(stage, instruction="react", extra=extra)
         else:
@@ -143,40 +141,47 @@ class CharacterAgent:
                 stage, instruction="react", extra=extra, on_delta=on_delta
             )
         if text:
-            self.memory.working_memory.append(
-                {"role": self.identity.name, "content": text}
-            )
+            self.memory.working_memory.append({"role": self.identity.name, "content": text})
         logger.debug(
             "character_react",
             extra={"wj_extra": {"name": self.identity.name, "text": text}},
         )
         return text
 
-    def revise_proposal(self, suggestion: str | None) -> Proposal:
-        """依据验证反馈重提。MVP 从 rejections 推导即可，不额外调 LLM。"""
+    async def revise_proposal(self, stage: str, suggestion: str | None) -> Proposal:
+        """依据验证反馈重新提案（工具调用 Agent 跑一轮，同 propose_action）。
+
+        把原提议与驳回理由显式写进任务提示，角色据此调整思路——被驳回的提议已
+        在 `propose_action` 进过 `memory.rejected`，Agent 可经 `view_my_memory`
+        自查，避免换个措辞重提同一方案。MVP 的同步模板拼字版本（不调 LLM）仅剩
+        机制用途，已由本方法替代。
+        """
+        original = self.memory.rejected[-1] if self.memory.rejected else None
+        feedback = f"你的上一个提议已被驳回，理由：{suggestion or '不合规'}。"
+        if original:
+            feedback += f"原提议是：「{original.removeprefix('提议：')}」。请换个方向重新提议。"
+        text = await self._run(stage, instruction="propose_action", extra=feedback)
         self._proposal_seq += 1
-        hint = f"（修正：{suggestion}）" if suggestion else ""
+        description = text or "（无提议）"
+        self.memory.personal_log.append(f"提议：{description}")
+        self.memory.rejected.append(description)  # 记录提出过，避免重复
         return Proposal(
             proposal_id=self._proposal_seq,
             proposed_by=self.identity.name,
-            description=f"修订提议{hint}",
+            description=description,
         )
 
     async def _run(self, stage: str, *, instruction: str, extra: str = "") -> str:
         """驱动 LangChain 执行器一轮，返回最终 AI 文本。"""
         message = self._build_user_message(stage, instruction=instruction, extra=extra)
         try:
-            result = await self._executor.ainvoke(
-                {"messages": [HumanMessage(content=message)]}
-            )
+            result = await self._executor.ainvoke({"messages": [HumanMessage(content=message)]})
         except Error:
             # 已经是带码的 errx.Error（含 `LLM_TIMEOUT`）：再包一层会把 #65 分列出来的
             # 超时码抹平成 `LLM_CALL_FAILED`，上层就再也看不出该调超时还是该换 key。
             raise
         except Exception as exc:
-            raise wrap(
-                exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}
-            ) from exc
+            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}) from exc
         return _final_text(result.get("messages", []))
 
     async def _run_streaming(
@@ -219,9 +224,7 @@ class CharacterAgent:
             # 同上：保住 `LLM_TIMEOUT` 这类已分列的码。
             raise
         except Exception as exc:
-            raise wrap(
-                exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}
-            ) from exc
+            raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}) from exc
         return _final_text(list(merged.values()))
 
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
@@ -261,8 +264,7 @@ def _message_text(message: BaseMessage) -> str:
     content = message.content
     if isinstance(content, list):
         return "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
+            part.get("text", "") if isinstance(part, dict) else str(part) for part in content
         )
     return "" if content is None else str(content)
 

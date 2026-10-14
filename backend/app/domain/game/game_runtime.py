@@ -120,9 +120,7 @@ class GameRuntime:
         self.config = config or EngineConfig()
         # 注意：EventStore 定义了 __len__（空存储为 falsy），必须显式判 None，
         # 否则 `event_store or EventStore()` 会静默丢弃空 PersistentEventStore
-        self.event_store: EventStore = (
-            event_store if event_store is not None else EventStore()
-        )
+        self.event_store: EventStore = event_store if event_store is not None else EventStore()
         self._on_flush = on_flush
         # 流式字幕出口（#60）：None = 不发流式（HTTP 命令路径、离线重放、测试）。
         # 运行时实例按命令重建，故把"发到哪条连接"挂在这里是安全的。
@@ -208,9 +206,7 @@ class GameRuntime:
             "active_interaction": _interaction_payload(self.active_interaction),
             # 当前背景稳定引用在导出时解析（#53）：快照/投影都从这里拿
             "current_asset": (
-                current_asset.model_dump(mode="json")
-                if current_asset is not None
-                else None
+                current_asset.model_dump(mode="json") if current_asset is not None else None
             ),
         }
 
@@ -246,9 +242,7 @@ class GameRuntime:
             else None
         )
 
-    def replay_from(
-        self, snapshot_state: dict | None, events: list[dict]
-    ) -> None:
+    def replay_from(self, snapshot_state: dict | None, events: list[dict]) -> None:
         """快照 + 事件重放重建运行时（issue #8 验收标准 1）。
 
         快照提供记忆基线（character_memories/beat_cursor/plot_log/stage），
@@ -356,9 +350,7 @@ class GameRuntime:
         self._processed_commands[key] = result
         return result
 
-    async def _dispatch(
-        self, cid: str, kind: str, payload: dict[str, Any]
-    ) -> StepResult:
+    async def _dispatch(self, cid: str, kind: str, payload: dict[str, Any]) -> StepResult:
         self._command_events = []
         self._asset_requests = []
         stage = self.state.stage
@@ -412,9 +404,7 @@ class GameRuntime:
         self._log.info("stage3_start")
         return await self._drive_until_interaction()
 
-    async def _on_input(
-        self, cid: str, *, action_type: str, payload: dict
-    ) -> StepResult:
+    async def _on_input(self, cid: str, *, action_type: str, payload: dict) -> StepResult:
         if self.active_interaction is None:
             raise new(codes.ENG_NOT_RUNNING, extra={"reason": "no_active_interaction"})
 
@@ -439,9 +429,8 @@ class GameRuntime:
         current_stage = self._runtime_stage_alias()
 
         # Stage2 结局确认出口（design_interaction 到结局时提供 0=续写 / 1=结束）
-        reached_ending = (
-            current_stage == "stage2"
-            and self.state.beat_cursor >= total_beats(self.script)
+        reached_ending = current_stage == "stage2" and self.state.beat_cursor >= total_beats(
+            self.script
         )
         if reached_ending and action_type == "choose_option":
             self._log.info("ending_choice", extra={"choice": action.option_id})
@@ -475,9 +464,7 @@ class GameRuntime:
 
     # ===== 推进引擎：跑到下一个稳定交互点 =====
 
-    async def _drive_until_interaction(
-        self, *, new_events: list[dict] | None = None
-    ) -> StepResult:
+    async def _drive_until_interaction(self, *, new_events: list[dict] | None = None) -> StepResult:
         sink: list[dict] = new_events if new_events is not None else []
 
         while True:
@@ -485,9 +472,8 @@ class GameRuntime:
             stage_name = self._runtime_stage_alias()
             await self._run_cycle_head(stage_name, sink)
 
-            reached_ending = (
-                stage_name == "stage2"
-                and self.state.beat_cursor >= total_beats(self.script)
+            reached_ending = stage_name == "stage2" and self.state.beat_cursor >= total_beats(
+                self.script
             )
             interaction = self.screenwriter.design_interaction(
                 stage=stage_name,
@@ -520,9 +506,7 @@ class GameRuntime:
                 "scene_key": self.state.scene_key,
                 "scene_title": ctx.title if ctx is not None else None,
                 "current_asset": (
-                    current_asset.model_dump(mode="json")
-                    if current_asset is not None
-                    else None
+                    current_asset.model_dump(mode="json") if current_asset is not None else None
                 ),
             },
             sink=sink,
@@ -570,17 +554,13 @@ class GameRuntime:
             )
         )
 
-    async def _collect_proposals(
-        self, stage: str, sink: list[dict]
-    ) -> list[Proposal]:
+    async def _collect_proposals(self, stage: str, sink: list[dict]) -> list[Proposal]:
         names = self.characters.active_names()
 
         async def _one(name: str) -> Proposal:
             return await self.characters.get(name).propose_action(stage)
 
-        results = await asyncio.gather(
-            *[_one(n) for n in names], return_exceptions=True
-        )
+        results = await asyncio.gather(*[_one(n) for n in names], return_exceptions=True)
         proposals: list[Proposal] = []
         for name, res in zip(names, results):
             if isinstance(res, BaseException):
@@ -611,9 +591,7 @@ class GameRuntime:
             still_pending: list[Proposal] = []
             for prop, res in zip(pending, results):
                 if isinstance(res, BaseException):
-                    self._log.error(
-                        "verify_failed", extra={"proposal": prop.proposal_id}
-                    )
+                    self._log.error("verify_failed", extra={"proposal": prop.proposal_id})
                     valid.append(prop)  # 降级收录
                     continue
                 self._append(
@@ -626,8 +604,9 @@ class GameRuntime:
                     sink=sink,
                 )
                 if res.verdict == "reject" and attempts_left > 0:
-                    revised = self.characters.get(prop.proposed_by).revise_proposal(
-                        res.rejections[0].suggestion if res.rejections else None
+                    revised = await self.characters.get(prop.proposed_by).revise_proposal(
+                        stage,
+                        res.rejections[0].suggestion if res.rejections else None,
                     )
                     still_pending.append(revised)
                 elif res.verdict != "reject":
@@ -748,12 +727,8 @@ class GameRuntime:
 
     # ===== 内部工具 =====
 
-    def _append(
-        self, event_type: str, payload: dict, *, sink: list[dict] | None = None
-    ) -> dict:
-        ev = self.event_store.append(
-            event_type, payload, session_id=self.session_id
-        )
+    def _append(self, event_type: str, payload: dict, *, sink: list[dict] | None = None) -> dict:
+        ev = self.event_store.append(event_type, payload, session_id=self.session_id)
         entry = {"event_id": ev.event_id, "event_type": event_type}
         self._command_events.append(entry)
         if sink is not None:
@@ -788,9 +763,7 @@ class GameRuntime:
             state=self.export_state(),
             new_events=list(self._command_events),
             active_interaction=_interaction_payload(self.active_interaction),
-            allowed_commands=sorted(
-                _ALLOWED_BY_STAGE[self.state.stage]
-            ),
+            allowed_commands=sorted(_ALLOWED_BY_STAGE[self.state.stage]),
             terminal=terminal,
             asset_requests=list(self._asset_requests),
         )
