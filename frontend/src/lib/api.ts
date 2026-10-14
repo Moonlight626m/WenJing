@@ -27,10 +27,11 @@ const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 /**
  * 游戏命令的客户端等待上限（毫秒）。
  *
- * 命令是**同步长任务**：选角那一条要等后端跑完 N 个角色提议 + 若干轮验证（真实
- * LLM，并发受 `WENJING_MAX_CONCURRENT_LLM` 限制）才返回，前端拿到响应才跳转。
- * 单次 LLM 调用的预算本身是 `WENJING_LLM_TIMEOUT_SECONDS`（缺省 240s），故这里取
- * 同量级：正常生成远快于此，撞到它说明是真的卡住了——宁可报错也不要无限转圈。
+ * 同步命令仍是一次请求一轮生成（角色会对玩家的行动做反应），单次 LLM 调用的预算
+ * 是 `WENJING_LLM_TIMEOUT_SECONDS`（缺省 240s），故这里取同量级；正常生成远快于
+ * 此，撞到它说明是真的卡住了——宁可报错也不要无限转圈。select_role 这类**异步
+ * 受理**命令（202 化，后端 `ASYNC_COMMAND_KINDS`）不走这里：受理即返回，进度靠
+ * 轮询 /api/sessions/{id}。
  */
 const COMMAND_TIMEOUT_MS = 240_000;
 
@@ -218,12 +219,30 @@ export function listMySessions(): Promise<SessionListResponse> {
   return request("/api/sessions");
 }
 
+/**
+ * 异步命令受理回执（select_role 202 化）：端点受理即返回，body 带 status 光照 +
+ * accepted/async_state/awaited_command_id。`async_state` 的语义见后端
+ * `SessionApplication.AsyncCommandReceipt`：accepted=新受理；pending=同 id 在途；
+ * done=已成功（对账拿当前状态）；stale/failed=上个进程孤儿/上次失败，换新
+ * command_id 重试。
+ */
+export interface AsyncCommandReceiptDto {
+  session_id: string;
+  stage: string;
+  active_branch_id: string;
+  head_sequence: number;
+  playable_roles: string[];
+  selected_role: string | null;
+  accepted: boolean;
+  async_state: "accepted" | "pending" | "done" | "stale" | "failed";
+  awaited_command_id: string;
+}
+
 export function submitCommandRest(
   sessionId: string,
   command: import("@/lib/contracts/types").PlayerCommand
 ): Promise<RuntimeUpdateDto> {
-  // 命令是唯一游戏输入入口，也是唯一同步长任务端点（首轮要跑完所有角色的提议与
-  // 验证），故只有它带超时；见 COMMAND_TIMEOUT_MS。
+  // 同步命令（choose_option / free_input …）仍同步返回 RuntimeUpdate。
   return request(
     `/api/sessions/${sessionId}/commands`,
     {
@@ -232,6 +251,18 @@ export function submitCommandRest(
     },
     { timeoutMs: COMMAND_TIMEOUT_MS }
   );
+}
+
+/** 异步命令（select_role 等）：受理即返回，不走同步等待。 */
+export function submitAsyncCommandRest(
+  sessionId: string,
+  command: import("@/lib/contracts/types").PlayerCommand
+): Promise<AsyncCommandReceiptDto> {
+  // 受理响应立回，不需要长超时；执行进度轮询 /api/sessions/{id}。
+  return request(`/api/sessions/${sessionId}/commands`, {
+    method: "POST",
+    body: JSON.stringify(command),
+  });
 }
 
 // ===== 剧本库（教师创作，backend/app/api/scripts.py 镜像）=====

@@ -4,7 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ApiError, getScriptDetail, getStatus, submitCommandRest } from "@/lib/api";
+import { ApiError, getScriptDetail, getStatus, submitAsyncCommandRest } from "@/lib/api";
 import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -85,10 +85,36 @@ function RolesContent() {
         command: buildCommand(sessionId, "select_role", { role_name: role }),
       };
     }
+    const command = pending.current.command;
     try {
-      await submitCommandRest(sessionId, pending.current.command);
-      pending.current = null;
-      router.push(`/game?id=${sessionId}`);
+      const receipt = await submitAsyncCommandRest(sessionId, command);
+      if (receipt.async_state === "failed") {
+        // 上一次同 id 执行失败了：换新 command_id 重试
+        pending.current = null;
+        throw new Error("上次生成失败，请再试一次");
+      }
+      if (receipt.async_state === "stale") {
+        // 上个进程留下的孤儿受理：换新 command_id 重新受理
+        pending.current = null;
+        push({ kind: "error", title: "生成中断", description: "上次生成中断，请再试一次" });
+        setSubmitting(false);
+        return;
+      }
+      // accepted / pending / done 三态都等推进：轮询状态直到选角生效（真实
+      // LLM 要跑完所有角色提议 + 验证，十几秒到几分钟）。
+      const deadline = Date.now() + 300_000;
+      for (;;) {
+        if (Date.now() > deadline) {
+          throw new Error("等待超过 5 分钟仍未完成，请稍后刷新重试");
+        }
+        await new Promise((r) => setTimeout(r, 1500));
+        const status = await getStatus(sessionId);
+        if (status.selected_role && status.stage !== "stage1_complete") {
+          pending.current = null;
+          router.push(`/game?id=${sessionId}`);
+          return; // setSubmitting 保持：跳转动画期间按钮仍禁用
+        }
+      }
     } catch (err) {
       push({
         kind: "error",
@@ -96,7 +122,9 @@ function RolesContent() {
         description:
           err instanceof ApiError
             ? `${err.envelope.code}：${err.envelope.message}`
-            : String(err),
+            : err instanceof Error
+              ? err.message
+              : String(err),
       });
       setSubmitting(false);
     }
@@ -137,7 +165,8 @@ function RolesContent() {
 
       {submitting && (
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          正在为所有角色生成首幕（含提议与校验），通常需要十几秒，请勿关闭页面。
+          正在为所有角色生成首幕（含提议与校验），通常十几秒到几分钟，请勿关闭页面——
+          会话状态已保存，随时可回来。
         </p>
       )}
 
