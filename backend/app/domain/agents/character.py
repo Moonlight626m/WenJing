@@ -67,7 +67,8 @@ class CharacterIdentity:
         self.public_background = setting.public_background
         self.personality_traits = setting.personality_traits
         self.speech_style = setting.speech_style
-        self.knowledge_boundary = setting.knowledge_boundary
+        self.knows = setting.knows
+        self.not_knows = setting.not_knows
         self.voice_style = ""
 
     def to_system_prompt(self) -> str:
@@ -78,16 +79,25 @@ class CharacterIdentity:
         ]
         if self.speech_style:
             parts.append(f"说话风格：{self.speech_style}。")
-        if self.knowledge_boundary:
-            parts.append(
-                f"{self.knowledge_boundary}。超出边界的信息，"
-                "以符合身份的方式回应（困惑、岔开或按你的立场表态）。"
-            )
+        if self.knows or self.not_knows:
+            # 知识边界保持结构化、逐条列出（不压平成一句）：not_knows 是**禁出
+            # 清单**，逐条项目的显著性远高于压平叙述（jubensha-ai 调研参考点 #3
+            # 的「公开必须是显式动作」化到 prompt 层就是这份清单）。
+            parts.append("你知道的事：")
+            for item in self.knows:
+                parts.append(f"- {item}")
+            if self.not_knows:
+                parts.append(
+                    "你不知道的事（**绝不能说出、也不能据此行动**；被问及"
+                    "就以符合身份的方式回应：困惑、岔开或按你的立场表态）："
+                )
+                for item in self.not_knows:
+                    parts.append(f"- {item}")
         parts.append(
             "你可以调用工具查询当前世界进度与剧情上下文；需要这些信息时先查询，"
             "再给出符合身份的行动，不要凭空编造未发生的情节。"
         )
-        return "".join(parts)
+        return "\n".join(parts)
 
 
 class CharacterAgent:

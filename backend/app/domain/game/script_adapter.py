@@ -28,18 +28,6 @@ def _speech_style_text(c: CharacterProfile) -> str:
     return text
 
 
-def _knowledge_boundary_text(c: CharacterProfile) -> str:
-    kb = c.knowledge_boundary
-    if not kb.knows and not kb.not_knows:
-        return ""
-    parts = []
-    if kb.knows:
-        parts.append("你知道：" + "；".join(kb.knows))
-    if kb.not_knows:
-        parts.append("你不知道：" + "；".join(kb.not_knows))
-    return "。".join(parts)
-
-
 def script_package_to_script(pkg: ScriptPackage) -> Script:
     """ScriptPackage → 引擎 Script。playable_roles 是可扮演的权威来源。"""
     playable = set(pkg.playable_roles)
@@ -49,7 +37,10 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
             public_background=c.public_background,
             personality_traits=[t.label for t in c.personality_traits],
             speech_style=_speech_style_text(c),
-            knowledge_boundary=_knowledge_boundary_text(c),
+            # 知识边界保持**结构化**透传（knows/not_knows 列表）：identity 层
+            # 生成显著性更高的禁出清单，文本压平的显著性损失是踩过坑的。
+            knows=list(c.knowledge_boundary.knows),
+            not_knows=list(c.knowledge_boundary.not_knows),
             is_player_playable=c.is_player_playable.value or c.name in playable,
         )
         for c in pkg.characters
@@ -59,9 +50,7 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
             scene_id=s.scene_id,
             title=s.title,
             participants=list(s.participants),
-            beats=[
-                Beat(beat_id=b.beat_id, description=b.description) for b in s.beats
-            ],
+            beats=[Beat(beat_id=b.beat_id, description=b.description) for b in s.beats],
             # 背景稳定引用随包进引擎（#53）：export_state 据游标解析 current_asset
             background_asset=s.background_asset,
         )

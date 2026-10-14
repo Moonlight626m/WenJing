@@ -57,13 +57,60 @@ def test_script_package_to_script_maps_engine_fields():
     assert script.stage2_ending_beat_id == 2
 
 
+def test_script_package_preserves_structured_knowledge_boundary():
+    """知识边界**保持结构化**透传（knows/not_knows 列表），identity 层逐条列出。
+
+    压平成一句 persona 文本的显著性损失是 jubensha-ai 调研引出的改点：not_knows
+    是禁出清单，逐条项目才配得上「绝不能说出」这条约束。
+    """
+    from app.contracts.script import (
+        Beat,
+        CharacterProfile,
+        KnowledgeBoundary,
+        Scene,
+        ScriptPackage,
+    )
+
+    pkg = ScriptPackage(
+        title="背影",
+        characters=[
+            CharacterProfile(
+                name="儿子",
+                public_background="二十岁青年",
+                knowledge_boundary=KnowledgeBoundary(
+                    knows=["家里近期困难", "父亲送我到浦口"],
+                    not_knows=["父亲为此卖了什么东西", "家中具体欠款数额"],
+                ),
+            )
+        ],
+        scenes=[
+            Scene(
+                scene_id=1,
+                title="浦口送别",
+                participants=["儿子"],
+                beats=[Beat(beat_id=1, description="父亲送行")],
+            )
+        ],
+        teaching_focus=[],
+        playable_roles=["儿子"],
+        stage2_ending_beat_id=1,
+    )
+    from app.domain.agents.character import CharacterIdentity
+
+    setting = script_package_to_script(pkg).characters[0]
+    assert setting.knows == ["家里近期困难", "父亲送我到浦口"]
+    assert setting.not_knows == ["父亲为此卖了什么东西", "家中具体欠款数额"]
+    prompt = CharacterIdentity(setting).to_system_prompt()
+    assert "你不知道的事" in prompt
+    assert "- 父亲为此卖了什么东西" in prompt  # 逐条列出，不压平
+    assert "绝不能说出" in prompt
+
+
 async def test_project_update_from_runtime_step(make_runtime):
     """StepResult/export_state → RuntimeUpdate：契约可往返、UUID/sequence 确定性。"""
     rt = make_runtime(session_id=str(_SID))
     await rt.start()
-    result = await rt.submit(
-        command_id="c1", kind="select_role", payload={"role_name": "李白"}
-    )
+    result = await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "李白"})
 
     update = project_update(_SID, rt.event_store, result)
     dumped = update.model_dump(mode="json")
