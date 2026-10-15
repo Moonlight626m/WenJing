@@ -1,31 +1,258 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * 文境设计令牌
+ * ---------------------------------
+ * 产品有两个"面"，共用一套语义令牌：
+ *   册（纸面）——编（教师）、读（学生书库）：亮底、克制，像一页排好的书。
+ *   台（幕布）——演（游玩页）：暗底、沉浸，是文本活过来的那个世界。
+ * 组件只写语义类（bg-surface / text-ink / border-rule），不再逐处写 dark: 变体；
+ * 面由祖先的 data-surface 决定，与操作系统配色无关。
+ */
+
+@theme {
+  /* 字族：黑体做界面，宋体做文与题。
+     课文本身在课本里就是宋体排的——正文与标题用衬线是对题材的直接引用；
+     界面控件用黑体，避免 Windows 上 SimSun 小字号走点阵的观感问题。
+     不引 webfont：CJK 字体包动辄 10MB+，系统栈在中文环境下质量已足够。
+     衬线栈按「质量优先 → 平台自带 → Linux 兜底」排列，Linux 上常见的是
+     Noto Serif CJK / 文鼎 AR PL UMing，不列它们就只剩 sans 可用。 */
+  --font-sans:
+    "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans CJK SC",
+    "Source Han Sans SC", "WenQuanYi Micro Hei", "Droid Sans Fallback",
+    system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif:
+    "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "STSong", "SimSun",
+    "Noto Serif SC", "AR PL UMing CN", "AR PL SungtiL GB", "AR PL Mingti2L Big5",
+    Georgia, serif;
+  --font-mono:
+    ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono",
+    monospace;
+
+  /* 字阶：为中文界面收窄的一档（正文 15px、meta 13px 是中文可读下限附近的实用值） */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.5;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.6;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.7;
+  --text-base: 0.9375rem;
+  --text-base--line-height: 1.75;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.7;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.5;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.35;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 1.25;
+  --text-4xl: 2.5rem;
+  --text-4xl--line-height: 1.15;
+
+  /* 圆角：印刷品是方角，收在 2–6px 之间，不让任何元素鼓成气泡 */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+
+  /* 阴影：发丝边框承担分隔，阴影只用来托住浮层 */
+  --shadow-card: 0 1px 2px rgb(23 32 42 / 0.05);
+  --shadow-lift: 0 4px 16px rgb(9 13 18 / 0.14);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-canvas: var(--wj-canvas);
+  --color-surface: var(--wj-surface);
+  --color-sunken: var(--wj-sunken);
+  --color-ink: var(--wj-ink);
+  --color-ink-soft: var(--wj-ink-soft);
+  --color-ink-faint: var(--wj-ink-faint);
+  --color-rule: var(--wj-rule);
+  --color-rule-strong: var(--wj-rule-strong);
+  --color-accent: var(--wj-accent);
+  --color-accent-ink: var(--wj-accent-ink);
+  --color-accent-wash: var(--wj-accent-wash);
+  /* 朱砂：只标"在场"——你演的角色、正在生成、流式光标 */
+  --color-flag: var(--wj-flag);
+  --color-flag-wash: var(--wj-flag-wash);
+  --color-ok: var(--wj-ok);
+  --color-ok-wash: var(--wj-ok-wash);
+  --color-warn: var(--wj-warn);
+  --color-warn-wash: var(--wj-warn-wash);
+  --color-danger: var(--wj-danger);
+  --color-danger-wash: var(--wj-danger-wash);
+  --color-panel: var(--wj-panel);
 }
 
+/* ── 册 · 纸面（亮） ───────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  --wj-canvas: #f1f2ed;
+  --wj-surface: #fbfbf8;
+  --wj-sunken: #e7e9e2;
+  --wj-ink: #17202a;
+  --wj-ink-soft: #49545f;
+  --wj-ink-faint: #5d6874;
+  --wj-rule: #d3d7cc;
+  --wj-rule-strong: #b4baae;
+
+  --wj-accent: #2a5382;
+  --wj-accent-ink: #ffffff;
+  --wj-accent-wash: #e5ecf5;
+
+  --wj-flag: #a8382c;
+  --wj-flag-wash: #f6e8e4;
+
+  --wj-ok: #2f6149;
+  --wj-ok-wash: #e4eee8;
+
+  --wj-warn: #7e5a15;
+  --wj-warn-wash: #f4eddc;
+
+  --wj-danger: #a32b22;
+  --wj-danger-wash: #f7e7e4;
+
+  --wj-panel: rgb(251 251 248 / 0.92);
+}
+
+/* ── 册 · 夜读（深）──────────────────────────────── */
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    color-scheme: dark;
+
+    --wj-canvas: #13171c;
+    --wj-surface: #1a1f25;
+    --wj-sunken: #0e1216;
+    --wj-ink: #e3e7ea;
+    --wj-ink-soft: #a9b2ba;
+    --wj-ink-faint: #7e8892;
+    --wj-rule: #282e36;
+    --wj-rule-strong: #39414b;
+
+    --wj-accent: #8fb4e2;
+    --wj-accent-ink: #0e1216;
+    --wj-accent-wash: #18242f;
+
+    --wj-flag: #e79383;
+    --wj-flag-wash: #2b1c19;
+
+    --wj-ok: #7dbba0;
+    --wj-ok-wash: #15231c;
+
+    --wj-warn: #d8b66e;
+    --wj-warn-wash: #251e12;
+
+    --wj-danger: #e88b7e;
+    --wj-danger-wash: #2c1a18;
+
+    --wj-panel: rgb(26 31 37 / 0.92);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ── 台 · 幕布（恒暗）──────────────────────────────
+   游玩页整棵树挂 data-surface="stage"。它自带一套值，
+   因声明在元素自身，胜过 :root 的继承，故与系统配色无关。
+
+   这里必须再写一次 `color`：`body { color: var(--wj-ink) }` 是在 body 上**求值**的，
+   算出来的是册面的墨色（浅色系统下近黑），再作为计算值一路继承下去。舞台深处
+   那些没显式写 text-* 的节点（如页头的「文境」二字）就会拿到近黑的字压在近黑的
+   幕布上。锚在这一层重设 color，整棵子树才回到舞台自己的墨色。 */
+[data-surface="stage"] {
+  color-scheme: dark;
+  color: var(--wj-ink);
+
+  --wj-canvas: #0f141a;
+  --wj-surface: #161c24;
+  --wj-sunken: #0b0f14;
+  --wj-ink: #f2f0e9;
+  --wj-ink-soft: rgb(242 240 233 / 0.76);
+  --wj-ink-faint: rgb(242 240 233 / 0.52);
+  --wj-rule: rgb(242 240 233 / 0.16);
+  --wj-rule-strong: rgb(242 240 233 / 0.3);
+
+  --wj-accent: #9cc0ec;
+  --wj-accent-ink: #0b1017;
+  --wj-accent-wash: rgb(156 192 236 / 0.14);
+
+  --wj-flag: #ee9a85;
+  --wj-flag-wash: rgb(238 154 133 / 0.14);
+
+  --wj-ok: #7fc0a2;
+  --wj-ok-wash: rgb(127 192 162 / 0.14);
+
+  --wj-warn: #dcba72;
+  --wj-warn-wash: rgb(220 186 114 / 0.14);
+
+  --wj-danger: #ee9484;
+  --wj-danger-wash: rgb(238 148 132 / 0.14);
+
+  --wj-panel: rgb(9 13 18 / 0.66);
 }
 
-/* 游玩页舞台：背景淡入 + 场景标题短暂浮现（ADR-0005 §1） */
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--wj-canvas);
+    color: var(--wj-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* 中文标题不要落单字，宋体标题按标点避头尾微调 */
+  h1,
+  h2,
+  h3 {
+    text-wrap: pretty;
+    font-family: var(--font-serif);
+    font-weight: 600;
+  }
+
+  ::selection {
+    background-color: var(--wj-accent-wash);
+    color: var(--wj-ink);
+  }
+
+  /* 键盘焦点全站可见（旧样式仅 9 处有焦点态） */
+  :focus-visible,
+  .focus-ring:focus-visible {
+    outline: 2px solid var(--wj-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  [data-surface="stage"] ::selection {
+    background-color: rgb(238 154 133 / 0.28);
+  }
+}
+
+/* 正文行宽：中文 1em 即一个汉字，34em ≈ 34 字/行 */
+@utility measure {
+  max-width: 34em;
+}
+
+/* 题签：竖排右起，用于场景标题与书封。 */
+@utility title-slip {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  text-align: center;
+}
+
+/* 幕布暗角：把视线的重量压到画面中心 */
+@utility stage-vignette {
+  background: radial-gradient(
+    120% 90% at 50% 42%,
+    transparent 30%,
+    rgb(6 9 13 / 0.55) 78%,
+    rgb(6 9 13 / 0.82) 100%
+  );
+}
+
+/* 场景背景淡入（ADR-0005 §1） */
 @keyframes stage-fade {
   from {
     opacity: 0;
@@ -39,25 +266,38 @@ body {
   animation: stage-fade 700ms ease-out both;
 }
 
-@keyframes scene-title {
+/* 题签进场：自上而下展开，停住，再收起 */
+@keyframes slip-in {
   0% {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(-14px) scaleY(0.9);
   }
-  15% {
+  14% {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scaleY(1);
   }
-  78% {
+  76% {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scaleY(1);
   }
   100% {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateY(6px) scaleY(0.98);
   }
 }
 
-.animate-scene-title {
-  animation: scene-title 2.6s ease-in-out both;
+.animate-slip-in {
+  animation: slip-in 2.8s ease-in-out both;
+  transform-origin: top center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
