@@ -18,7 +18,8 @@ const SECTIONS: { status: ScriptStatus; hint: string }[] = [
   { status: "unpublished", hint: "已下架，存量世界可继续" },
 ];
 
-function ScriptCard({ script }: { script: ScriptSummary }) {
+/** 剧本卡。导出供 /showcase 界面总览复用，免得画廊另抄一份走样。 */
+export function ScriptCard({ script }: { script: ScriptSummary }) {
   return (
     <Link
       href={`/teacher/scripts/${script.id}`}

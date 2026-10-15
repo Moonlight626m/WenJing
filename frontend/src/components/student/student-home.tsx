@@ -15,7 +15,8 @@ import { scriptVisibilityLabel, stageLabel } from "@/lib/labels";
 import { routeForStage } from "@/lib/session-cache";
 import type { ScriptSummary, SessionSummary } from "@/lib/contracts/types";
 
-function GameRow({ session }: { session: SessionSummary }) {
+/** 单局游戏行。导出供 /showcase 界面总览复用，免得画廊另抄一份走样。 */
+export function GameRow({ session }: { session: SessionSummary }) {
   const router = useRouter();
   const ended = session.stage === "ended";
   return (
@@ -56,7 +57,8 @@ function GameRow({ session }: { session: SessionSummary }) {
   );
 }
 
-function SquareCard({ script }: { script: ScriptSummary }) {
+/** 剧本广场卡。导出理由同 GameRow。 */
+export function SquareCard({ script }: { script: ScriptSummary }) {
   return (
     <Link
       href={`/student/scripts/${script.id}`}
