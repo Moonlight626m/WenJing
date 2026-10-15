@@ -1,3 +1,4 @@
+import type { TagTone } from "@/components/ui/tag";
 import type {
   ScriptStatus,
   ScriptVisibility,
@@ -57,6 +58,13 @@ export const SCRIPT_STATUS_LABELS: Record<ScriptStatus, string> = {
 export function scriptStatusLabel(status: ScriptStatus): string {
   return SCRIPT_STATUS_LABELS[status] ?? status;
 }
+
+/** 状态标记的音色：与文案同源，免得教师库 / 剧本详情 / 运营后台各抄一份走样。 */
+export const SCRIPT_STATUS_TONES: Record<ScriptStatus, TagTone> = {
+  draft: "neutral",
+  published: "ok",
+  unpublished: "warn",
+};
 
 /** 剧本可见性（backend/app/contracts/enums.py ScriptVisibility）。 */
 export const SCRIPT_VISIBILITY_LABELS: Record<ScriptVisibility, string> = {

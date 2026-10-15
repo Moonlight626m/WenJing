@@ -3,23 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { FormError } from "@/components/auth/form-error";
-import {
-  formatApiError,
-  listAdminScripts,
-  listAdminUsage,
-} from "@/lib/api";
+import { controlClass } from "@/components/ui/field";
+import { PageShell, SectionHeading } from "@/components/ui/section";
+import { Loading } from "@/components/ui/states";
+import { Tag } from "@/components/ui/tag";
+import { formatApiError, listAdminScripts, listAdminUsage } from "@/lib/api";
 import {
   SCRIPT_STATUS_LABELS,
+  SCRIPT_STATUS_TONES,
   scriptStatusLabel,
   scriptVisibilityLabel,
   USAGE_PURPOSE_LABELS,
   usagePurposeLabel,
 } from "@/lib/labels";
-import type {
-  ScriptStatus,
-  ScriptSummary,
-  UsageAggregateRow,
-} from "@/lib/contracts/types";
+import type { ScriptSummary, UsageAggregateRow } from "@/lib/contracts/types";
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "全部状态" },
@@ -37,16 +34,7 @@ const PURPOSE_OPTIONS: { value: string; label: string }[] = [
   })),
 ];
 
-const STATUS_STYLES: Record<ScriptStatus, string> = {
-  draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
-  published:
-    "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
-  unpublished: "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
-};
-
-const selectClass =
-  "rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900";
-
+const selectClass = controlClass("sm", "w-auto");
 function shortOrg(orgId: string): string {
   return orgId.slice(0, 8);
 }
@@ -100,14 +88,11 @@ function DateFilterInput({
     <button
       type="button"
       onClick={openPicker}
-      className="relative flex items-center gap-1.5 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-600 hover:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+      className={`relative ${selectClass} text-left ${
+        value ? "text-ink" : "text-ink-faint"
+      }`}
     >
-      <span aria-hidden className="text-zinc-400 dark:text-zinc-500">
-        📅
-      </span>
-      <span className={value ? "" : "text-zinc-400 dark:text-zinc-500"}>
-        {value || label}
-      </span>
+      {value || label}
       <input
         ref={inputRef}
         type="date"
@@ -152,26 +137,29 @@ function OrgFilterSelect({
 
 function ScriptRow({ script }: { script: ScriptSummary }) {
   return (
-    <li className="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+    <li className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-rule bg-surface px-4 py-3">
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate font-medium">{script.name}</span>
-          <span
-            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLES[script.status]}`}
-          >
-            {scriptStatusLabel(script.status)}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-serif text-base text-ink">
+            {script.name}
           </span>
+          <Tag tone={SCRIPT_STATUS_TONES[script.status]}>
+            {scriptStatusLabel(script.status)}
+          </Tag>
           {script.status !== "draft" && (
-            <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-              {scriptVisibilityLabel(script.visibility)}
-            </span>
+            <Tag>{scriptVisibilityLabel(script.visibility)}</Tag>
           )}
         </div>
-        <p className="mt-0.5 truncate text-xs text-zinc-400">
-          组织 {shortOrg(script.org_id)} · 作者 {script.owner_user_id.slice(0, 8)}
-          {script.updated_at
-            ? ` · 更新于 ${new Date(script.updated_at).toLocaleString()}`
-            : ""}
+        <p className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-ink-faint">
+          <span className="font-mono">组织 {shortOrg(script.org_id)}</span>
+          <span className="font-mono">
+            作者 {script.owner_user_id.slice(0, 8)}
+          </span>
+          {script.updated_at && (
+            <span className="font-mono">
+              {new Date(script.updated_at).toLocaleString()}
+            </span>
+          )}
         </p>
       </div>
     </li>
@@ -180,13 +168,17 @@ function ScriptRow({ script }: { script: ScriptSummary }) {
 
 function UsageRow({ row }: { row: UsageAggregateRow }) {
   return (
-    <tr className="border-t border-zinc-200 text-sm dark:border-zinc-800">
-      <td className="px-3 py-2">{shortOrg(row.org_id)}</td>
+    <tr className="border-t border-rule text-sm">
+      <td className="px-3 py-2 font-mono text-xs">{shortOrg(row.org_id)}</td>
       <td className="px-3 py-2">{usagePurposeLabel(row.purpose)}</td>
-      <td className="px-3 py-2 tabular-nums">{row.call_count}</td>
-      <td className="px-3 py-2 tabular-nums">{row.prompt_tokens}</td>
-      <td className="px-3 py-2 tabular-nums">{row.completion_tokens}</td>
-      <td className="px-3 py-2 font-medium tabular-nums">{row.total_tokens}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{row.call_count}</td>
+      <td className="px-3 py-2 text-right tabular-nums">{row.prompt_tokens}</td>
+      <td className="px-3 py-2 text-right tabular-nums">
+        {row.completion_tokens}
+      </td>
+      <td className="px-3 py-2 text-right font-medium tabular-nums">
+        {row.total_tokens}
+      </td>
     </tr>
   );
 }
@@ -267,40 +259,41 @@ export function AdminDashboard() {
   );
 
   return (
-    <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-8 p-6">
-      <h1 className="text-2xl font-semibold tracking-tight">运营后台</h1>
+    <PageShell width="max-w-4xl">
+      <h1 className="text-3xl text-ink">运营后台</h1>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-sm font-medium">
-            剧本库{scripts !== null && `（${scripts.length}）`}
-          </h2>
-          <div className="flex gap-2">
-            <OrgFilterSelect
-              label="组织筛选"
-              value={orgId}
-              onChange={setOrgId}
-              options={orgOptions}
-            />
-            <select
-              aria-label="状态筛选"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              className={selectClass}
-            >
-              {STATUS_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+      <section className="flex flex-col gap-4">
+        <SectionHeading
+          title="剧本库"
+          meta={scripts !== null ? `${scripts.length} 篇` : undefined}
+          action={
+            <div className="flex flex-wrap gap-2">
+              <OrgFilterSelect
+                label="组织筛选"
+                value={orgId}
+                onChange={setOrgId}
+                options={orgOptions}
+              />
+              <select
+                aria-label="状态筛选"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className={selectClass}
+              >
+                {STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          }
+        />
         {scriptsError && <FormError message={scriptsError} />}
         {scripts === null ? (
-          <p className="text-sm text-zinc-400">加载剧本库…</p>
+          <Loading label="加载剧本库…" />
         ) : scripts.length === 0 ? (
-          <p className="text-xs text-zinc-400">暂无剧本。</p>
+          <p className="text-xs text-ink-faint">暂无剧本。</p>
         ) : (
           <ul className="flex flex-col gap-2">
             {scripts.map((script) => (
@@ -310,75 +303,69 @@ export function AdminDashboard() {
         )}
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-sm font-medium">Token 用量</h2>
-          <div className="flex gap-2">
-            <OrgFilterSelect
-              label="组织筛选（用量）"
-              value={orgId}
-              onChange={setOrgId}
-              options={orgOptions}
-            />
-            <select
-              aria-label="用途筛选"
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-              className={selectClass}
-            >
-              {PURPOSE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-            <DateFilterInput
-              label="起始日期"
-              value={since}
-              onChange={setSince}
-            />
-            <DateFilterInput
-              label="截止日期"
-              value={until}
-              onChange={setUntil}
-            />
-          </div>
-        </div>
+      <section className="flex flex-col gap-4">
+        <SectionHeading
+          title="Token 用量"
+          meta={usage !== null ? `${usage.length} 组` : undefined}
+          action={
+            <div className="flex flex-wrap gap-2">
+              <OrgFilterSelect
+                label="组织筛选（用量）"
+                value={orgId}
+                onChange={setOrgId}
+                options={orgOptions}
+              />
+              <select
+                aria-label="用途筛选"
+                value={purpose}
+                onChange={(e) => setPurpose(e.target.value)}
+                className={selectClass}
+              >
+                {PURPOSE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <DateFilterInput label="起始日期" value={since} onChange={setSince} />
+              <DateFilterInput label="截止日期" value={until} onChange={setUntil} />
+            </div>
+          }
+        />
         {usageError && <FormError message={usageError} />}
         {usage === null ? (
-          <p className="text-sm text-zinc-400">加载用量…</p>
+          <Loading label="加载用量…" />
         ) : usage.length === 0 ? (
-          <p className="text-xs text-zinc-400">该筛选条件下暂无用量记录。</p>
+          <p className="text-xs text-ink-faint">该筛选条件下暂无用量记录。</p>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
-            <table className="w-full text-left dark:bg-zinc-900">
-              <thead>
-                <tr className="text-xs text-zinc-400">
+          <div className="overflow-x-auto rounded-lg border border-rule">
+            <table className="w-full text-left">
+              <thead className="bg-sunken">
+                <tr className="text-xs text-ink-soft">
                   <th className="px-3 py-2 font-medium">组织</th>
                   <th className="px-3 py-2 font-medium">用途</th>
-                  <th className="px-3 py-2 font-medium">调用次数</th>
-                  <th className="px-3 py-2 font-medium">Prompt</th>
-                  <th className="px-3 py-2 font-medium">Completion</th>
-                  <th className="px-3 py-2 font-medium">总 Token</th>
+                  <th className="px-3 py-2 text-right font-medium">调用次数</th>
+                  <th className="px-3 py-2 text-right font-medium">Prompt</th>
+                  <th className="px-3 py-2 text-right font-medium">Completion</th>
+                  <th className="px-3 py-2 text-right font-medium">总 Token</th>
                 </tr>
               </thead>
               <tbody>
                 {usage.map((row, index) => (
-                  <UsageRow
-                    key={`${row.org_id}-${row.purpose}-${index}`}
-                    row={row}
-                  />
+                  <UsageRow key={`${row.org_id}-${row.purpose}-${index}`} row={row} />
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t border-zinc-300 text-sm dark:border-zinc-700">
-                  <td className="px-3 py-2 text-xs text-zinc-400" colSpan={2}>
+                <tr className="border-t border-rule-strong bg-sunken text-sm">
+                  <td className="px-3 py-2 text-xs text-ink-soft" colSpan={2}>
                     合计（当前筛选）
                   </td>
-                  <td className="px-3 py-2 tabular-nums">{totals.calls}</td>
-                  <td className="px-3 py-2 tabular-nums">{totals.prompt}</td>
-                  <td className="px-3 py-2 tabular-nums">{totals.completion}</td>
-                  <td className="px-3 py-2 font-medium tabular-nums">
+                  <td className="px-3 py-2 text-right tabular-nums">{totals.calls}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{totals.prompt}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {totals.completion}
+                  </td>
+                  <td className="px-3 py-2 text-right font-medium tabular-nums">
                     {totals.total}
                   </td>
                 </tr>
@@ -387,6 +374,6 @@ export function AdminDashboard() {
           </div>
         )}
       </section>
-    </main>
+    </PageShell>
   );
 }

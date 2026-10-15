@@ -1,4 +1,5 @@
 import { ASSET_IMAGE_BG, AssetImage } from "@/components/asset-image";
+import { Tag } from "@/components/ui/tag";
 import type { AssetCredit, ScriptPackage } from "@/lib/contracts/types";
 import { requiresAttribution } from "@/lib/labels";
 
@@ -22,70 +23,39 @@ function CreditSlot({
   }
   if (audience === "teacher") {
     return (
-      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-        {label}来源：
+      <p className="mt-1 flex flex-wrap items-baseline gap-x-2 text-2xs text-ink-faint">
+        <span>{label}来源</span>
         {credit.source_url ? (
-          <a
-            href={credit.source_url}
-            target="_blank"
-            rel="noreferrer"
-            className="underline"
-          >
+          <a href={credit.source_url} target="_blank" rel="noreferrer" className="text-accent underline">
             {credit.author || "未知作者"}
           </a>
         ) : (
-          credit.author || "未知作者"
+          <span className="text-ink-soft">{credit.author || "未知作者"}</span>
         )}
-        {credit.license && <> · {credit.license}</>}
+        {credit.license && <span className="font-mono">{credit.license}</span>}
         {credit.license_url && (
-          <>
-            {" "}
-            <a
-              href={credit.license_url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              许可全文
-            </a>
-          </>
+          <a href={credit.license_url} target="_blank" rel="noreferrer" className="text-accent underline">
+            许可全文
+          </a>
         )}
       </p>
     );
   }
   return (
-    <details className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-      <summary className="cursor-pointer select-none">
-        图片来源与许可（{label}）
-      </summary>
-      <span className="text-zinc-500 dark:text-zinc-400">
-        {credit.author || "未知作者"}
-        {credit.license && <> · {credit.license}</>}
+    <details className="mt-1 text-2xs text-ink-faint">
+      <summary className="cursor-pointer select-none">图片来源与许可（{label}）</summary>
+      <span className="mt-1 flex flex-wrap items-baseline gap-x-2">
+        <span className="text-ink-soft">{credit.author || "未知作者"}</span>
+        {credit.license && <span className="font-mono">{credit.license}</span>}
         {credit.source_url && (
-          <>
-            {" "}
-            <a
-              href={credit.source_url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              来源
-            </a>
-          </>
+          <a href={credit.source_url} target="_blank" rel="noreferrer" className="text-accent underline">
+            来源
+          </a>
         )}
         {credit.license_url && (
-          <>
-            {" "}
-            <a
-              href={credit.license_url}
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              许可全文
-            </a>
-          </>
+          <a href={credit.license_url} target="_blank" rel="noreferrer" className="text-accent underline">
+            许可全文
+          </a>
         )}
       </span>
     </details>
@@ -101,70 +71,67 @@ export function ScriptPreview({
   audience?: "teacher" | "student";
 }) {
   return (
-    <section className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold">{scriptPackage.title}</h2>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          可扮演角色：
-          {scriptPackage.playable_roles.length > 0
-            ? scriptPackage.playable_roles.join("、")
-            : "（无）"}
+    <section className="flex flex-col gap-8 border-t border-rule pt-8">
+      <div className="flex flex-col gap-2">
+        <h2 className="text-xl text-ink">{scriptPackage.title}</h2>
+        <p className="text-sm text-ink-soft">
+          可扮演角色
+          <span className="ml-2 text-ink">
+            {scriptPackage.playable_roles.length > 0
+              ? scriptPackage.playable_roles.join("、")
+              : "（无）"}
+          </span>
         </p>
       </div>
 
       {scriptPackage.teaching_focus.length > 0 && (
-        <div>
-          <h3 className="mb-2 text-xs font-medium text-zinc-400">教学重点</h3>
-          <ul className="flex flex-wrap gap-2">
+        <div className="flex flex-col gap-2.5">
+          <h3 className="text-sm text-ink-soft">教学重点</h3>
+          <ul className="flex flex-wrap gap-1.5">
             {scriptPackage.teaching_focus.map((focus) => (
-              <li
-                key={focus}
-                className="rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-700 dark:bg-blue-950/40 dark:text-blue-300"
-              >
-                {focus}
+              <li key={focus}>
+                <Tag tone="accent">{focus}</Tag>
               </li>
             ))}
           </ul>
         </div>
       )}
 
-      <div>
-        <h3 className="mb-2 text-xs font-medium text-zinc-400">
-          角色（{scriptPackage.characters.length}）
+      <div className="flex flex-col gap-3">
+        <h3 className="border-b border-rule pb-2 text-sm text-ink-soft">
+          角色 <span className="ml-1 font-mono text-xs text-ink-faint">{scriptPackage.characters.length}</span>
         </h3>
-        <ul className="flex flex-col gap-2">
+        <ul className="flex flex-col gap-3">
           {scriptPackage.characters.map((character) => (
             <li
               key={character.name}
-              className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900"
+              className="rounded-lg border border-rule bg-surface px-4 py-3"
             >
-              <div className="flex gap-3">
+              <div className="flex gap-4">
                 {/* 无图角色不占位（纯文本卡片），有图才撑出版面 */}
                 {(character.avatar_asset || character.fullbody_asset) && (
-                  <div className="flex shrink-0 flex-col gap-1">
+                  <div className="flex shrink-0 flex-col gap-1.5">
                     {character.avatar_asset && (
                       <AssetImage
                         asset={character.avatar_asset}
                         alt={`${character.name} 头像`}
-                        className={`h-16 w-16 rounded-full ${ASSET_IMAGE_BG}`}
+                        className={`h-16 w-16 rounded-sm ${ASSET_IMAGE_BG}`}
                       />
                     )}
                     {character.fullbody_asset && (
                       <AssetImage
                         asset={character.fullbody_asset}
                         alt={`${character.name} 立绘`}
-                        className={`h-24 w-16 rounded ${ASSET_IMAGE_BG}`}
+                        className={`h-24 w-16 rounded-sm ${ASSET_IMAGE_BG}`}
                       />
                     )}
                   </div>
                 )}
-                <div className="flex flex-1 flex-col">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{character.name}</span>
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-serif text-lg text-ink">{character.name}</span>
                     {character.is_player_playable.value && (
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
-                        可扮演
-                      </span>
+                      <Tag tone="accent">可扮演</Tag>
                     )}
                   </div>
                   {character.avatar_credit && (
@@ -174,13 +141,13 @@ export function ScriptPreview({
                     <CreditSlot label="立绘" credit={character.fullbody_credit} audience={audience} />
                   )}
                   {character.public_background && (
-                    <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+                    <p className="measure mt-2 text-sm text-ink-soft">
                       {character.public_background}
                     </p>
                   )}
                   {character.personality_traits.length > 0 && (
-                    <p className="mt-1 text-xs text-zinc-400">
-                      性格：{character.personality_traits.map((t) => t.label).join("、")}
+                    <p className="mt-2 text-xs text-ink-faint">
+                      性格 {character.personality_traits.map((t) => t.label).join("、")}
                     </p>
                   )}
                 </div>
@@ -190,47 +157,47 @@ export function ScriptPreview({
         </ul>
       </div>
 
-      <div>
-        <h3 className="mb-2 text-xs font-medium text-zinc-400">
-          场景与情节（{scriptPackage.scenes.length}）
+      <div className="flex flex-col gap-3">
+        <h3 className="border-b border-rule pb-2 text-sm text-ink-soft">
+          场景与情节 <span className="ml-1 font-mono text-xs text-ink-faint">{scriptPackage.scenes.length}</span>
         </h3>
-        <ol className="flex flex-col gap-3">
+        {/* 场景本来就是有序的（scene_id 递增），编号在这里承载真实顺序 */}
+        <ol className="flex flex-col gap-5">
           {scriptPackage.scenes.map((scene) => (
-            <li
-              key={scene.scene_id}
-              className="rounded-lg border border-zinc-200 bg-white p-3 text-sm dark:border-zinc-800 dark:bg-zinc-900"
-            >
-              {scene.background_asset && (
-                <AssetImage
-                  asset={scene.background_asset}
-                  alt={`场景「${scene.title}」背景`}
-                  className={`mb-2 aspect-video w-full rounded ${ASSET_IMAGE_BG}`}
-                />
-              )}
-              <div className="font-medium">{scene.title}</div>
-              {scene.participants.length > 0 && (
-                <div className="mt-0.5 text-xs text-zinc-400">
-                  出场：{scene.participants.join("、")}
-                </div>
-              )}
-              {scene.background_credit && (
-                <CreditSlot label="背景" credit={scene.background_credit} audience={audience} />
-              )}
-              <ol className="mt-2 flex flex-col gap-1 text-xs text-zinc-600 dark:text-zinc-400">
-                {scene.beats.map((beat) => (
-                  <li key={beat.beat_id} className="flex gap-2">
-                    <span className="text-zinc-300 dark:text-zinc-600">·</span>
-                    <span>
+            <li key={scene.scene_id} className="flex gap-3">
+              <span className="w-5 shrink-0 pt-4 text-right font-mono text-2xs text-ink-faint tabular-nums">
+                {String(scene.scene_id).padStart(2, "0")}
+              </span>
+              <div className="min-w-0 flex-1 border-l border-rule pl-4">
+                {scene.background_asset && (
+                  <AssetImage
+                    asset={scene.background_asset}
+                    alt={`场景「${scene.title}」背景`}
+                    className={`mb-3 aspect-video w-full rounded-sm ${ASSET_IMAGE_BG}`}
+                  />
+                )}
+                <div className="font-serif text-base text-ink">{scene.title}</div>
+                {scene.participants.length > 0 && (
+                  <div className="mt-0.5 text-xs text-ink-faint">
+                    出场 {scene.participants.join("、")}
+                  </div>
+                )}
+                {scene.background_credit && (
+                  <CreditSlot label="背景" credit={scene.background_credit} audience={audience} />
+                )}
+                <ol className="measure mt-3 flex flex-col gap-1.5 text-sm leading-relaxed text-ink-soft">
+                  {scene.beats.map((beat) => (
+                    <li key={beat.beat_id}>
                       {beat.description}
                       {beat.is_key_event && (
-                        <span className="ml-1 text-amber-600 dark:text-amber-400">
-                          [关键]
-                        </span>
+                        <Tag tone="warn" className="ml-2 align-middle">
+                          关键
+                        </Tag>
                       )}
-                    </span>
-                  </li>
-                ))}
-              </ol>
+                    </li>
+                  ))}
+                </ol>
+              </div>
             </li>
           ))}
         </ol>

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+import { Button } from "@/components/ui/button";
 import { ApiError, logout } from "@/lib/api";
 import { logger } from "@/lib/logger";
 
@@ -27,13 +28,8 @@ export function LogoutButton() {
   }
 
   return (
-    <button
-      type="button"
-      onClick={handleLogout}
-      disabled={pending}
-      className="rounded-full border border-zinc-300 px-3 py-1 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-    >
+    <Button tone="outline" size="xs" onClick={handleLogout} disabled={pending}>
       {pending ? "登出中…" : "登出"}
-    </button>
+    </Button>
   );
 }

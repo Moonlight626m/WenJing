@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 
 import { ScriptDetailView } from "@/components/teacher/script-detail-view";
+import { PageShell } from "@/components/ui/section";
 import { requireRole, TEACHER_ROLES } from "@/lib/auth-server";
 
 export default async function ScriptDetailPage(
@@ -11,8 +12,8 @@ export default async function ScriptDetailPage(
   const scriptId = Number(id);
   if (!Number.isInteger(scriptId) || scriptId <= 0) notFound();
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-6 p-6">
+    <PageShell width="max-w-3xl">
       <ScriptDetailView scriptId={scriptId} />
-    </main>
+    </PageShell>
   );
 }

@@ -2,16 +2,14 @@
 
 import { useRef } from "react";
 
-import { AssetImage } from "@/components/asset-image";
+import { ASSET_IMAGE_BG, AssetImage } from "@/components/asset-image";
+import { Button } from "@/components/ui/button";
 import { formatApiError, uploadScriptAsset } from "@/lib/api";
 import { useUiStore } from "@/stores/uiStore";
 import type { AssetOp, AssetRef, CharacterProfile, Scene } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
-const CARD =
-  "flex gap-2 rounded-lg border border-amber-200 p-2 dark:border-amber-900";
-const OP_BUTTON =
-  "rounded border border-amber-300 px-2 py-0.5 text-xs transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:hover:bg-amber-900/40";
+const CARD = "flex gap-3 rounded-lg border border-warn/45 bg-warn-wash/40 p-2.5";
 
 const OP_LABELS: Record<AssetOp["op"], string> = {
   remove: "删除配图",
@@ -70,14 +68,14 @@ function AssetSlotCard({
   if (op?.op === "remove") {
     return (
       <div className={CARD}>
-        <div className="flex flex-1 flex-col gap-1">
-          <span className="text-xs font-medium">{label}</span>
-          <p className="text-xs text-amber-700/70 dark:text-amber-300/70">
+        <div className="flex flex-1 flex-col items-start gap-1.5">
+          <span className="text-xs font-medium text-ink">{label}</span>
+          <p className="text-xs text-ink-soft">
             已标记删除（通过后生效；资产行保留，可再重新生成找回）
           </p>
-          <button type="button" disabled={disabled} onClick={() => onChange(null)} className={OP_BUTTON}>
+          <Button tone="outline" size="xs" disabled={disabled} onClick={() => onChange(null)}>
             撤销删除
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -88,15 +86,16 @@ function AssetSlotCard({
       <AssetImage
         asset={shown}
         alt={label}
-        className="h-20 w-32 shrink-0 rounded bg-amber-100/60 dark:bg-amber-900/30"
+        className={`h-20 w-32 shrink-0 rounded-sm ${ASSET_IMAGE_BG}`}
         emptyLabel="无图（纯文本游玩）"
-        placeholderClassName="text-[10px] text-amber-700/60 dark:text-amber-300/60"
+        placeholderClassName="text-2xs text-ink-faint"
       />
-      <div className="flex flex-1 flex-col gap-1">
-        <span className="text-xs font-medium">{label}</span>
-        <div className="flex flex-wrap gap-1">
-          <button
-            type="button"
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <span className="text-xs font-medium text-ink">{label}</span>
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            tone="outline"
+            size="xs"
             disabled={disabled}
             onClick={() =>
               onChange({
@@ -106,12 +105,12 @@ function AssetSlotCard({
                 kind,
               })
             }
-            className={OP_BUTTON}
           >
             重新生成
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            tone="outline"
+            size="xs"
             disabled={disabled}
             onClick={() =>
               onChange({
@@ -121,21 +120,21 @@ function AssetSlotCard({
                 kind,
               })
             }
-            className={OP_BUTTON}
           >
             检索替换
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            tone="outline"
+            size="xs"
             disabled={disabled}
             onClick={() => fileRef.current?.click()}
-            className={OP_BUTTON}
           >
             上传自有
-          </button>
+          </Button>
           {asset && (
-            <button
-              type="button"
+            <Button
+              tone="danger"
+              size="xs"
               disabled={disabled}
               onClick={() =>
                 onChange({
@@ -145,23 +144,22 @@ function AssetSlotCard({
                   kind,
                 })
               }
-              className={OP_BUTTON}
             >
               删除
-            </button>
+            </Button>
           )}
         </div>
         {op && (
-          <p className="text-[10px] text-emerald-700 dark:text-emerald-400">
-            待生效：{OP_LABELS[op.op]}
-            <button type="button" className="ml-2 underline" onClick={() => onChange(null)}>
+          <p className="flex items-center gap-2 text-2xs text-ok">
+            待生效 {OP_LABELS[op.op]}
+            <button type="button" className="text-accent underline" onClick={() => onChange(null)}>
               撤销
             </button>
           </p>
         )}
         {asset?.status === "failed" && !op && (
-          <p className="text-[10px] text-amber-700/70 dark:text-amber-300/70">
-            生成失败：可用「重新生成/检索替换/上传」补图，或无图游玩。
+          <p className="text-2xs text-ink-faint">
+            生成失败，可用「重新生成 / 检索替换 / 上传」补图，或无图游玩。
           </p>
         )}
       </div>
@@ -220,10 +218,10 @@ export function AssetReviewSection({
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
-        配图审批（自动配图已完成；可逐槽重新生成/检索替换/上传/删除，通过后生效）
-      </span>
+    <div className="flex flex-col gap-2.5">
+      <p className="measure text-xs text-warn">
+        配图审批：自动配图已完成，可逐槽重新生成 / 检索替换 / 上传 / 删除，通过后生效。
+      </p>
       {scenes.map((scene) => {
         const subjectKey = `scene:${scene.scene_id}`;
         return (

@@ -4,12 +4,11 @@ import { useEffect } from "react";
 
 import { useUiStore, type ToastItem } from "@/stores/uiStore";
 
-const STYLES: Record<ToastItem["kind"], string> = {
-  info: "border-zinc-300 bg-white text-zinc-800 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200",
-  success:
-    "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200",
-  error:
-    "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200",
+/** 提示条：发丝边框 + 左侧一道音色线，不做圆角卡片堆叠。 */
+const TONES: Record<ToastItem["kind"], string> = {
+  info: "bg-rule-strong",
+  success: "bg-ok",
+  error: "bg-danger",
 };
 
 function Toast({ toast }: { toast: ToastItem }) {
@@ -20,11 +19,15 @@ function Toast({ toast }: { toast: ToastItem }) {
   }, [toast.id, dismiss]);
   return (
     <div
-      className={`pointer-events-auto max-w-sm rounded-lg border px-4 py-3 text-sm shadow-md ${STYLES[toast.kind]}`}
+      role="status"
+      className="pointer-events-auto relative max-w-sm overflow-hidden rounded-md border border-rule bg-surface py-3 pr-4 pl-5 text-sm shadow-[var(--shadow-lift)]"
     >
-      <div className="font-medium">{toast.title}</div>
+      <span aria-hidden className={`absolute inset-y-0 left-0 w-0.5 ${TONES[toast.kind]}`} />
+      <div className="font-medium text-ink">{toast.title}</div>
       {toast.description && (
-        <div className="mt-1 whitespace-pre-wrap opacity-80">{toast.description}</div>
+        <div className="measure mt-1 text-xs whitespace-pre-wrap text-ink-soft">
+          {toast.description}
+        </div>
       )}
     </div>
   );
@@ -34,7 +37,10 @@ export function ToastHost() {
   const toasts = useUiStore((s) => s.toasts);
   if (toasts.length === 0) return null;
   return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2"
+    >
       {toasts.map((t) => (
         <Toast key={t.id} toast={t} />
       ))}

@@ -4,8 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { AuthField, SUBMIT_CLASS } from "@/components/auth/auth-field";
+import { AuthField } from "@/components/auth/auth-field";
 import { FormError } from "@/components/auth/form-error";
+import { Button, buttonClass } from "@/components/ui/button";
 import { formatApiError, register } from "@/lib/api";
 import { roleHome } from "@/lib/role-home";
 
@@ -42,23 +43,20 @@ export function RegisterForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex w-full max-w-sm flex-col gap-4">
-      <div className="flex gap-2 text-sm">
+    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-4">
+      <div className="flex gap-2">
         {(["email", "phone"] as const).map((option) => (
           <button
             key={option}
             type="button"
+            aria-pressed={kind === option}
             onClick={() => {
               setKind(option);
               setIdentifier("");
             }}
-            className={`rounded-full border px-3 py-1 ${
-              kind === option
-                ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-black"
-                : "border-zinc-300 text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
-            }`}
+            className={buttonClass(kind === option ? "solid" : "outline", "xs")}
           >
-            {option === "email" ? "邮箱注册" : "手机号注册"}
+            {option === "email" ? "用邮箱注册" : "用手机号注册"}
           </button>
         ))}
       </div>
@@ -93,13 +91,13 @@ export function RegisterForm() {
 
       <FormError message={error} />
 
-      <button type="submit" disabled={pending} className={SUBMIT_CLASS}>
+      <Button type="submit" tone="solid" size="md" disabled={pending}>
         {pending ? "注册中…" : "注册并登录"}
-      </button>
+      </Button>
 
-      <p className="text-center text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="text-sm text-ink-soft">
         已有账号？
-        <Link href="/login" className="ml-1 text-blue-600 underline dark:text-blue-400">
+        <Link href="/login" className="ml-1 text-accent underline">
           登录
         </Link>
       </p>

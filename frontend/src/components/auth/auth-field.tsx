@@ -1,8 +1,4 @@
-export const INPUT_CLASS =
-  "rounded-lg border border-zinc-300 bg-transparent px-3 py-2 outline-none focus:border-blue-400 dark:border-zinc-700";
-
-export const SUBMIT_CLASS =
-  "rounded-lg bg-zinc-900 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50 dark:bg-zinc-100 dark:text-black";
+import { controlClass } from "@/components/ui/field";
 
 interface AuthFieldProps {
   label: string;
@@ -29,8 +25,8 @@ export function AuthField({
   maxLength,
 }: AuthFieldProps) {
   return (
-    <label className="flex flex-col gap-1 text-sm">
-      <span className="text-zinc-500 dark:text-zinc-400">{label}</span>
+    <label className="flex flex-col gap-1.5 text-sm">
+      <span className="text-ink-soft">{label}</span>
       <input
         name={name}
         type={type}
@@ -40,7 +36,7 @@ export function AuthField({
         required={required}
         minLength={minLength}
         maxLength={maxLength}
-        className={INPUT_CLASS}
+        className={controlClass("md", "w-full")}
       />
     </label>
   );

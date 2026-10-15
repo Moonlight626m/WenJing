@@ -4,8 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
-import { AuthField, SUBMIT_CLASS } from "@/components/auth/auth-field";
+import { AuthField } from "@/components/auth/auth-field";
 import { FormError } from "@/components/auth/form-error";
+import { Button } from "@/components/ui/button";
 import { formatApiError, login } from "@/lib/api";
 import { roleHome } from "@/lib/role-home";
 
@@ -32,7 +33,7 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex w-full max-w-sm flex-col gap-4">
+    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-4">
       <AuthField
         label="邮箱或手机号"
         name="identifier"
@@ -53,13 +54,13 @@ export function LoginForm() {
 
       <FormError message={error} />
 
-      <button type="submit" disabled={pending} className={SUBMIT_CLASS}>
+      <Button type="submit" tone="solid" size="md" disabled={pending}>
         {pending ? "登录中…" : "登录"}
-      </button>
+      </Button>
 
-      <p className="text-center text-xs text-zinc-500 dark:text-zinc-400">
+      <p className="text-sm text-ink-soft">
         还没有账号？
-        <Link href="/register" className="ml-1 text-blue-600 underline dark:text-blue-400">
+        <Link href="/register" className="ml-1 text-accent underline">
           注册
         </Link>
       </p>

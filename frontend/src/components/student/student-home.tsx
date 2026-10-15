@@ -5,11 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { FormError } from "@/components/auth/form-error";
-import {
-  formatApiError,
-  listMySessions,
-  listSquareScripts,
-} from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import { TextInput } from "@/components/ui/field";
+import { PageShell, SectionHeading } from "@/components/ui/section";
+import { Empty, Loading } from "@/components/ui/states";
+import { Tag } from "@/components/ui/tag";
+import { formatApiError, listMySessions, listSquareScripts } from "@/lib/api";
 import { scriptVisibilityLabel, stageLabel } from "@/lib/labels";
 import { routeForStage } from "@/lib/session-cache";
 import type { ScriptSummary, SessionSummary } from "@/lib/contracts/types";
@@ -18,25 +19,26 @@ function GameRow({ session }: { session: SessionSummary }) {
   const router = useRouter();
   const ended = session.stage === "ended";
   return (
-    <li className="flex items-center justify-between gap-4 rounded-lg border border-zinc-200 bg-white px-4 py-3 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate font-medium">
+    <li className="flex flex-wrap items-center justify-between gap-x-5 gap-y-3 rounded-lg border border-rule bg-surface px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-serif text-base text-ink">
             {session.script_name ?? "（旧会话）"}
           </span>
-          <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-            {stageLabel(session.stage)}
-          </span>
+          <Tag>{stageLabel(session.stage)}</Tag>
         </div>
-        <p className="mt-0.5 truncate text-xs text-zinc-400">
-          {session.player_role ? `扮演：${session.player_role}` : "未选角"}
-          {session.updated_at
-            ? ` · ${new Date(session.updated_at).toLocaleString()}`
-            : ""}
+        <p className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-ink-faint">
+          <span>{session.player_role ? `扮演 ${session.player_role}` : "未选角"}</span>
+          <span className="font-mono">
+            {session.updated_at
+              ? new Date(session.updated_at).toLocaleString()
+              : "—"}
+          </span>
         </p>
       </div>
-      <button
-        type="button"
+      <Button
+        tone={ended ? "outline" : "accent"}
+        size="sm"
         onClick={() =>
           router.push(
             routeForStage(
@@ -47,10 +49,9 @@ function GameRow({ session }: { session: SessionSummary }) {
             )
           )
         }
-        className="shrink-0 rounded-lg bg-zinc-900 px-3 py-1.5 text-xs text-white transition-opacity hover:opacity-85 dark:bg-zinc-100 dark:text-black"
       >
         {ended ? "查看" : "继续"}
-      </button>
+      </Button>
     </li>
   );
 }
@@ -59,21 +60,18 @@ function SquareCard({ script }: { script: ScriptSummary }) {
   return (
     <Link
       href={`/student/scripts/${script.id}`}
-      className="flex flex-col gap-1 rounded-xl border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-600"
+      className="flex flex-col gap-1.5 rounded-lg border border-rule bg-surface p-4 transition-colors hover:border-accent"
     >
-      <div className="flex items-center gap-2">
-        <span className="font-medium">{script.name}</span>
-        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-          {scriptVisibilityLabel(script.visibility)}
-        </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-serif text-base text-ink">{script.name}</span>
+        <Tag>{scriptVisibilityLabel(script.visibility)}</Tag>
       </div>
       {script.description && (
-        <p className="line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
-          {script.description}
-        </p>
+        <p className="line-clamp-2 text-xs text-ink-soft">{script.description}</p>
       )}
-      <span className="text-[11px] text-zinc-400">
-        更新于 {script.updated_at ? new Date(script.updated_at).toLocaleString() : "—"}
+      <span className="text-2xs text-ink-faint">
+        更新于{" "}
+        {script.updated_at ? new Date(script.updated_at).toLocaleString() : "—"}
       </span>
     </Link>
   );
@@ -125,16 +123,16 @@ export function StudentHomeView() {
   }, [square, query]);
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-6">
-      <h1 className="text-2xl font-semibold tracking-tight">学生空间</h1>
+    <PageShell>
+      <h1 className="text-3xl text-ink">学生空间</h1>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium">我的游戏</h2>
+      <section className="flex flex-col gap-4">
+        <SectionHeading title="我的游戏" meta={games ? `${games.length} 局` : undefined} />
         {gamesError && <FormError message={gamesError} />}
         {games === null ? (
-          <p className="text-sm text-zinc-400">加载中…</p>
+          <Loading />
         ) : games.length === 0 ? (
-          <p className="text-xs text-zinc-400">还没有游戏。从下方剧本广场选一个开始吧。</p>
+          <Empty>还没有游戏。从下面的剧本广场挑一篇课文开始。</Empty>
         ) : (
           <ul className="flex flex-col gap-2">
             {games.map((session) => (
@@ -144,24 +142,31 @@ export function StudentHomeView() {
         )}
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-4">
-          <h2 className="text-sm font-medium">剧本广场</h2>
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索剧本名称或简介"
-            className="w-56 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900"
-          />
-        </div>
+      <section className="flex flex-col gap-4">
+        <SectionHeading
+          title="剧本广场"
+          meta={square ? `${filtered.length} 篇` : undefined}
+          action={
+            <TextInput
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索课文或简介"
+              aria-label="搜索剧本"
+              controlSize="sm"
+              className="w-52"
+            />
+          }
+        />
         {squareError && <FormError message={squareError} />}
         {square === null ? (
-          <p className="text-sm text-zinc-400">加载中…</p>
+          <Loading />
         ) : filtered.length === 0 ? (
-          <p className="text-xs text-zinc-400">
-            {query ? "没有匹配的剧本。" : "暂无可游玩剧本，等老师发布后出现在这里。"}
-          </p>
+          <Empty>
+            {query
+              ? "没有匹配的剧本，换个词试试。"
+              : "暂时没有可游玩的剧本，等老师发布后会出现在这里。"}
+          </Empty>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
             {filtered.map((script) => (
@@ -170,6 +175,6 @@ export function StudentHomeView() {
           </div>
         )}
       </section>
-    </main>
+    </PageShell>
   );
 }

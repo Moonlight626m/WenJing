@@ -45,9 +45,11 @@ test("教师完成导入 → 生成 → 预览 → 发布 → 可见性切换 �
   await page.getByRole("button", { name: "重新发布" }).click();
   await expect(page.getByText("已发布").first()).toBeVisible();
 
-  // 剧本库按状态归档
+  // 剧本库按状态归档（计数落在标题的可访问名里，见 SectionHeading）
   await page.goto("/teacher");
-  await expect(page.getByRole("heading", { name: /已发布（\d+）/ })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: /已发布 \d+ 篇/ })
+  ).toBeVisible();
   await expect(page.getByText(name)).toBeVisible();
 });
 

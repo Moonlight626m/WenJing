@@ -9,6 +9,9 @@ import { Skeleton, SkeletonCard } from "@/components/skeleton";
 import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
 import { GenerationProgress } from "@/components/teacher/generation-progress";
 import { ScriptPreview } from "@/components/teacher/script-preview";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/field";
+import { Tag } from "@/components/ui/tag";
 import {
   cancelScriptGeneration,
   deleteScript,
@@ -22,18 +25,13 @@ import {
   unpublishScript,
 } from "@/lib/api";
 import {
+  SCRIPT_STATUS_TONES,
   scriptStatusLabel,
   scriptVisibilityLabel,
   SCRIPT_VISIBILITY_LABELS,
 } from "@/lib/labels";
-import type {
-  ScriptDetail,
-  ScriptVisibility,
-} from "@/lib/contracts/types";
+import type { ScriptDetail, ScriptVisibility } from "@/lib/contracts/types";
 import type { GateResumePayload } from "@/components/teacher/gate-review-panel";
-
-const ACTION_CLASS =
-  "rounded-lg border border-zinc-300 px-3 py-1.5 text-sm transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800";
 
 /** 发布按钮文案随状态变化（published 只能改可见性，unpublished 为重新发布）。 */
 function publishButtonLabel(
@@ -155,15 +153,15 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
         {error ? (
           <>
             <FormError message={error} />
-            <div className="flex gap-3 text-sm">
+            <div className="flex gap-4 text-sm">
               <button
                 type="button"
                 onClick={() => setReloadToken((n) => n + 1)}
-                className="text-blue-600 underline dark:text-blue-400"
+                className="text-accent underline"
               >
                 重试
               </button>
-              <Link href="/teacher" className="text-zinc-500 underline dark:text-zinc-400">
+              <Link href="/teacher" className="text-ink-soft underline">
                 返回剧本库
               </Link>
             </div>
@@ -183,25 +181,24 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     status === "unpublished";
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <Link href="/teacher" className="text-sm text-zinc-500 underline dark:text-zinc-400">
+    <div className="flex flex-col gap-8">
+      <div className="flex flex-col gap-2">
+        <Link href="/teacher" className="text-sm text-accent underline">
           ← 剧本库
         </Link>
-        <h1 className="text-xl font-semibold">{script.name}</h1>
-        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-          {scriptStatusLabel(script.status)}
-        </span>
-        {script.status !== "draft" && (
-          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-            {scriptVisibilityLabel(script.visibility)}
-          </span>
+        <div className="flex flex-wrap items-center gap-2.5 border-b border-rule pb-3">
+          <h1 className="text-2xl text-ink">{script.name}</h1>
+          {status && (
+            <Tag tone={SCRIPT_STATUS_TONES[status]}>{scriptStatusLabel(status)}</Tag>
+          )}
+          {status !== "draft" && (
+            <Tag>{scriptVisibilityLabel(script.visibility)}</Tag>
+          )}
+        </div>
+        {script.description && (
+          <p className="measure text-sm text-ink-soft">{script.description}</p>
         )}
       </div>
-
-      {script.description && (
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">{script.description}</p>
-      )}
 
       <FormError message={error} />
 
@@ -221,107 +218,110 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
 
       {scriptPackage && <ScriptPreview scriptPackage={scriptPackage} />}
 
-      <section className="flex flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-sm font-medium">操作</h2>
+      <section className="flex flex-col gap-4 rounded-lg border border-rule bg-surface p-4">
+        <h2 className="border-b border-rule pb-2 text-sm text-ink-soft">操作</h2>
         <div className="flex flex-wrap items-center gap-3">
           {status === "draft" && !hasPackage && !running && !awaitingReview && (
-            <button
-              type="button"
+            <Button
+              tone="accent"
+              size="sm"
               onClick={() => void run("generate", () => startScriptGeneration(scriptId))}
               disabled={busy !== null}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
             >
               {busy === "generate" ? "启动中…" : "生成剧本"}
-            </button>
+            </Button>
           )}
 
           {status === "draft" && hasPackage && (
-            <button
-              type="button"
+            <Button
+              tone="outline"
+              size="sm"
               onClick={() => {
                 if (window.confirm("重新生成会丢弃当前剧本内容，确定继续？")) {
                   void run("regenerate", () => regenerateScript(scriptId));
                 }
               }}
               disabled={busy !== null}
-              className={ACTION_CLASS}
             >
               {busy === "regenerate" ? "重新生成中…" : "重新生成"}
-            </button>
+            </Button>
           )}
 
           {status === "draft" && (
-            <button
-              type="button"
+            <Button
+              tone="danger"
+              size="sm"
               onClick={() => void handleDelete()}
               disabled={busy !== null}
-              className="rounded-lg border border-red-300 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
             >
               {busy === "delete" ? "删除中…" : "删除草稿"}
-            </button>
+            </Button>
           )}
 
           {status === "unpublished" && (
-            <span className="text-sm text-zinc-500 dark:text-zinc-400">
+            <span className="measure text-sm text-ink-soft">
               已下架：不再进入学生剧本广场，存量世界可继续。
             </span>
           )}
 
           {canPublish && (
             <>
-              <label className="flex items-center gap-2 text-sm">
-                <span className="text-zinc-500 dark:text-zinc-400">可见性</span>
-                <select
-                  value={visibility}
-                  onChange={(e) => setVisibilityDraft(e.target.value as ScriptVisibility)}
-                  disabled={busy !== null}
-                  className="rounded-lg border border-zinc-300 bg-transparent px-2 py-1.5 text-sm outline-none focus:border-blue-400 disabled:opacity-50 dark:border-zinc-700"
-                >
-                  {(Object.keys(SCRIPT_VISIBILITY_LABELS) as ScriptVisibility[]).map(
-                    (value) => (
-                      <option key={value} value={value}>
-                        {SCRIPT_VISIBILITY_LABELS[value]}
-                      </option>
-                    )
-                  )}
-                </select>
+              <label className="flex items-center gap-2 text-sm text-ink-soft">
+                <span>可见性</span>
+                <span className="w-28">
+                  <Select
+                    value={visibility}
+                    onChange={(e) => setVisibilityDraft(e.target.value as ScriptVisibility)}
+                    disabled={busy !== null}
+                    controlSize="sm"
+                    className="w-full"
+                  >
+                    {(Object.keys(SCRIPT_VISIBILITY_LABELS) as ScriptVisibility[]).map(
+                      (value) => (
+                        <option key={value} value={value}>
+                          {SCRIPT_VISIBILITY_LABELS[value]}
+                        </option>
+                      )
+                    )}
+                  </Select>
+                </span>
               </label>
-              <button
-                type="button"
+              <Button
+                tone="accent"
+                size="sm"
                 onClick={() => void handlePublish()}
                 disabled={busy !== null}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
               >
                 {publishButtonLabel(status, busy)}
-              </button>
+              </Button>
               {status === "published" && (
-                <button
-                  type="button"
+                <Button
+                  tone="outline"
+                  size="sm"
                   onClick={() => {
                     if (window.confirm("下架后学生广场不再可见，确定下架？")) {
                       void run("unpublish", () => unpublishScript(scriptId));
                     }
                   }}
                   disabled={busy !== null}
-                  className={ACTION_CLASS}
                 >
                   {busy === "unpublish" ? "下架中…" : "下架"}
-                </button>
+                </Button>
               )}
             </>
           )}
 
           {status === "draft" && running && (
             <>
-              <button
-                type="button"
+              <Button
+                tone="danger"
+                size="sm"
                 onClick={() => void handleCancel()}
                 disabled={busy !== null}
-                className="rounded-lg border border-red-300 px-3 py-1.5 text-sm text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
               >
                 {busy === "cancel" ? "停止中…" : "停止生成"}
-              </button>
-              <span className="text-sm text-zinc-500 dark:text-zinc-400">
+              </Button>
+              <span className="measure text-sm text-ink-soft">
                 生成进行中，完成后即可预览与发布；可随时停止。
               </span>
             </>
@@ -339,7 +339,7 @@ function DetailSkeleton() {
       <div className="flex items-center gap-3">
         <Skeleton className="h-5 w-16" />
         <Skeleton className="h-6 w-48" />
-        <Skeleton className="h-5 w-14 rounded-full" />
+        <Skeleton className="h-4 w-14" />
       </div>
       <SkeletonCard lines={2} />
       <SkeletonCard />

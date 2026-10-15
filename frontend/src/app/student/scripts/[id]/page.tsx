@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { StudentScriptDetail } from "@/components/student/student-script-detail";
 import { requireRole, STUDENT_ROLES } from "@/lib/auth-server";
 
-export const metadata = { title: "剧本详情 · 文境" };
+export const metadata = { title: "剧本详情" };
 
 export default async function StudentScriptPage({
   params,

@@ -7,6 +7,9 @@ import {
   collectAssetOps,
   type AssetOpDrafts,
 } from "@/components/teacher/asset-review";
+import { Button } from "@/components/ui/button";
+import { controlClass } from "@/components/ui/field";
+import { Tag } from "@/components/ui/tag";
 import type {
   CharacterProfile,
   GateEdits,
@@ -16,9 +19,8 @@ import type {
 } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION } from "@/lib/contracts/types";
 
-const TEXT_FIELD =
-  "w-full rounded-lg border border-amber-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-amber-500 dark:border-amber-800";
-const LABEL = "text-xs font-medium text-amber-700 dark:text-amber-300";
+const FIELD = controlClass("sm", "w-full");
+const LABEL = "text-xs text-ink-soft";
 
 /** 闸门面板的分区卡：标题 + 可选副标 + 内容（视觉切割避免产物/指令/操作混排）。 */
 function PanelBlock({
@@ -31,16 +33,10 @@ function PanelBlock({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-amber-200 p-3 dark:border-amber-900">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <h3 className="text-xs font-semibold text-amber-800 dark:text-amber-200">
-          {title}
-        </h3>
-        {hint && (
-          <span className="text-[11px] text-amber-700/60 dark:text-amber-300/60">
-            {hint}
-          </span>
-        )}
+    <div className="flex flex-col gap-3 rounded-lg border border-rule bg-surface p-3">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-rule pb-2">
+        <h3 className="text-sm text-ink">{title}</h3>
+        {hint && <span className="text-xs text-ink-faint">{hint}</span>}
       </div>
       {children}
     </div>
@@ -56,18 +52,18 @@ export interface GateResumePayload {
 }
 
 const GATE_TITLES: Record<string, string> = {
-  materials: "教师闸门 · 素材审阅",
-  pre_write: "教师闸门 · 人物与场景审定",
-  final: "教师闸门 · 剧本终审",
+  materials: "素材审阅",
+  pre_write: "人物与场景审定",
+  final: "剧本终审",
 };
 
 const GATE_HINTS: Record<string, string> = {
   materials:
-    "素材收集与考证已通过。可直接编辑时代背景/世界观等素材结论（编辑稿直接用于下游生成），也可附加指导指令；素材区默认折叠，点“展开素材”查看与修改。",
+    "素材收集与考证已通过。可直接编辑时代背景/世界观等素材结论（编辑稿直接用于下游生成），也可附加指导指令；素材区默认折叠，点「展开素材」查看与修改。",
   pre_write:
     "事件划分与人物设定已完成。可编辑场景名称、参与人物与人物形象，审定后进入剧本书写；也可附加指导指令。",
   final:
-    "doubter 总审已通过。可编辑剧本标题与场景名，通过即落库；或填写打回意见退回剧本书写重做一轮。",
+    "总审已通过。可编辑剧本标题与场景名，通过即落库；或填写打回意见退回剧本书写重做一轮。",
 };
 
 /** 教师闸门审阅面板（#34）：按闸门位置展示中间产物，支持编辑与指导。 */
@@ -183,31 +179,28 @@ export function GateReviewPanel({
   const isFinal = gate === "final";
 
   return (
-    <section className="flex flex-col gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-800 dark:bg-amber-950/30">
-      <h2 className="text-sm font-medium text-amber-700 dark:text-amber-300">
-        {GATE_TITLES[gate]}
-      </h2>
-      <p className="text-xs text-amber-700/80 dark:text-amber-300/80">
-        {GATE_HINTS[gate]}
-      </p>
+    <section className="flex flex-col gap-4 rounded-lg border border-warn/50 bg-warn-wash/50 p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Tag tone="warn">闸门暂停</Tag>
+        <h2 className="text-lg text-ink">{GATE_TITLES[gate]}</h2>
+      </div>
+      <p className="measure text-xs text-ink-soft">{GATE_HINTS[gate]}</p>
 
       {gate === "materials" && (
-        <PanelBlock
-          title="素材结论"
-          hint="编辑稿直接用于下游生成，不重新考证"
-        >
-          <button
-            type="button"
+        <PanelBlock title="素材结论" hint="编辑稿直接用于下游生成，不重新考证">
+          <Button
+            tone="outline"
+            size="xs"
+            className="self-start"
             onClick={() => setMaterialsOpen((open) => !open)}
-            className="self-start rounded-lg border border-amber-300 px-3 py-1 text-xs transition-colors hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900/40"
           >
             {materialsOpen ? "收起素材" : "展开素材"}
-          </button>
+          </Button>
           {materialsOpen &&
             (dossier ? (
               <DossierEditor dossier={dossier} onChange={setDossier} />
             ) : (
-              <p className="text-xs text-amber-700/70 dark:text-amber-300/70">
+              <p className="text-xs text-ink-faint">
                 本次生成未提供可编辑的素材结论。
               </p>
             ))}
@@ -224,7 +217,7 @@ export function GateReviewPanel({
               {review.division.scenes.map((scene, i) => (
                 <div
                   key={i}
-                  className="flex flex-col gap-1 rounded-lg border border-amber-200 p-2 dark:border-amber-900"
+                  className="flex flex-col gap-2 rounded-md border border-rule p-2.5"
                 >
                   <input
                     value={sceneTitles[i] ?? scene.title}
@@ -235,7 +228,7 @@ export function GateReviewPanel({
                         return next;
                       })
                     }
-                    className={TEXT_FIELD}
+                    className={`${FIELD} font-serif`}
                     aria-label={`场景 ${i + 1} 名称`}
                   />
                   <input
@@ -247,10 +240,11 @@ export function GateReviewPanel({
                         return next;
                       })
                     }
-                    className={TEXT_FIELD}
+                    className={FIELD}
+                    aria-label={`场景 ${i + 1} 参与人物`}
                     placeholder="参与人物（用顿号或逗号分隔）"
                   />
-                  <p className="text-xs text-amber-700/70 dark:text-amber-300/70">
+                  <p className="text-xs text-ink-faint">
                     {scene.beats.map((beat) => beat.description).join(" → ")}
                   </p>
                 </div>
@@ -262,11 +256,11 @@ export function GateReviewPanel({
               {profiles.map((profile, i) => (
                 <div
                   key={profile.name}
-                  className="flex flex-col gap-1 rounded-lg border border-amber-200 p-2 dark:border-amber-900"
+                  className="flex flex-col gap-2 rounded-md border border-rule p-2.5"
                 >
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium">{profile.name}</span>
-                    <label className="flex items-center gap-1 text-xs text-amber-700 dark:text-amber-300">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="font-serif text-base text-ink">{profile.name}</span>
+                    <label className="flex items-center gap-2 text-xs text-ink-soft">
                       <input
                         type="checkbox"
                         checked={profile.is_player_playable.value}
@@ -297,7 +291,8 @@ export function GateReviewPanel({
                       })
                     }
                     rows={2}
-                    className={TEXT_FIELD}
+                    className={`${FIELD} resize-y`}
+                    aria-label={`${profile.name} 人物背景`}
                     placeholder="人物背景"
                   />
                   <input
@@ -332,7 +327,8 @@ export function GateReviewPanel({
                         return next;
                       })
                     }
-                    className={TEXT_FIELD}
+                    className={FIELD}
+                    aria-label={`${profile.name} 语言时代层`}
                     placeholder="语言时代层（可选；五要素在结构化编辑中维护）"
                   />
                 </div>
@@ -344,18 +340,18 @@ export function GateReviewPanel({
 
       {isFinal && packageDraft && (
         <PanelBlock title="剧本内容" hint="可编辑标题与场景名，通过即落库">
-          <label className="flex flex-col gap-1">
+          <label className="flex flex-col gap-1.5">
             <span className={LABEL}>剧本标题</span>
             <input
               value={packageDraft.title}
               onChange={(e) =>
                 setPackageDraft({ ...packageDraft, title: e.target.value })
               }
-              className={TEXT_FIELD}
+              className={`${FIELD} font-serif`}
             />
           </label>
           {packageDraft.scenes.map((scene, i) => (
-            <label key={scene.scene_id} className="flex flex-col gap-1">
+            <label key={scene.scene_id} className="flex flex-col gap-1.5">
               <span className={LABEL}>场景 {i + 1} 名称</span>
               <input
                 value={scene.title}
@@ -367,7 +363,7 @@ export function GateReviewPanel({
                     ),
                   })
                 }
-                className={TEXT_FIELD}
+                className={`${FIELD} font-serif`}
               />
             </label>
           ))}
@@ -375,7 +371,7 @@ export function GateReviewPanel({
       )}
 
       {isFinal && packageDraft && (
-        <PanelBlock title="配图审批" hint="逐槽重新生成/检索替换/上传/删除，通过后生效">
+        <PanelBlock title="配图审批" hint="逐槽重新生成 / 检索替换 / 上传 / 删除，通过后生效">
           <AssetReviewSection
             scriptId={scriptId ?? 0}
             scenes={packageDraft.scenes}
@@ -387,50 +383,52 @@ export function GateReviewPanel({
         </PanelBlock>
       )}
 
-      <PanelBlock title={isFinal ? "打回指导意见" : "指导指令"} hint="每行一条（可选）">
+      <PanelBlock title={isFinal ? "打回指导意见" : "指导指令"} hint="每行一条，可选">
         <textarea
           value={directives}
           onChange={(e) => setDirectives(e.target.value)}
           rows={3}
+          aria-label={isFinal ? "打回指导意见" : "指导指令"}
           placeholder={
             isFinal
               ? "例如：\n结尾要落在父亲转身之后"
               : "例如：\n孔乙己的迂腐要更突出"
           }
-          className={TEXT_FIELD}
+          className={`${FIELD} resize-y font-serif leading-[1.9]`}
         />
       </PanelBlock>
+
       <div className="flex flex-wrap items-center gap-3">
         {isFinal ? (
           <>
-            <button
-              type="button"
+            <Button
+              tone="ok"
+              size="md"
               onClick={() => onResume(buildResume("approve"))}
               disabled={busy !== null}
-              className="rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
             >
               {busy === "resume" ? "处理中…" : "通过并落库"}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              tone="danger"
+              size="md"
               onClick={() => onResume(buildResume("reject"))}
               disabled={busy !== null}
-              className="rounded-lg border border-amber-400 px-4 py-2 text-sm text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/40"
             >
               打回重写
-            </button>
+            </Button>
           </>
         ) : (
-          <button
-            type="button"
+          <Button
+            tone="accent"
+            size="md"
             onClick={() => onResume(buildResume("approve"))}
             disabled={busy !== null}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
           >
             {busy === "resume" ? "恢复中…" : "恢复生成"}
-          </button>
+          </Button>
         )}
-        <span className="text-xs text-amber-700/70 dark:text-amber-300/70">
+        <span className="measure text-xs text-ink-faint">
           {isFinal
             ? "通过后剧本落库；打回则回到剧本书写重做一轮。"
             : "恢复后流水线从下一步继续。"}
@@ -456,39 +454,39 @@ function DossierEditor({
   onChange: (next: MaterialDossier) => void;
 }) {
   return (
-    <div className="flex flex-col gap-2">
-      <label className="flex flex-col gap-1">
+    <div className="flex flex-col gap-3">
+      <label className="flex flex-col gap-1.5">
         <span className={LABEL}>背景</span>
         <textarea
           value={dossier.background}
           onChange={(e) => onChange({ ...dossier, background: e.target.value })}
           rows={2}
-          className={TEXT_FIELD}
+          className={`${FIELD} resize-y font-serif leading-[1.9]`}
         />
       </label>
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={LABEL}>时代设定 / 世界观</span>
         <textarea
           value={dossier.era_setting}
           onChange={(e) => onChange({ ...dossier, era_setting: e.target.value })}
           rows={2}
-          className={TEXT_FIELD}
+          className={`${FIELD} resize-y font-serif leading-[1.9]`}
         />
       </label>
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={LABEL}>情节概要</span>
         <textarea
           value={dossier.plot_summary}
           onChange={(e) => onChange({ ...dossier, plot_summary: e.target.value })}
           rows={3}
-          className={TEXT_FIELD}
+          className={`${FIELD} resize-y font-serif leading-[1.9]`}
         />
       </label>
       {dossier.character_notes.length > 0 && (
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-2">
           <span className={LABEL}>人物笔记</span>
           {dossier.character_notes.map((note, i) => (
-            <div key={i} className="flex flex-col gap-1 rounded-lg border border-amber-200 p-2 dark:border-amber-900">
+            <div key={i} className="flex flex-col gap-2 rounded-md border border-rule p-2.5">
               <input
                 value={note.name}
                 onChange={(e) =>
@@ -499,7 +497,8 @@ function DossierEditor({
                     ),
                   })
                 }
-                className={TEXT_FIELD}
+                className={`${FIELD} font-serif`}
+                aria-label="人物名"
                 placeholder="人物名"
               />
               <textarea
@@ -513,14 +512,15 @@ function DossierEditor({
                   })
                 }
                 rows={2}
-                className={TEXT_FIELD}
+                className={`${FIELD} resize-y`}
+                aria-label="人物结论"
                 placeholder="人物结论"
               />
             </div>
           ))}
         </div>
       )}
-      <label className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1.5">
         <span className={LABEL}>教学要点（每行一条）</span>
         <textarea
           value={dossier.teaching_analysis.join("\n")}
@@ -534,7 +534,7 @@ function DossierEditor({
             })
           }
           rows={2}
-          className={TEXT_FIELD}
+          className={`${FIELD} resize-y`}
         />
       </label>
     </div>
@@ -544,19 +544,19 @@ function DossierEditor({
 /** 网络证据只读列表（来源审计）。 */
 function EvidenceList({ items }: { items: GateReview["evidence"] }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-2">
       <span className={LABEL}>网络资料（{items.length} 条，只读）</span>
       {items.map((item, i) => (
-        <div key={i} className="rounded-lg border border-amber-200 p-2 text-xs dark:border-amber-900">
+        <div key={i} className="rounded-md border border-rule p-2.5 text-xs">
           <a
             href={item.url}
             target="_blank"
             rel="noreferrer"
-            className="font-medium underline"
+            className="font-medium text-accent underline"
           >
             {item.title}
           </a>
-          <p className="mt-1 text-amber-700/70 dark:text-amber-300/70">{item.excerpt}</p>
+          <p className="measure mt-1 text-ink-faint">{item.excerpt}</p>
         </div>
       ))}
     </div>

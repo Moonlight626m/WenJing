@@ -4,7 +4,7 @@ import { useAssetUrl } from "@/lib/asset-url";
 import type { AssetRef } from "@/lib/contracts/types";
 
 /** 图片位默认底色：详情页各槽位共用（本仓库无 twMerge，调用方要换色就整串覆盖）。 */
-export const ASSET_IMAGE_BG = "bg-zinc-100 dark:bg-zinc-800";
+export const ASSET_IMAGE_BG = "bg-sunken";
 
 /**
  * 图片位上的占位文案（#54 验收「缺失资产优雅降级」）。
@@ -30,9 +30,9 @@ export function assetPlaceholder(
 export function AssetImage({
   asset,
   alt,
-  className = `aspect-video w-full rounded ${ASSET_IMAGE_BG}`,
+  className = `aspect-video w-full rounded-sm ${ASSET_IMAGE_BG}`,
   emptyLabel,
-  placeholderClassName = "text-xs text-zinc-400",
+  placeholderClassName = "text-xs text-ink-faint",
 }: {
   asset: AssetRef | null | undefined;
   alt: string;
