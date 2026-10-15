@@ -3,6 +3,8 @@
 import { useState } from "react";
 
 import { useGameStore } from "@/stores/gameStore";
+import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/field";
 
 /** 回溯控制栏：从活动时间线选目标 seq → 二次确认 → 提交（保留旧历史，开新分支）。 */
 export function RollbackBar() {
@@ -27,16 +29,18 @@ export function RollbackBar() {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-zinc-200 pt-3 text-xs dark:border-zinc-800">
-      <span className="text-zinc-500 dark:text-zinc-400">回溯：</span>
-      <select
+    <div className="flex flex-wrap items-center gap-2 border-t border-rule pt-3 text-xs">
+      <span className="text-ink-faint">回溯</span>
+      <Select
         value={target ?? ""}
         onChange={(e) => {
           const v = e.target.value === "" ? null : Number(e.target.value);
           setTarget(v);
           setConfirming(false);
         }}
-        className="max-w-[280px] flex-1 rounded border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
+        aria-label="选择回溯到的时间点"
+        controlSize="sm"
+        className="w-full max-w-[280px] flex-1"
       >
         <option value="" disabled>
           选择回到的时间点…
@@ -47,34 +51,28 @@ export function RollbackBar() {
             {m.text.slice(0, 30)}
           </option>
         ))}
-      </select>
+      </Select>
       {target !== null && !confirming && (
-        <button
+        <Button
+          tone="danger"
+          size="xs"
           onClick={() => setConfirming(true)}
           disabled={pending !== null}
-          className="rounded border border-amber-400 px-3 py-1 text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950/40"
         >
           回到 #{target}
-        </button>
+        </Button>
       )}
       {confirming && target !== null && (
         <>
-          <span className="text-zinc-500 dark:text-zinc-400">
-            确认回溯到 #{target}？将开启新分支，旧历史保留。
+          <span className="text-ink-faint">
+            确认回到 #{target}？将开启新分支，旧历史保留。
           </span>
-          <button
-            onClick={doRollback}
-            disabled={pending !== null}
-            className="rounded bg-amber-600 px-3 py-1 text-white transition-opacity hover:opacity-85 disabled:opacity-50"
-          >
+          <Button tone="danger" size="xs" onClick={doRollback} disabled={pending !== null}>
             确认
-          </button>
-          <button
-            onClick={() => setConfirming(false)}
-            className="rounded border border-zinc-300 px-3 py-1 text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
-          >
+          </Button>
+          <Button tone="quiet" size="xs" onClick={() => setConfirming(false)}>
             取消
-          </button>
+          </Button>
         </>
       )}
     </div>

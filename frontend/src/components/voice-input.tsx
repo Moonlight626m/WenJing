@@ -16,6 +16,7 @@ import { useState, useSyncExternalStore } from "react";
 
 import { formatApiError, transcribeSpeech } from "@/lib/api";
 import { isRecordingSupported, useRecorder } from "@/lib/use-recorder";
+import { Button, buttonClass } from "@/components/ui/button";
 
 const subscribeToNothing = () => () => {};
 
@@ -72,34 +73,26 @@ export function VoiceInput({
 
   return (
     <div className="flex flex-col gap-1">
-      <button
-        type="button"
+      <Button
+        tone={recording ? "danger" : "outline"}
+        size="sm"
         disabled={blocked || busy}
         onClick={() => (recording ? void finish() : void start())}
         aria-pressed={recording}
         aria-label={recording ? "结束录音并识别" : "按下开始录音"}
         title={recording ? "结束录音并识别" : "语音输入（会请求麦克风权限）"}
-        className={`self-start rounded-lg border px-3 py-2 text-sm transition-colors disabled:opacity-50 ${
-          recording
-            ? "border-red-400 bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300"
-            : "border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-        }`}
       >
-        {busy ? "识别中…" : recording ? "■ 结束并识别" : "🎤 语音输入"}
-      </button>
+        {busy ? "识别中…" : recording ? "结束并识别" : "语音输入"}
+      </Button>
 
       {(note || error) && (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400" role="status">
+        <p className="text-2xs text-ink-faint" role="status">
           {error ?? note}
         </p>
       )}
 
       {recording && (
-        <button
-          type="button"
-          onClick={cancel}
-          className="self-start text-xs text-zinc-400 underline"
-        >
+        <button type="button" onClick={cancel} className={buttonClass("quiet", "xs")}>
           取消这次录音
         </button>
       )}

@@ -5,6 +5,8 @@ import { useState } from "react";
 import type { CommandKind } from "@/lib/contracts/types";
 import { useGameStore } from "@/stores/gameStore";
 import { VoiceInput } from "@/components/voice-input";
+import { Button, buttonClass } from "@/components/ui/button";
+import { TextArea } from "@/components/ui/field";
 
 /** 三种输入模式：options / free_input / options_with_fallback。 */
 export function InteractionCard() {
@@ -35,22 +37,25 @@ export function InteractionCard() {
   }
 
   return (
-    <div className="rounded-xl border border-blue-200 bg-blue-50/60 p-4 dark:border-blue-900 dark:bg-blue-950/30">
-      <p className="mb-3 text-sm font-medium text-zinc-800 dark:text-zinc-200">
+    <div className="rounded-lg border border-rule bg-panel px-4 py-3.5 backdrop-blur-sm">
+      <p className="font-serif text-base text-ink">
         {interaction.prompt || "请选择你的行动"}
       </p>
       {interaction.hint && (
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">{interaction.hint}</p>
+        <p className="mt-1 text-xs text-ink-faint">{interaction.hint}</p>
       )}
 
+      {/* 抉择按整行排：选项往往是整句中文，左对齐的条目比一排药丸好读 */}
       {canChoose && (
-        <div className="mb-3 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-col gap-1.5">
           {interaction.options.map((opt) => (
             <button
               key={opt.option_id}
               disabled={busy}
-              onClick={() => submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`)}
-              className="rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm transition-colors hover:bg-blue-100 disabled:opacity-50 dark:border-blue-800 dark:bg-zinc-900 dark:hover:bg-blue-950"
+              onClick={() =>
+                submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`)
+              }
+              className="w-full rounded-md border border-rule-strong bg-surface px-3.5 py-2.5 text-left font-serif text-base text-ink transition-colors hover:border-accent hover:bg-accent-wash disabled:pointer-events-none disabled:opacity-45"
             >
               {opt.label}
             </button>
@@ -59,24 +64,27 @@ export function InteractionCard() {
       )}
 
       {canFree && (
-        <div className="flex gap-2">
-          <textarea
+        <div className="mt-3 flex items-start gap-2">
+          <TextArea
             value={freeText}
             onChange={(e) => setFreeText(e.target.value)}
-            placeholder={interaction.options.length > 0 ? "或输入你的行动…" : "输入你的行动…"}
+            placeholder={
+              interaction.options.length > 0 ? "或写下你的行动…" : "写下你的行动…"
+            }
             rows={2}
             maxLength={2000}
             disabled={busy}
-            className="flex-1 resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900"
+            className="w-full min-w-0 flex-1 resize-none"
           />
-          <div className="flex flex-col gap-2">
-            <button
+          <div className="flex flex-col items-stretch gap-2">
+            <Button
+              tone="accent"
+              size="sm"
               onClick={sendFreeInput}
               disabled={busy || !freeText.trim()}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white transition-opacity hover:opacity-85 disabled:opacity-50"
             >
               发送
-            </button>
+            </Button>
             {/* 语音是增强输入通道：识别结果填进输入框，键盘路径不受影响（#64） */}
             <VoiceInput
               sessionId={sessionId}
@@ -88,17 +96,17 @@ export function InteractionCard() {
       )}
 
       {!canChoose && !canFree && (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">等待剧情推进…</p>
+        <p className="mt-3 text-xs text-ink-faint">等待剧情推进…</p>
       )}
 
       {extraCommands.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2 border-t border-blue-200/60 pt-3 dark:border-blue-900/60">
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-rule pt-3">
           {extraCommands.map((k) => (
             <button
               key={k}
               disabled={busy}
               onClick={() => submit(k, {}, EXTRA_LABELS[k])}
-              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              className={buttonClass("quiet", "xs")}
             >
               {EXTRA_LABELS[k]}
             </button>
@@ -107,8 +115,8 @@ export function InteractionCard() {
       )}
 
       {pending && (
-        <p className="mt-3 animate-pulse text-xs text-zinc-500 dark:text-zinc-400">
-          正在处理：{pending.label}（真实 LLM 模式下可能需要数十秒）…
+        <p className="mt-3 animate-pulse text-xs text-flag">
+          正在推进 {pending.label}（真实 LLM 模式下可能需要数十秒）
         </p>
       )}
     </div>

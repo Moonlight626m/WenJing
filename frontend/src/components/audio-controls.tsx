@@ -1,5 +1,8 @@
 "use client";
 
+import { useGameStore } from "@/stores/gameStore";
+import { Button } from "@/components/ui/button";
+
 /**
  * 音频控制（#63 / ADR-0005 §11）：静音开关 + 打断。
  *
@@ -10,35 +13,32 @@
  * 语音输入（#64）与它是并列的输入通道，键盘输入永远是兜底：这里的任何失败都
  * 不影响用键盘推进剧情。
  */
-
-import { useGameStore } from "@/stores/gameStore";
-
 export function AudioControls() {
   const muted = useGameStore((s) => s.audioMuted);
   const setMuted = useGameStore((s) => s.setAudioMuted);
   const bargeIn = useGameStore((s) => s.bargeIn);
 
   return (
-    <div className="flex items-center gap-2 text-xs">
-      <button
-        type="button"
+    <div className="flex items-center gap-2">
+      <Button
+        tone="outline"
+        size="xs"
         onClick={() => setMuted(!muted)}
         aria-pressed={muted}
         aria-label={muted ? "取消静音" : "静音"}
         title={muted ? "取消静音" : "静音"}
-        className="rounded border border-white/15 px-2 py-0.5 text-white/70 hover:bg-white/10"
       >
-        {muted ? "🔇 已静音" : "🔊 有声"}
-      </button>
-      <button
-        type="button"
+        {muted ? "静音中" : "有声"}
+      </Button>
+      <Button
+        tone="outline"
+        size="xs"
         onClick={() => bargeIn()}
         aria-label="打断当前配音"
         title="停掉正在播放的配音"
-        className="rounded border border-white/15 px-2 py-0.5 text-white/70 hover:bg-white/10"
       >
-        打断
-      </button>
+        打断配音
+      </Button>
     </div>
   );
 }

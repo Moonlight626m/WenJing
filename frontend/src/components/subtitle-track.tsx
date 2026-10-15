@@ -234,7 +234,7 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
   return visible;
 }
 
-/** 底部字幕层：旁白居中斜体，角色行 `角色：台词`（无气泡）。 */
+/** 底部字幕层：角色行 `角色:台词`（无气泡框，居中），旁白居中斜体（ADR-0005 §1）。 */
 export function SubtitleTrack({
   messages,
   streams,
@@ -255,11 +255,11 @@ export function SubtitleTrack({
           <p
             key={line.key}
             data-testid="subtitle-line"
-            className={`max-w-[92%] whitespace-pre-wrap break-words text-center text-base leading-relaxed text-white transition-opacity duration-500 [text-shadow:0_1px_3px_rgba(0,0,0,0.95)] md:text-xl ${
+            className={`max-w-[92%] font-serif text-lg leading-[1.75] break-words whitespace-pre-wrap text-center text-ink transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl ${
               line.fading ? "opacity-0" : "opacity-100"
             }`}
           >
-            <span className="font-semibold text-amber-300">
+            <span className="font-semibold text-flag">
               {line.speaker ?? "角色"}：
             </span>
             {line.text}
@@ -267,7 +267,7 @@ export function SubtitleTrack({
               <span
                 aria-hidden
                 data-testid="subtitle-caret"
-                className="ml-0.5 inline-block animate-pulse text-amber-300"
+                className="ml-0.5 inline-block animate-pulse text-flag"
               >
                 ▍
               </span>
@@ -277,7 +277,7 @@ export function SubtitleTrack({
           <p
             key={line.key}
             data-testid="subtitle-line"
-            className={`max-w-[92%] whitespace-pre-wrap break-words text-center text-sm italic leading-relaxed text-white/90 transition-opacity duration-500 [text-shadow:0_1px_3px_rgba(0,0,0,0.95)] md:text-base ${
+            className={`max-w-[92%] font-serif text-base leading-[1.7] break-words whitespace-pre-wrap text-center italic text-ink-soft transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-lg ${
               line.fading ? "opacity-0" : "opacity-100"
             }`}
           >

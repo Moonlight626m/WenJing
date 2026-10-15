@@ -43,7 +43,10 @@ test("学生完整核心流程：广场 → 详情 → 开局 → 选角 → 游
   // 3. 开局 → 选角
   await page.getByRole("button", { name: "开始游玩" }).click();
   await page.waitForURL(/\/roles\?id=/);
-  await expect(page.getByText("选择角色")).toBeVisible();
+  // 按 role 定位，不用裸 getByText：Next 的 route announcer
+  // （`#__next-route-announcer__`）会把新页面的 h1 文本再写一份，裸文本查询
+  // 会命中两处、撞 strict mode。
+  await expect(page.getByRole("heading", { name: "选择角色" })).toBeVisible();
   // 角色卡从剧本详情重建，含真实简介而非"仅角色名"兜底
   await expect(page.getByText(/是文中人物/).first()).toBeVisible();
   await page.getByRole("button", { name: /扮演此角色/ }).first().click();
