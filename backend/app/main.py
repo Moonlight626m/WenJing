@@ -84,7 +84,12 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    # access_log=False：uvicorn 自带的 `IP - "GET /path" 200 OK` 一行与自研
+    # AccessLogMiddleware 重复（后者带 method/path/status/耗时/req_id，且
+    # 轮询端点可降级 debug），只留结构化那份。
+    uvicorn.run(
+        "app.main:app", host="0.0.0.0", port=8000, reload=True, access_log=False
+    )
 
 
 if __name__ == "__main__":

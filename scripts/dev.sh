@@ -110,7 +110,7 @@ start_backend() {
   if up "$BACKEND_URL/health/live"; then log "backend 已在运行：$BACKEND_URL"; return 0; fi
   log "启动 backend → $BACKEND_URL（日志 $LOG_DIR/backend.log）"
   spawn backend "$BACKEND_DIR" "$LOG_DIR/backend.log" \
-    uv run uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+    uv run uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --no-access-log
   wait_for "$BACKEND_URL/health/live" backend
 }
 

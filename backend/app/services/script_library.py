@@ -105,6 +105,36 @@ def _prompt_versions() -> dict[str, str]:
     }
 
 
+def initial_progress() -> GenerationProgress:
+    """workflow 生成刚启动时的进度投影：全部 pending，首个节点 running。
+
+    不能复用 `legacy_progress`：那是旧合成路径的终态投影，会把 collect/verify
+    直接标成 SUCCEEDED，前端刚点「生成」就看到前两格打勾（假完成）。
+    """
+    return GenerationProgress(
+        status=GenerationStatus.RUNNING,
+        nodes=[
+            NodeProgress(
+                node=node,
+                status=(
+                    GenerationNodeStatus.RUNNING
+                    if node is GenerationNode.COLLECT_MATERIALS
+                    else GenerationNodeStatus.PENDING
+                ),
+            )
+            for node in (
+                GenerationNode.COLLECT_MATERIALS,
+                GenerationNode.VERIFY_MATERIALS,
+                GenerationNode.DIVIDE_EVENTS,
+                GenerationNode.DESIGN_CHARACTERS,
+                GenerationNode.WRITE_SCRIPT,
+                GenerationNode.FINAL_AUDIT,
+                GenerationNode.DESIGN_ASSETS,
+            )
+        ],
+    )
+
+
 def legacy_progress(
     status: str,
     *,
@@ -244,7 +274,7 @@ class ScriptLibrary:
             owner_user_id=script.owner_user_id,
             thread_id=uuid.uuid4().hex,
             status=GenerationStatus.RUNNING.value,
-            progress=legacy_progress("running").model_dump(mode="json"),
+            progress=initial_progress().model_dump(mode="json"),
         )
         async with self._factory() as s:
             s.add(attempt)
@@ -666,6 +696,7 @@ class ScriptLibrary:
                 resume=resume,
                 gate=paused_gate,
                 doubter_events=previous.doubter_events if previous else [],
+                paused_nodes=previous.nodes if previous else None,
             )
         )
         self._tasks[script.id] = task
@@ -683,6 +714,7 @@ class ScriptLibrary:
         resume: GenerationResumeRequest,
         gate: str,
         doubter_events: list[DoubterEvent],
+        paused_nodes: list[NodeProgress] | None,
     ) -> None:
         """闸门恢复执行：断点续跑，终态与首次生成同一落库面。"""
         try:
@@ -692,6 +724,10 @@ class ScriptLibrary:
                 progress_sink=self._attempt_sink(attempt_id, script.id),
                 doubter_events=doubter_events,
             )
+            if paused_nodes is not None:
+                # 播种上一 attempt 已完成的节点状态：跨进程/跨 runner 的闸门
+                # 恢复不把进度面板归零（闸门前的勾不能丢）
+                runner.seed_nodes(paused_nodes)
             final = await runner.resume(
                 thread_id=thread_id,
                 resume_payload=resume.model_dump(mode="json"),

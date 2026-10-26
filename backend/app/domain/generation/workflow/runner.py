@@ -223,6 +223,16 @@ class WorkflowRunner:
             detail="doubter 打回，重做中",
         )
 
+    def seed_nodes(self, nodes: list[NodeProgress]) -> None:
+        """从上一 attempt 落库快照恢复节点状态（闸门恢复，进度不归零）。
+
+        闸门 pause→resume 换了 runner 实例：不播种的话闸门之前的节点会全回
+        pending，前端表现为「进到下一阶段，之前阶段的勾全消失」。resume()
+        随后按闸门位置覆盖「下一步」节点的运行态，两者叠加即完整接续。
+        """
+        for progress in nodes:
+            self._nodes[progress.node] = progress
+
     async def run(self, state: WorkflowState, *, thread_id: str) -> dict[str, Any]:
         """执行图并收集终态；打回耗尽（fail 节点）时异常上抛由调用方兜底。"""
         self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.RUNNING)

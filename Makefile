@@ -68,7 +68,7 @@ dev-status:
 	./scripts/dev.sh status
 
 dev-backend:
-	cd $(BACKEND) && $(PY) uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+	cd $(BACKEND) && $(PY) uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --no-access-log
 
 dev-frontend:
 	cd $(FRONTEND) && npm run dev
