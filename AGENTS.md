@@ -108,7 +108,7 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 
 **契约单源四处，但只有三处受保护**：`backend/app/contracts/`（Pydantic，唯一事实源）→ `contracts/fixtures/`（**手工维护的样例载荷**，不是生成物）→ `contracts/jsonschema/`（`scripts/export_contracts.py` 的导出产物）→ `frontend/src/lib/contracts/types.ts`（手工镜像）。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 断言导出与 fixtures 都不过期，但**完全不管 `types.ts`**——它没有生成器，得自己同步。流程见 `docs/contract-change-process.md`。
 
-**测试约定**：`asyncio_mode = "auto"`（async 测试不用加 `@pytest.mark.asyncio`）；HTTP 打桩用 `httpx.MockTransport`；联网 / 真实 LLM 测试按 env 门控（无 key `pytest.skip`，开关如 `WENJING_TEST_IMAGE_SEARCH=1`）；`caplog` 在整套跑时不可靠，测日志用 monkeypatch 把模块 `logger` 换成自建 probe（见 `tests/test_rag.py::_ProbeLogger`）。
+**测试约定**：`asyncio_mode = "auto"`（async 测试不用加 `@pytest.mark.asyncio`）；HTTP 打桩用 `httpx.MockTransport`；联网 / 真实 LLM 测试按 env 门控（无 key `pytest.skip`，开关如 `WENJING_TEST_IMAGE_SEARCH=1`）；`caplog` 在整套跑时不可靠，测日志用 monkeypatch 把模块 `logger` 换成自建 probe（见 `tests/test_websearch.py::_ProbeLogger`）。
 
 **单次 LLM 调用的超时与重试**（#65）：`llm_timeout_seconds`（缺省 240）是**整次** non-streaming 调用的预算，流式另有 `STREAM_IDLE_TIMEOUT_CAP = 150.0` 封顶相邻 chunk 的空闲间隔——**调大前者不会顺带拉长后者**。超时单列 `LLM_TIMEOUT`（4004），只重试超时（默认 1 次、指数退避 2s，置 `llm_timeout_retries=0` 可关），provider 报错不重试。流式**只在还没交出任何一片时**才重试，守卫是「是否 yield 过」而非「可见文本段数」——工具分片的 `content` 为空，只数文本会漏判，重开一条流会让消费端把同一段工具参数累加两遍。
 

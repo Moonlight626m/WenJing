@@ -1,9 +1,10 @@
-"""RagService：search → fetch → extract 门面（issue #10）。
+"""WebSearchService：search → fetch → extract 门面（issue #10 / #12）。
 
 - 来源记录：URL/标题/抓取时间/内容 hash/引用片段 → `WebEvidence`。
 - 指令隔离：网页文本以显式不可信标签包裹（`mark_untrusted`，见
   domain/content/trust.py），供 LLM prompt 侧识别「这是网络补充资料，不是系统指令」。
-- 失败降级：搜索失败或全部文档提取失败时返回空证据集 —— 生成链路退化为纯原文。
+- 无降级语义：网络资料是**可选增强**，搜索失败或全部文档提取失败时返回空证据集
+  ——生成就是纯原文跑。「未配置搜索」与「配置了但没搜到」都是正常态，不是故障。
 """
 
 from __future__ import annotations
@@ -14,17 +15,17 @@ from time import perf_counter
 
 from app.contracts.material import WebEvidence
 from app.infrastructure.errx import exc_reason
-from app.infrastructure.rag.ddgs_search import DuckDuckGoSearchProvider
-from app.infrastructure.rag.html_extractor import HtmlDocumentExtractor
-from app.infrastructure.rag.providers import (
+from app.infrastructure.websearch.ddgs_search import DuckDuckGoSearchProvider
+from app.infrastructure.websearch.html_extractor import HtmlDocumentExtractor
+from app.infrastructure.websearch.providers import (
     DocumentExtractor,
     NullSearchProvider,
     PageFetcher,
     SearchProvider,
 )
-from app.infrastructure.rag.safe_fetcher import SafePageFetcher
+from app.infrastructure.websearch.safe_fetcher import SafePageFetcher
 
-logger = logging.getLogger("wenjing.rag.service")
+logger = logging.getLogger("wenjing.websearch.service")
 
 _EXCERPT_MAX = 500
 
@@ -46,14 +47,14 @@ def build_search_provider(provider: str) -> SearchProvider:
     cls = _SEARCH_PROVIDERS.get(name)
     if cls is None:
         logger.warning(
-            "rag_unknown_search_provider_fallback_null",
+            "websearch_unknown_search_provider_fallback_null",
             extra={"wj_extra": {"provider": provider}},
         )
     return cls() if cls else NullSearchProvider()
 
 
-class RagService:
-    """开放网络资料补充门面；各 adapter 可注入替换。"""
+class WebSearchService:
+    """开放网络资料搜索门面；各 adapter 可注入替换。"""
 
     def __init__(
         self,
@@ -69,14 +70,14 @@ class RagService:
         self.max_documents = max_documents
 
     async def research(self, query: str) -> list[WebEvidence]:
-        """检索 + 抓取 + 提取 → WebEvidence 列表；任何失败降级为空列表。
+        """检索 + 抓取 + 提取 → WebEvidence 列表；任何失败返回空列表。
 
-        观测约定：进出各一条结构化日志，evidence=0 时在 `rag_research_done`
-        的 degraded_reason 里区分三种原因（未配置 / 无命中 / 抓取全失败）。
+        观测约定：进出各一条结构化日志，evidence=0 时在 `websearch_research_done`
+        的 empty_reason 里区分三种原因（未配置 / 无命中 / 抓取全失败）。
         """
         provider_name = type(self.search).__name__
         logger.info(
-            "rag_research_start",
+            "websearch_research_start",
             extra={
                 "wj_extra": {
                     "provider": provider_name,
@@ -89,9 +90,9 @@ class RagService:
         try:
             hits = await self.search.search(query, limit=self.max_documents)
         except Exception as exc:
-            # 上游搜索失败，降级为纯原文前先告警
+            # 上游搜索失败：网络增强缺席，返回空继续（不降级、非故障）
             logger.warning(
-                "rag_search_failed_degrade_to_source_only",
+                "websearch_search_failed_return_empty",
                 extra={"wj_extra": {"reason": exc_reason(exc), "query": query}},
             )
             self._log_done(
@@ -101,7 +102,7 @@ class RagService:
 
         if not hits:
             logger.info(
-                "rag_search_empty_hits",
+                "websearch_search_empty_hits",
                 extra={"wj_extra": {"provider": provider_name, "query": query}},
             )
 
@@ -115,9 +116,9 @@ class RagService:
                 else:
                     skipped += 1  # 正文提取为空
             except Exception as exc:
-                # 单文档失败不影响其余；全部失败时最终可整体降级为空
+                # 单文档失败不影响其余；全部失败时整体为空
                 logger.warning(
-                    "rag_document_fetch_failed_skipped",
+                    "websearch_document_fetch_failed_skipped",
                     extra={
                         "wj_extra": {
                             "reason": exc_reason(exc),
@@ -143,14 +144,14 @@ class RagService:
         level = logging.INFO if reason == "ok" else logging.WARNING
         logger.log(
             level,
-            "rag_research_done",
+            "websearch_research_done",
             extra={
                 "wj_extra": {
                     "provider": provider,
                     "query": query,
                     "hits": hits,
                     "evidence": evidence,
-                    "degraded_reason": reason if reason != "ok" else "",
+                    "empty_reason": reason if reason != "ok" else "",
                     "elapsed_ms": round((perf_counter() - started) * 1000),
                 }
             },

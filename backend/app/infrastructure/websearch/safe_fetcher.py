@@ -17,8 +17,8 @@ from urllib.parse import urljoin
 import httpx
 
 from app.infrastructure.errx import codes, new, wrap
-from app.infrastructure.rag.network import validate_target
-from app.infrastructure.rag.providers import FetchedPage
+from app.infrastructure.websearch.network import validate_target
+from app.infrastructure.websearch.providers import FetchedPage
 
 ALLOWED_CONTENT_TYPES = (
     "text/html",

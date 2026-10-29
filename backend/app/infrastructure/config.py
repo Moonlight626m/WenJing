@@ -42,9 +42,10 @@ class Settings(BaseSettings):
 
     max_concurrent_llm: int = 5
 
-    # RAG 搜索 provider：null=不搜索（降级为纯原文）；ddgs=DuckDuckGo 网络搜索（无需 key）。
-    # Literal 校验：非法值启动即报错，不静默回落（避免复刻"持续静默降级"）。
-    rag_search_provider: Literal["null", "ddgs"] = "null"
+    # 开放网络搜索 provider（独立的资料补充 infra，与未实现的 RAG 无关）：
+    # null=不搜索（纯原文生成，正常路径非降级）；ddgs=DuckDuckGo（无需 key）。
+    # Literal 校验：非法值启动即报错，不静默回落。
+    web_search_provider: Literal["null", "ddgs"] = "null"
 
     # --- 媒体与对象存储（ADR-0005 / M0 #39 配置项；M1 起接入真实实现）---
     # 存储 provider：null=不落盘空实现；s3=S3 兼容（MinIO 开发 / OSS 生产，M1 #40）。
@@ -79,7 +80,7 @@ class Settings(BaseSettings):
 
     # 检索 provider（M2 #44 接入）。
     media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"
-    # 检索下载安全边界（复用 RAG SSRF/DNS 校验）：连接/读取超时与单图字节上限。
+    # 检索下载安全边界（复用 websearch SSRF/DNS 校验）：连接/读取超时与单图字节上限。
     media_image_search_connect_timeout: float = 5.0
     media_image_search_read_timeout: float = 10.0
     media_image_search_max_bytes: int = 8 * 1024 * 1024

@@ -1,7 +1,7 @@
-"""安全开放网络 RAG 测试（issue #10 验收标准）。
+"""开放网络搜索测试（issue #10 / #12 验收标准）。
 
 无真实网络依赖：DNS/URL 校验为纯函数测试；抓取用 httpx.MockTransport；
-SSRF/重定向/超时/恶意内容/降级均在 mock 层断言。
+SSRF/重定向/超时/恶意内容/失败返回空均在 mock 层断言。
 """
 
 from __future__ import annotations
@@ -14,12 +14,12 @@ from app.domain.content.trust import mark_untrusted
 from app.infrastructure.config import Settings
 from app.infrastructure.errx import Error as WJError
 from app.infrastructure.errx import codes
-from app.infrastructure.rag.ddgs_search import DuckDuckGoSearchProvider
-from app.infrastructure.rag.html_extractor import HtmlDocumentExtractor
-from app.infrastructure.rag.network import is_blocked_ip, validate_target, validate_url_scheme
-from app.infrastructure.rag.providers import FetchedPage, NullSearchProvider, SearchHit
-from app.infrastructure.rag.safe_fetcher import SafePageFetcher
-from app.infrastructure.rag.service import RagService, build_search_provider
+from app.infrastructure.websearch.ddgs_search import DuckDuckGoSearchProvider
+from app.infrastructure.websearch.html_extractor import HtmlDocumentExtractor
+from app.infrastructure.websearch.network import is_blocked_ip, validate_target, validate_url_scheme
+from app.infrastructure.websearch.providers import FetchedPage, NullSearchProvider, SearchHit
+from app.infrastructure.websearch.safe_fetcher import SafePageFetcher
+from app.infrastructure.websearch.service import WebSearchService, build_search_provider
 
 # ===== 1. URL / DNS / IP 封禁校验 =====
 
@@ -186,7 +186,7 @@ def test_mark_untrusted_isolates_web_text():
     assert text in wrapped
 
 
-# ===== 4. RagService 降级 =====
+# ===== 4. WebSearchService 失败返回空 =====
 
 
 class _BoomSearch:
@@ -199,14 +199,14 @@ class _EmptySearch:
         return []
 
 
-async def test_rag_service_degrades_to_empty_on_search_failure():
-    svc = RagService(search_provider=_BoomSearch())
+async def test_websearch_service_returns_empty_on_search_failure():
+    svc = WebSearchService(search_provider=_BoomSearch())
     evidence = await svc.research("背影 朱自清 背景")
     assert evidence == []
 
 
-async def test_rag_service_empty_hits_returns_empty():
-    svc = RagService(search_provider=_EmptySearch())
+async def test_websearch_service_empty_hits_returns_empty():
+    svc = WebSearchService(search_provider=_EmptySearch())
     evidence = await svc.research("query")
     assert evidence == []
 
@@ -247,7 +247,7 @@ async def test_build_search_provider_by_name():
 
 
 async def test_ddgs_provider_maps_hits(monkeypatch):
-    monkeypatch.setattr("app.infrastructure.rag.ddgs_search.DDGS", _FakeDDGS)
+    monkeypatch.setattr("app.infrastructure.websearch.ddgs_search.DDGS", _FakeDDGS)
     provider = DuckDuckGoSearchProvider()
     hits = await provider.search("背影", limit=2)
     assert [h.url for h in hits] == ["https://example.com/a"]
@@ -259,9 +259,9 @@ async def test_ddgs_provider_wraps_failure(monkeypatch):
         def text(self, query: str, *, max_results: int = 5):
             raise RuntimeError("rate limited")
 
-    monkeypatch.setattr("app.infrastructure.rag.ddgs_search.DDGS", _BoomDDGS)
+    monkeypatch.setattr("app.infrastructure.websearch.ddgs_search.DDGS", _BoomDDGS)
     provider = DuckDuckGoSearchProvider()
-    # 失败统一包成 SEARCH_UNAVAILABLE（由 RagService 降级为纯原文）
+    # 失败统一包成 SEARCH_UNAVAILABLE（由 WebSearchService 返回空证据集）
     with pytest.raises(WJError) as exc_info:
         await provider.search("背影")
     assert exc_info.value.code == codes.SEARCH_UNAVAILABLE
@@ -270,32 +270,32 @@ async def test_ddgs_provider_wraps_failure(monkeypatch):
 async def test_build_search_provider_unknown_warns():
     # caplog 在全量套件下可能捕不到（其他测试改动 logging 配置），改为断言调用
     captured: list[tuple] = []
-    import app.infrastructure.rag.service as rag_service_mod
+    import app.infrastructure.websearch.service as websearch_service_mod
 
-    orig = rag_service_mod.logger
+    orig = websearch_service_mod.logger
 
     class _Probe:
         def warning(self, msg, *args, **kwargs):
             captured.append((msg, kwargs))
 
-    rag_service_mod.logger = _Probe()
+    websearch_service_mod.logger = _Probe()
     try:
         build_search_provider("tavily")
     finally:
-        rag_service_mod.logger = orig
-    assert any("rag_unknown_search_provider_fallback_null" in m for m, _ in captured)
+        websearch_service_mod.logger = orig
+    assert any("websearch_unknown_search_provider_fallback_null" in m for m, _ in captured)
 
 
 async def test_settings_rejects_unknown_provider_name():
     with pytest.raises(pydantic.ValidationError):
-        Settings(rag_search_provider="duckduckgo")  # 非法值启动即报错，不静默降级
+        Settings(web_search_provider="duckduckgo")  # 非法值启动即报错，不静默回落
 
 
-# ===== 7. research 可观测日志（provider/命中数/耗时/降级原因） =====
+# ===== 7. research 可观测日志（provider/命中数/耗时/为空原因） =====
 
 
 class _ProbeLogger:
-    """记录 RagService 的 log 调用（caplog 在全量套件下不可靠）。"""
+    """记录 WebSearchService 的 log 调用（caplog 在全量套件下不可靠）。"""
 
     def __init__(self):
         self.calls: list[tuple[str, str, dict]] = []
@@ -320,54 +320,54 @@ class _TwoHitSearch:
         return [SearchHit(url="https://example.com/a", title="a", snippet="")] * 2
 
 
-def _patch_rag_logger(monkeypatch, probe: _ProbeLogger):
-    monkeypatch.setattr("app.infrastructure.rag.service.logger", probe)
+def _patch_websearch_logger(monkeypatch, probe: _ProbeLogger):
+    monkeypatch.setattr("app.infrastructure.websearch.service.logger", probe)
 
 
 async def test_research_logs_start_and_done_ok(monkeypatch):
     probe = _ProbeLogger()
-    _patch_rag_logger(monkeypatch, probe)
-    svc = RagService(search_provider=_TwoHitSearch())
+    _patch_websearch_logger(monkeypatch, probe)
+    svc = WebSearchService(search_provider=_TwoHitSearch())
     evidence = await svc.research("背影")
     assert len(evidence) == 2
 
     levels = [msg for lvl, msg, _ in probe.calls]
-    assert levels == ["rag_research_start", "rag_research_done"]
+    assert levels == ["websearch_research_start", "websearch_research_done"]
     start = probe.calls[0][2]
     done = probe.calls[1][2]
     assert start["provider"] == "_TwoHitSearch"
     assert done["hits"] == 2 and done["evidence"] == 2
-    assert done["degraded_reason"] == ""  # ok 路径不标降级
+    assert done["empty_reason"] == ""  # ok 路径不为空
     assert isinstance(done["elapsed_ms"], int)
 
 
 async def test_research_done_reasons_distinguish_empty_paths(monkeypatch):
     probe = _ProbeLogger()
-    _patch_rag_logger(monkeypatch, probe)
+    _patch_websearch_logger(monkeypatch, probe)
     # 未配置搜索（Null 恒空）→ no_hits，provider 名可见
-    await RagService(search_provider=NullSearchProvider()).research("q")
+    await WebSearchService(search_provider=NullSearchProvider()).research("q")
     done = probe.calls[-1][2]
-    assert done["provider"] == "NullSearchProvider" and done["degraded_reason"] == "no_hits"
+    assert done["provider"] == "NullSearchProvider" and done["empty_reason"] == "no_hits"
 
     # 搜索成功但全部抓取失败 → all_fetch_failed
     probe2 = _ProbeLogger()
-    _patch_rag_logger(monkeypatch, probe2)
+    _patch_websearch_logger(monkeypatch, probe2)
 
     class _BlockedFetcher:
         async def fetch(self, url):
             raise RuntimeError("blocked")
 
-    svc = RagService(search_provider=_TwoHitSearch(), fetcher=_BlockedFetcher())
+    svc = WebSearchService(search_provider=_TwoHitSearch(), fetcher=_BlockedFetcher())
     await svc.research("背影")
     done = probe2.calls[-1][2]
     assert done["hits"] == 2 and done["evidence"] == 0
-    assert done["degraded_reason"] == "all_fetch_failed"
+    assert done["empty_reason"] == "all_fetch_failed"
 
 
 async def test_research_done_provider_error_level_is_warning(monkeypatch):
     probe = _ProbeLogger()
-    _patch_rag_logger(monkeypatch, probe)
-    await RagService(search_provider=_BoomSearch()).research("背影")
+    _patch_websearch_logger(monkeypatch, probe)
+    await WebSearchService(search_provider=_BoomSearch()).research("背影")
     assert probe.calls[-1][0] == "WARNING"
-    assert probe.calls[-1][1] == "rag_research_done"
-    assert probe.calls[-1][2]["degraded_reason"] == "provider_error"
+    assert probe.calls[-1][1] == "websearch_research_done"
+    assert probe.calls[-1][2]["empty_reason"] == "provider_error"

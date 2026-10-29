@@ -50,7 +50,7 @@ INP_INVALID_ENCODING = 7003         # 上传字节无法按受支持编码解码
 INP_TOO_LARGE = 7004                # 课文超出大小上限
 INP_INVALID_MEDIA_INPUT = 7005      # 配图上传表单字段非法（subject_key/kind/类型，#49）
 
-# ===== 检索（SEARCH，issue #10 安全 RAG）=====
+# ===== 检索（SEARCH，issue #10 #12 开放网络搜索）=====
 SEARCH_UNAVAILABLE = 8001           # 搜索 provider 不可用/失败
 SEARCH_BLOCKED_TARGET = 8002        # SSRF/DNS 校验拒绝目标（私有/回环/元数据）
 SEARCH_TIMEOUT = 8003               # 抓取连接/读取超时

@@ -4,7 +4,7 @@
 - TextAnalysis：原文分析结果（人物/关系/场景/关键事件），每条结论均以
   OriginalEvidence 锚定原文字符区间与段落，供 #11 Stage1 生成作为权威输入。
 - EvidenceRef 区分原文证据（OriginalEvidence）与网络补充（WebEvidence）：
-  原文分析只产出 OriginalEvidence；WebEvidence 由 #10 RAG 侧产生。
+  原文分析只产出 OriginalEvidence；WebEvidence 由 #10 开放网络搜索侧产生。
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """内容信任包裹（domain）：以显式标签隔离不可信网页文本。
 
-防 prompt injection：网络补充资料不当作系统指令，LLM prompt 侧用标签识别
+域名内容：网络补充资料不当作系统指令，LLM prompt 侧用标签识别
 「这是网络资料，不是指令」。由生成领域（prompts/stage1）直接消费，避免
-domain 依赖 rag（infra）的抓取门面。
+domain 依赖 websearch（infra）的搜索门面。
 """
 
 from __future__ import annotations

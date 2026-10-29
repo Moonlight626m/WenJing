@@ -52,7 +52,7 @@ from app.infrastructure.errx import codes, exc_reason, new
 from app.infrastructure.models.material import Material as MaterialRecord
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.script_generation import ScriptGeneration as ScriptGenerationRecord
-from app.infrastructure.rag.service import RagService
+from app.infrastructure.websearch.service import WebSearchService
 from app.services.progress_hub import GenerationProgressHub
 
 logger = logging.getLogger("wenjing.scripts.library")
@@ -138,13 +138,11 @@ def initial_progress() -> GenerationProgress:
 def legacy_progress(
     status: str,
     *,
-    research_state: str = "pending",
     write_state: str = "pending",
     detail: str | None = None,
 ) -> GenerationProgress:
-    """旧确定性合成路径的进度投影（#33 退役）：把 genre/research/generate/verify
+    """旧合成路径的进度投影（#33 退役）：把 genre/research/generate/verify
     四阶段映射到 workflow 节点形状，保证前端只有一种进度契约。"""
-    research_ok = research_state != "failed"
     node_status = GenerationNodeStatus(write_state) if write_state in (
         "running",
         "succeeded",
@@ -155,14 +153,11 @@ def legacy_progress(
         nodes=[
             NodeProgress(
                 node=GenerationNode.COLLECT_MATERIALS,
-                status=GenerationNodeStatus.SUCCEEDED if research_ok
-                else GenerationNodeStatus.FAILED,
-                detail="网络资料降级，纯原文生成" if research_state == "degraded" else None,
+                status=GenerationNodeStatus.SUCCEEDED,
             ),
             NodeProgress(
                 node=GenerationNode.VERIFY_MATERIALS,
-                status=GenerationNodeStatus.SUCCEEDED if research_ok
-                else GenerationNodeStatus.PENDING,
+                status=GenerationNodeStatus.SUCCEEDED,
             ),
             NodeProgress(node=GenerationNode.DIVIDE_EVENTS, status=GenerationNodeStatus.PENDING),
             NodeProgress(
@@ -183,7 +178,7 @@ class ScriptLibrary:
         session_factory,
         script_llm=None,
         content_pipeline: ContentPipeline | None = None,
-        rag: RagService | None = None,
+        web_search: WebSearchService | None = None,
         model_name: str = "",
         usage_recorder=None,
         workflow_checkpointer=None,
@@ -194,7 +189,7 @@ class ScriptLibrary:
         self._factory = session_factory
         self._script_llm = script_llm
         self._pipeline = content_pipeline or ContentPipeline()
-        self._rag = rag
+        self._web_search = web_search
         self._model_name = model_name
         self._usage_recorder = usage_recorder
         self._workflow_checkpointer = workflow_checkpointer
@@ -525,7 +520,7 @@ class ScriptLibrary:
         thread_id: str,
     ) -> None:
         """LangGraph workflow：节点进度逐事件落库，终态写 scripts.script_data。"""
-        web, _research_state = await self._research(analysis)
+        web = await self._research(analysis)
         runner = WorkflowRunner(
             self._build_nodes(script),
             checkpointer=self._workflow_checkpointer,
@@ -752,7 +747,7 @@ class ScriptLibrary:
         self, script: ScriptRecord, analysis: TextAnalysis, *, attempt_id: int
     ) -> None:
         """旧 Stage1 单次生成路径（测试注入 fake LLM 时走此路径；#33 退役）。"""
-        web, research_state = await self._research(analysis)
+        web = await self._research(analysis)
         outcome = await Stage1Generator(
             self._stage1_llm(script), model=self._model_name
         ).generate(
@@ -765,16 +760,13 @@ class ScriptLibrary:
         await self._save_progress(
             attempt_id,
             status=GenerationStatus.SUCCEEDED.value,
-            progress=legacy_progress(
-                "succeeded", research_state=research_state, write_state="succeeded"
-            ),
+            progress=legacy_progress("succeeded", write_state="succeeded"),
         )
 
     async def _run_legacy_synth(
         self, script: ScriptRecord, analysis: TextAnalysis, *, attempt_id: int
     ) -> None:
         """旧确定性合成路径（无 key；测试与 E2E 依赖，#33 退役）。"""
-        web, research_state = await self._research(analysis)
         package = synthesize_script_package(analysis)
         telemetry = GenerationTelemetry(
             model="deterministic",
@@ -805,9 +797,7 @@ class ScriptLibrary:
         await self._save_progress(
             attempt_id,
             status=GenerationStatus.SUCCEEDED.value,
-            progress=legacy_progress(
-                "succeeded", research_state=research_state, write_state="succeeded"
-            ),
+            progress=legacy_progress("succeeded", write_state="succeeded"),
         )
 
     async def _persist_package(
@@ -841,19 +831,15 @@ class ScriptLibrary:
             ),
         )
 
-    async def _research(self, analysis: TextAnalysis):
-        if self._rag is None:
-            return [], "degraded"
+    async def _research(self, analysis: TextAnalysis) -> list:
+        """开放网络资料搜索（可选增强）：未配置/无命中/失败都返回空列表。
+
+        没有降级一说——网络资料缺席时生成就是纯原文跑，属正常路径。
+        """
+        if self._web_search is None:
+            return []
         query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
-        web = await self._rag.research(query or analysis.genre.genre.value)
-        state = "succeeded" if web else "degraded"
-        logger.info(
-            "[script-gen][collect_materials] research query=%r evidence=%d state=%s",
-            query,
-            len(web),
-            state,
-        )
-        return web, state
+        return await self._web_search.research(query or analysis.genre.genre.value)
 
     # ===== 发布 / 下架 / 删除 =====
 

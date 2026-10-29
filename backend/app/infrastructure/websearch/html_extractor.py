@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from html import unescape
 
-from app.infrastructure.rag.providers import ExtractedDocument, FetchedPage
+from app.infrastructure.websearch.providers import ExtractedDocument, FetchedPage
 
 _SCRIPT_STYLE_RE = re.compile(
     r"(?is)<(script|style|noscript|template)\b[^>]*>.*?</\1\s*>"

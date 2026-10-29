@@ -162,7 +162,7 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 ## 当前状态
 
 核心 MVP 已完成（规划 #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
-导入/体裁/证据、安全 RAG、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
+导入/体裁/证据、安全开放网络搜索、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
 前端全流程与生产化加固。多用户化（ADR-0002 / #16）已完成（#17–#26）：账号后端、
 鉴权隔离、教师创作 API、学生游玩 API、用量计量、账号/教师/学生端 UI、运营后台 UI、
 文档收尾。剧本生成 workflow（ADR-0003，#27–#36）与**场景视觉化与多媒体**

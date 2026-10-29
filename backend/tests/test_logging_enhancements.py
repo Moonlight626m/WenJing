@@ -186,7 +186,7 @@ def test_scripts_llm_fallback_logs_warning():
     class _StubSettings:
         llm_api_key = "sk-test"
         llm_model = ""
-        rag_search_provider = "null"
+        web_search_provider = "null"
         # #48 后 ScriptLibrary 的 scene_designer 经 lambda 延迟构建，
         # 构造期不再触碰媒体配置；stub 无需 media_* 属性（与上面那条不同：
         # session_application 会在构造期装配配图调度，所以那边必须给）。
@@ -209,20 +209,20 @@ def test_scripts_llm_fallback_logs_warning():
     assert "script_llm_build_failed_fallback_degraded" in cap.text
 
 
-def test_rag_search_failure_logs_warning():
-    from app.infrastructure.rag.service import RagService
+def test_websearch_failure_logs_warning_and_returns_empty():
+    from app.infrastructure.websearch.service import WebSearchService
 
     class _BoomSearch:
         async def search(self, query, limit=3):
             raise RuntimeError("network down")
 
-    svc = RagService(search_provider=_BoomSearch())
-    cap = _capture("wenjing.rag.service")
+    svc = WebSearchService(search_provider=_BoomSearch())
+    cap = _capture("wenjing.websearch.service")
     try:
         import asyncio
 
         evidence = asyncio.run(svc.research("背影"))
         assert evidence == []
     finally:
-        _release("wenjing.rag.service", cap)
-    assert "rag_search_failed_degrade_to_source_only" in cap.text
+        _release("wenjing.websearch.service", cap)
+    assert "websearch_search_failed_return_empty" in cap.text

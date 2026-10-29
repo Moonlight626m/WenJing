@@ -59,3 +59,13 @@ MVP 不绑定任何真实搜索 API（避免引入第三方 key 与配额）。�
   生成链路永远有确定性兜底。
 - 负向：MVP 无真实网络增强（搜索结果恒为空）；DNS rebinding 有理论残余风险；
   网页解析为正则级（非 DOM 级），对复杂页面提取质量有限。
+
+> 实现注记（2026-10-26，RAG/websearch 解耦时修订措辞，不改变上述决策）：
+> - 本 ADR 标题里的「RAG」实为**开放网络搜索**（search → fetch → extract）的选型，
+>   与「RAG」（本地语料检索增强）是两套独立 infra；后者至今未实现，也不因此
+>   建占位 stub。实现包已更名为 `app/infrastructure/websearch/`
+>   （`RagService` → `WebSearchService`），配置键 `WENJING_RAG_SEARCH_PROVIDER`
+>   → `WENJING_WEB_SEARCH_PROVIDER`。
+> - 「降级」随之收回：网络资料是**可选增强**，未配置 / 无命中 / provider 失败 /
+>   抓取全失败统一返回空证据集，纯原文生成本来就是正常路径，不存在「降级态」。
+>   §5 保留原文仅作历史。

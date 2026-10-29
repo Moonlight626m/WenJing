@@ -1,7 +1,7 @@
 """DuckDuckGoSearchProvider：基于 ddgs 的真实网络搜索 adapter（无需 API key）。
 
 - ddgs 是同步库，用 `asyncio.to_thread` 执行避免阻塞事件循环；
-- 任何失败统一抛 SEARCH_UNAVAILABLE，由 RagService 按既有约定降级为纯原文；
+- 任何失败统一抛 SEARCH_UNAVAILABLE，由 WebSearchService 返回空证据集继续；
 - 命中 URL 之后由 SafePageFetcher 做同样的 SSRF/DNS 安全校验，本模块不做二次校验。
 """
 
@@ -13,7 +13,7 @@ from typing import Any
 from ddgs import DDGS
 
 from app.infrastructure.errx import codes, wrap
-from app.infrastructure.rag.providers import SearchHit
+from app.infrastructure.websearch.providers import SearchHit
 
 DEFAULT_SEARCH_TIMEOUT = 15
 

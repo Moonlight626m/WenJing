@@ -1,8 +1,8 @@
 """开放版权图库检索共用工具（ADR-0005 §6，issue #44）。
 
-- 复用 RAG 的安全抓取器 `SafePageFetcher`（SSRF/DNS 校验、逐跳重定向复核、
+- 复用 websearch 的安全抓取器 `SafePageFetcher`（SSRF/DNS 校验、逐跳重定向复核、
   超时、content-type 白名单、响应体上限），仅替换 content-type 白名单与错误码段；
-  不再另写一套抓取循环。
+  不再另写一套抓取循环。（adapters 按 infra 包复用，与未实现的 RAG 无关。）
 - 检索/下载失败统一抛 `MEDIA_SEARCH_*`，由上层（SceneDesigner #47）降级为回退生成。
 """
 
@@ -13,7 +13,7 @@ from collections.abc import Callable
 import httpx
 
 from app.infrastructure.errx import codes
-from app.infrastructure.rag.safe_fetcher import SafePageFetcher
+from app.infrastructure.websearch.safe_fetcher import SafePageFetcher
 
 ALLOWED_IMAGE_TYPES = (
     "image/jpeg",

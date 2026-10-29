@@ -298,8 +298,8 @@ class _FailingSearch:
         raise new(codes.SEARCH_UNAVAILABLE, extra={"reason": "provider down"})
 
 
-async def test_search_failure_degrades_to_original_text():
-    from app.infrastructure.rag.service import RagService
+async def test_search_failure_returns_empty_evidence():
+    from app.infrastructure.websearch.service import WebSearchService
 
-    svc = RagService(search_provider=_FailingSearch())
+    svc = WebSearchService(search_provider=_FailingSearch())
     assert await svc.research("买药") == []

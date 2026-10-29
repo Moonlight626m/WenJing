@@ -1,10 +1,10 @@
-"""RAG 三 adapter 契约（issue #10 验收标准 1）。
+"""网络搜索三 adapter 契约（issue #10 验收标准 1）。
 
 纯契约 + 数据结构，零基础设施依赖（不 import httpx/agents/llm）。
 首个实现：
-- SearchProvider → `NullSearchProvider`（默认空结果，触发降级；真实 provider 待 ADR 选型接入）
-- PageFetcher → `app.infrastructure.rag.safe_fetcher.SafePageFetcher`
-- DocumentExtractor → `app.infrastructure.rag.html_extractor.HtmlDocumentExtractor`
+- SearchProvider → `NullSearchProvider`（默认空结果 = 显式不搜索；真实 provider 待 ADR 选型接入）
+- PageFetcher → `app.infrastructure.websearch.safe_fetcher.SafePageFetcher`
+- DocumentExtractor → `app.infrastructure.websearch.html_extractor.HtmlDocumentExtractor`
 """
 
 from __future__ import annotations

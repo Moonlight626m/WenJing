@@ -36,8 +36,8 @@ from app.infrastructure.media import (
     build_tts,
     build_voice_map,
 )
-from app.infrastructure.rag.service import RagService, build_search_provider
 from app.infrastructure.usage import UsageRecorder
+from app.infrastructure.websearch.service import WebSearchService, build_search_provider
 from app.services.admin import AdminService
 from app.services.assets import AssetAccessService
 from app.services.auth import AuthService
@@ -234,9 +234,9 @@ class Container:
             self._script_library = ScriptLibrary(
                 session_factory=self.session_factory,
                 script_llm=script_llm,
-                rag=RagService(
+                web_search=WebSearchService(
                     search_provider=build_search_provider(
-                        self.settings.rag_search_provider
+                        self.settings.web_search_provider
                     )
                 ),
                 model_name=self.settings.llm_model,
