@@ -161,10 +161,11 @@ class Container:
         pool = None
         try:
             from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-            from psycopg_pool import AsyncConnectionPool
+
+            from app.infrastructure.checkpoint import saver_pool
 
             conninfo = self.settings.database_url.replace("+asyncpg", "")
-            pool = AsyncConnectionPool(conninfo=conninfo, open=False, min_size=1)
+            pool = saver_pool(conninfo)
             saver = AsyncPostgresSaver(pool)
             await pool.open()
             await saver.setup()

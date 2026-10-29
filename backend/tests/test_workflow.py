@@ -326,9 +326,10 @@ async def test_dossier_with_web_claims_survives_checkpoint_write() -> None:
             return await super().chat(messages, session_id=session_id, purpose=purpose)
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg_pool import AsyncConnectionPool
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.infrastructure.checkpoint import saver_pool
 
     db_url = os.environ.get(
         "WENJING_DATABASE_URL",
@@ -344,7 +345,7 @@ async def test_dossier_with_web_claims_survives_checkpoint_write() -> None:
         await engine.dispose()
 
     conninfo = db_url.replace("+asyncpg", "")
-    pool = AsyncConnectionPool(conninfo=conninfo, open=False, min_size=1)
+    pool = saver_pool(conninfo)
     try:
         saver = AsyncPostgresSaver(pool)
         await pool.open()
