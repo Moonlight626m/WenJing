@@ -49,6 +49,43 @@ jobs:
       - run: uv run alembic upgrade head
       - run: uv run pytest -q
 
+  version-bump:
+    # push dev 时按 commit 实际改动自动 bump 应用版本号并提交（仅代码仓库，不产镜像）：
+    # backend 代码 → pyproject.toml（uv version 同步 uv.lock）；frontend 代码 → package.json
+    # （npm version 同步 package-lock.json）。契约版本 CONTRACTS_SCHEMA_VERSION 不自动 bump
+    # ——按 docs/contract-change-process.md 需评审定级（minor/breaking），只在改动时留提示。
+    name: Version bump (push dev)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [backend, frontend]
+    permissions:
+      contents: write
+    outputs:
+      bumped: ${{ steps.bump.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 全量历史：github.event.before 是上一个 dev tip，浅克隆（depth 2）在多
+          # commit push 时会丢对象，漏比对中间 commit 的改动导致漏 bump。
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: astral-sh/setup-uv@v5
+      - id: bump
+        run: .github/scripts/bump_version.sh "${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+      - name: Commit bumped version
+        if: steps.bump.outputs.bumped == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/pyproject.toml backend/uv.lock frontend/package.json frontend/package-lock.json
+          git commit -m "chore(release): 自动版本号 bump 至 backend $(grep -m1 '^version' backend/pyproject.toml | cut -d'"' -f2) / frontend $(node -p "require('./frontend/package.json').version") [skip ci]"
+          # 质量门最长约 20 分钟，期间 dev 可能有新 push：rebase 后再推，防 non-fast-forward
+          git pull --rebase origin dev
+          git push
+
   frontend:
     name: Frontend (lint + tsc + build)
     runs-on: ubuntu-latest
