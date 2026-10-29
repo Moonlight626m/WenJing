@@ -49,8 +49,13 @@ test("super_admin 看板：剧本库 + 用量聚合 + 筛选 + 无写入口", as
   expect(onlyStage1).toBeLessThanOrEqual(stage1Rows);
   await expect(usageSection.getByText("合计（当前筛选）")).toBeVisible();
 
-  // 无任何写操作入口：看板正文没有按钮（筛选均为 select/input）
-  await expect(page.locator("main").getByRole("button")).toHaveCount(0);
+  // 无任何写操作入口：正文按钮只有日期筛选的两个呼出钮（1bad0c4 起，
+  // 原生 date input 隐藏、由可见按钮 showPicker()；按钮的 accessible name
+  // 为空——可访问名落在内层的 textbox 上），其余筛选为 select/input。
+  // 数量收口为 2 即「除筛选呼出外无任何按钮」，写入口为零。
+  await expect(page.locator("main").getByRole("button")).toHaveCount(2);
+  await expect(page.locator("main").getByLabel("起始日期")).toHaveCount(1);
+  await expect(page.locator("main").getByLabel("截止日期")).toHaveCount(1);
 });
 
 test("非 super_admin 与未登录无法进入运营后台", async ({ page }) => {
