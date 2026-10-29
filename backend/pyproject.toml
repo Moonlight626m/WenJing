@@ -1,6 +1,6 @@
 [project]
 name = "wenjing-backend"
-version = "0.1.0"
+version = "0.1.1"
 description = "文境 (Wenjing) backend — 语文课文情景演绎 multi-agent 平台"
 readme = "README.md"
 authors = [
