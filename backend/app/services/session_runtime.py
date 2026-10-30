@@ -690,6 +690,8 @@ class SessionApplication:
             "last_sequence": state.last_sequence,
             "plot_log": state.plot_context.get("plot_log", []),
             "player_role": state.plot_context.get("player_role"),
+            # 续写目标（从活动分支事件派生）：重连即恢复目标与达成状态
+            "stage3_goals": [g.model_dump(mode="json") for g in state.stage3_goals],
             # 场景切换背景（#53）：稳定引用 + 键 + 标题，前端据此签 URL / 判淡入
             "scene_key": state.scene_key,
             "scene_title": state.scene_title,

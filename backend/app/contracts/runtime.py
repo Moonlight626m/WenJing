@@ -22,6 +22,9 @@ class OptionItem(VersionedContract):
 
     option_id: str
     label: str
+    # 提议这一项的角色名：还原阶段的选项来自各角色的提议，前端据此标出「谁的主意」。
+    # 系统给的选项（进入续写 / 到此结束）为 None。
+    proposed_by: str | None = None
 
 
 class ActiveInteraction(VersionedContract):
@@ -46,7 +49,11 @@ class ActiveInteraction(VersionedContract):
 
 
 class Stage3Goal(VersionedContract):
-    """Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。"""
+    """Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。
+
+    进入续写时由编剧 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件
+    （`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。
+    """
 
     goal_id: int
     description: str

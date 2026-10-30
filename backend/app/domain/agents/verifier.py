@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from app.contracts.enums import UsagePurpose
+from app.domain.game.goals import GoalState, parse_achieved
 from app.domain.game.types import Proposal, Rejection, VerificationResult
 from app.domain.llm import LLMService
 
@@ -48,6 +49,47 @@ class VerifierAgent:
             score=score,
             rejections=rejections,
         )
+
+
+    async def judge_stage3_goals(
+        self,
+        goals: list[GoalState],
+        *,
+        player_role: str | None,
+        action: str,
+        reactions: list[tuple[str, str]],
+    ) -> tuple[list[int], str]:
+        """判定这一轮之后哪些续写目标已经达成，返回 (目标编号, 一句理由)。
+
+        只看还没达成的目标。LLM 失败或输出无法解析时视为本轮没有达成——宁可少判，
+        不让续写被一次异常输出提前收掉。
+        """
+        pending = [g for g in goals if not g.achieved]
+        if not pending:
+            return [], ""
+        listing = "\n".join(f"{g.goal_id}. {g.description}" for g in pending)
+        said = "\n".join(f"{name}：{text}" for name, text in reactions) or "（无人回应）"
+        try:
+            raw = await self.llm.chat(
+                [
+                    {"role": "system", "content": "你是验证 Agent，判断续写目标是否已经达成。"},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"未达成的续写目标：\n{listing}\n\n"
+                            f"这一轮学生（扮演{player_role or '某角色'}）的行动：{action}\n"
+                            f"各角色的回应：\n{said}\n\n"
+                            "只依据这一轮实际发生的内容，判断哪些目标已经达成；没有把握就不算。"
+                            '只输出 JSON：{"achieved": [目标编号], "reason": "一句话说明"}'
+                        ),
+                    },
+                ],
+                purpose=UsagePurpose.VERIFY,
+            )
+        except Exception:
+            logger.warning("goal_judge_degraded", extra={"pending": len(pending)})
+            return [], ""
+        return parse_achieved(raw, {g.goal_id for g in pending})
 
 
 def _parse_verdict(raw: str) -> tuple[str, float]:

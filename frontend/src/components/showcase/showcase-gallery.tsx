@@ -22,6 +22,7 @@ import { AppHeader } from "@/components/auth/app-header";
 import { EndingPanel } from "@/components/ending-card";
 import { GameHud } from "@/components/game-hud";
 import { GameScreen } from "@/components/game-screen";
+import { GoalTracker } from "@/components/goal-tracker";
 import { RoleCard } from "@/components/role-card";
 import { GameStage } from "@/components/game-stage";
 import { Skeleton, SkeletonCard } from "@/components/skeleton";
@@ -53,6 +54,7 @@ import {
   SCRIPT_PACKAGE,
   SESSIONS,
   SQUARE_SCRIPTS,
+  STAGE3_GOALS,
   STREAMS,
   USER_ADMIN,
   USER_STUDENT,
@@ -147,7 +149,8 @@ function useStageFixture() {
       scriptTitle: SCRIPT_PACKAGE.title,
       playableRoles: SCRIPT_PACKAGE.playable_roles,
       characters: SCRIPT_PACKAGE.characters,
-      sceneKey: "scene-1",
+      scenes: SCRIPT_PACKAGE.scenes,
+      sceneKey: "scene:1",
       sceneTitle: "月下刺猹",
       messages: MESSAGES,
       streams: STREAMS,
@@ -168,6 +171,7 @@ function useStageFixture() {
         stage: "init",
         playerRole: null,
         characters: [],
+        scenes: [],
         messages: [],
         streams: [],
         interaction: null,
@@ -543,8 +547,20 @@ export function ShowcaseGallery() {
                     scriptTitle={SCRIPT_PACKAGE.title}
                     playerRole="我"
                     messages={MESSAGES}
+                    goals={STAGE3_GOALS}
                     onReview={() => {}}
                   />
+                </MotionRoot>
+              </div>
+            </Specimen>
+
+            <Specimen
+              title="续写目标"
+              note="进入续写时由编剧定下，每轮判定达成；全部达成即收束。点标题可收起"
+            >
+              <div data-surface="stage" className="bg-canvas p-6">
+                <MotionRoot>
+                  <GoalTracker goals={STAGE3_GOALS} />
                 </MotionRoot>
               </div>
             </Specimen>

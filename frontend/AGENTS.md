@@ -67,7 +67,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 `components/game-screen.tsx` 是整块舞台：顶栏 `GameHud` → 左列是舞台视口（`StageFigures`
 立绘层 + `CastDock` 头像组 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel`
-剧情回顾（「剧情」页 = 消息流 + 回溯栏，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
+剧情回顾（「剧情」页 = 消息流 + 回溯栏，「原文」页 = 课文对照，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
 结局卡 `EndingCard` 浮在最上层。
 
 - **立绘按「全身立绘 → 头像 → 竖排名牌」降级**；台上最多三人，取最近开口的
@@ -84,8 +84,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **特效档位**：`uiStore.effects`（本机 localStorage 记住），`useEffectsLevel()` 取实际档位，
   系统「减少动态效果」时强制简洁。简洁档下粒子、视差、墨晕不渲染，CSS 循环停住，毛玻璃
   换成不模糊的实底（`[data-effects="lite"]`）。档位写在 `GameScreen` 与选角页的根节点上。
-- **续写目标还没有数据**：契约里有 `stage3_goals`，但后端投影写死为空、`session_init`
-  也不下发，前端暂不展示。
+- **续写目标**（`GoalTracker`）只在续写阶段与终局出现。目标快照随 `session_init` 与三类
+  系统消息（定下目标、达成目标、回溯）的 `payload.stage3_goals` 下发，store 见到就整份替换
+  （`asGoals`）；回溯消息也带快照，回到续写之前会清空。
+- **剧情回顾的「原文」页**只列已经演到的场景（`scene:{id}` 定位当前场景），还没演到的课文
+  不提前展示；续写与终局时全部展开。`paragraph_index` 从 0 起，显示时加 1。
+- **选项的 `proposed_by`** 标出「谁的主意」；系统选项（进入续写 / 到此结束）为 null。
 
 ### 字体
 

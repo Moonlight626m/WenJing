@@ -214,6 +214,12 @@ function InteractionBody({
                     </kbd>
                   )}
                   <span className="min-w-0 flex-1">{opt.label}</span>
+                  {/* 还原阶段的选项是各角色的提议：标出是谁的主意，学生会去想他为什么这么做 */}
+                  {opt.proposed_by && (
+                    <span className="shrink-0 self-start rounded-full border border-glow-gold/30 px-2 py-0.5 font-sans text-2xs text-glow-gold">
+                      {opt.proposed_by}的主意
+                    </span>
+                  )}
                 </m.button>
               </m.li>
             );

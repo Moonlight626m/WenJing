@@ -13,10 +13,13 @@ import { CastDock } from "@/components/cast-dock";
 import { EndingCard } from "@/components/ending-card";
 import { GameHud } from "@/components/game-hud";
 import { GameStage } from "@/components/game-stage";
+import { GoalTracker } from "@/components/goal-tracker";
 import { InteractionCard } from "@/components/interaction-card";
+import { sceneHasOriginal, sceneIdOf } from "@/components/original-text-panel";
 import { StageFigures } from "@/components/stage-figures";
 import { SubtitleTrack } from "@/components/subtitle-track";
 import { TranscriptPanel, type TranscriptTab } from "@/components/transcript-panel";
+import { BookIcon } from "@/components/ui/icons";
 import { MotionRoot } from "@/components/ui/motion-root";
 
 /**
@@ -48,6 +51,8 @@ export function GameScreen() {
   const sceneKey = useGameStore((s) => s.sceneKey);
   const sceneTitle = useGameStore((s) => s.sceneTitle);
   const currentAsset = useGameStore((s) => s.currentAsset);
+  const scenes = useGameStore((s) => s.scenes);
+  const stage3Goals = useGameStore((s) => s.stage3Goals);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
   const speaking = useSpeakingSpeakers();
@@ -68,6 +73,14 @@ export function GameScreen() {
 
   const cast = stageCast(messages, streams);
   const listed = listedCharacters(characters, playableRoles);
+  const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
+  const showGoals =
+    stage3Goals.length > 0 && (stage === "stage3_extending" || stage === "ended");
+
+  function openTranscript(next: TranscriptTab) {
+    setTab(next);
+    setUserOpen(true);
+  }
 
   return (
     <MotionRoot>
@@ -104,6 +117,21 @@ export function GameScreen() {
                   active={cast.active}
                   speaking={speaking}
                 />
+                {showGoals && (
+                  <div className="absolute top-16 left-3 z-20">
+                    <GoalTracker goals={stage3Goals} />
+                  </div>
+                )}
+                {sceneHasOriginal(currentScene) && (
+                  <button
+                    type="button"
+                    onClick={() => openTranscript("text")}
+                    className="absolute top-3 right-3 z-20 flex items-center gap-1.5 rounded-full border border-glass-edge bg-glass px-3 py-1.5 text-xs text-ink-soft backdrop-blur-md transition-[color,box-shadow] hover:text-glow-gold hover:shadow-[0_0_16px_-4px_var(--wj-glow-gold)]"
+                  >
+                    <BookIcon />
+                    对照原文
+                  </button>
+                )}
                 {messages.length === 0 && streams.length === 0 && (
                   <p className="absolute inset-0 grid place-items-center text-sm text-ink-faint">
                     等待剧情开始…
@@ -131,12 +159,7 @@ export function GameScreen() {
         </GameStage>
 
         <ActCurtain />
-        <EndingCard
-          onReview={() => {
-            setTab("story");
-            setUserOpen(true);
-          }}
-        />
+        <EndingCard onReview={() => openTranscript("story")} />
       </div>
     </MotionRoot>
   );

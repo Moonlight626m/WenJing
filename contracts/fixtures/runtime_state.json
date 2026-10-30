@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.7.0",
+  "schema_version": "2.8.0",
   "session_id": "0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910",
   "branch_id": "2b3c4d5e-6f70-4819-a2b3-c4d5e6f70819",
   "last_sequence": 7,
@@ -28,7 +28,8 @@
     "options": [
       {
         "option_id": "opt_stop_him",
-        "label": "拦住他说：爸爸，我自己去买"
+        "label": "拦住他说：爸爸，我自己去买",
+        "proposed_by": "儿子"
       },
       {
         "option_id": "opt_watch_silently",
@@ -41,7 +42,7 @@
   "scene_key": "scene:1",
   "scene_title": "渡口",
   "current_asset": {
-    "schema_version": "2.7.0",
+    "schema_version": "2.8.0",
     "asset_id": "8a1d5f2b-6c3e-4d90-a2b7-5e9f0c1d8a44",
     "kind": "background",
     "status": "ready"

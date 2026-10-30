@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.7.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.8.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -61,7 +61,9 @@ export type EventType =
   | "agent_reactions_done"
   | "stage_transitioned"
   | "rollback_executed"
-  | "asset_ready";
+  | "asset_ready"
+  | "stage3_goals_set"
+  | "stage3_goal_achieved";
 
 export type ErrorDomain =
   | "input"
@@ -634,6 +636,8 @@ export interface DomainEvent {
 export interface OptionItem {
   option_id: string;
   label: string;
+  /** 提议这一项的角色名；系统给的选项（进入续写 / 到此结束）为 null。2.8.0 起 */
+  proposed_by?: string | null;
 }
 
 export interface ActiveInteraction {

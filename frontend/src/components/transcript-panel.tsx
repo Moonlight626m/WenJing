@@ -5,21 +5,24 @@ import { AnimatePresence, m } from "motion/react";
 
 import { useGameStore } from "@/stores/gameStore";
 import { MessageStream } from "@/components/message-stream";
+import { OriginalTextPanel } from "@/components/original-text-panel";
 import { RolePanel } from "@/components/role-panel";
 import { RollbackBar } from "@/components/rollback-bar";
 import { CloseIcon } from "@/components/ui/icons";
 
-export type TranscriptTab = "story" | "cast";
+export type TranscriptTab = "story" | "text" | "cast";
 
 const TABS: { id: TranscriptTab; label: string }[] = [
   { id: "story", label: "剧情" },
+  { id: "text", label: "原文" },
   { id: "cast", label: "角色" },
 ];
 
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
 /**
- * 剧情回顾面板：「剧情」页是完整消息流 + 回溯栏，「角色」页是人物档案。
+ * 剧情回顾面板：「剧情」页是完整消息流 + 回溯栏，「原文」页对照课文里已经演到的段落，
+ * 「角色」页是人物档案。
  *
  * 宽屏（≥1024px）贴在舞台右侧常开；窄屏改成从右侧滑出的抽屉，点遮罩或按 Esc 收起。
  * 回溯目标在这里持有：消息流里每句旁的「回溯到这一句」直接跳到确认这一步，
@@ -44,6 +47,9 @@ export function TranscriptPanel({
   const characters = useGameStore((s) => s.characters);
   const playableRoles = useGameStore((s) => s.playableRoles);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
+  const scenes = useGameStore((s) => s.scenes);
+  const sceneKey = useGameStore((s) => s.sceneKey);
+  const stage = useGameStore((s) => s.stage);
   const [target, setTarget] = useState<number | null>(null);
   const [confirming, setConfirming] = useState(false);
   const canRollback = allowedCommands.includes("rollback_to_event");
@@ -157,6 +163,15 @@ export function TranscriptPanel({
                 onTargetChange={setTarget}
                 onConfirmingChange={setConfirming}
               />
+            </div>
+          ) : tab === "text" ? (
+            <div
+              role="tabpanel"
+              id="transcript-panel-text"
+              aria-labelledby="transcript-tab-text"
+              className="min-h-0 flex-1 overflow-y-auto p-3"
+            >
+              <OriginalTextPanel scenes={scenes} sceneKey={sceneKey} stage={stage} />
             </div>
           ) : (
             <div
