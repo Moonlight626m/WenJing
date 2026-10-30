@@ -41,6 +41,7 @@ from app.domain.game.media import (
     to_asset_ref,
     to_contract_credit,
 )
+from app.domain.game.prompt_writer import APPEARANCE_FIELDS, ScenePromptContextDict
 from app.domain.generation.json_text import extract_json
 from app.domain.generation.stage1 import Stage1Generator
 from app.domain.generation.workflow.state import (
@@ -195,19 +196,32 @@ def _scene_of_branch_key(
         return None
 
 
+def _appearance_dict(profile: CharacterProfile | None, name: str) -> dict:
+    """人物 → 画师层 appearance 片段（dict 形态；字段缺失保持空串）。"""
+    if profile is None or profile.appearance is None:
+        return {"name": name}
+    return {
+        "name": name,
+        **{f: getattr(profile.appearance, f, "") for f in APPEARANCE_FIELDS},
+    }
+
+
 def _scene_prompt_context(
     scene: Scene,
     participants: list[str],
     profiles_by_name: dict[str, CharacterProfile],
     *,
     era_hint: str = "",
-) -> dict:
+    kind: AssetKind = AssetKind.SCENE_MONTAGE,
+) -> ScenePromptContextDict:
     """画师层转写上下文（branch-montage-dm §5）：确定性 description 之外的画面信息。
 
     dict 形态随请求/票据走（asset_jobs.prompt_context JSON 可序列化）；
     appearance 缺失的人物只给名字——画师层 prompt 的锚点纪律对留白字段
     按时代中性词处理（prompt_writer 段落 ANCHOR_RULES）。
     era 兜底用素材集 era_setting（dossier 非结构化字符串整句携带）。
+    `kind` 必须与本次生成的实际槽位一致：旧脚本的 background 重生成若沿用
+    scene_montage，画师会写下在场人物，而构图尾巴又要求「不出现任何人物」。
     """
     beats = [b.description for b in scene.beats if b.description]
     visual: dict[str, str] = {}
@@ -218,32 +232,34 @@ def _scene_prompt_context(
         }
     if not visual.get("era") and era_hint:
         visual["era"] = era_hint
-    appearance: list[dict] = []
-    for name in participants:
-        profile = profiles_by_name.get(name)
-        if profile is None or profile.appearance is None:
-            appearance.append({"name": name})
-        else:
-            appearance.append(
-                {
-                    "name": name,
-                    **{
-                        f: getattr(profile.appearance, f, "")
-                        for f in (
-                            "face",
-                            "hair",
-                            "clothing",
-                            "accessories",
-                            "build",
-                        )
-                    },
-                }
-            )
+    # 空镜（background）不给人物锚点：别名一旦进 prompt，画师笔下就会有人。
+    appearance = (
+        [_appearance_dict(profiles_by_name.get(name), name) for name in participants]
+        if kind is AssetKind.SCENE_MONTAGE
+        else []
+    )
     return {
         "title": scene.title,
         "beats": beats,
         "visual_notes": visual,
         "participants": appearance,
+        "kind": kind.value,
+    }
+
+
+def _character_prompt_context(
+    profile: CharacterProfile, *, era_hint: str = ""
+) -> ScenePromptContextDict:
+    """人物头像的画师层上下文：单人 + appearance 锚点（画风/画幅由拼装器追加）。
+
+    人物列表用的头像与场面图共用同一画风段与外貌锚点，保证「同一角色跨图一致」。
+    """
+    return {
+        "title": profile.name,
+        "beats": [],
+        "visual_notes": {"era": era_hint} if era_hint else {},
+        "participants": [_appearance_dict(profile, profile.name)],
+        "kind": "avatar",
     }
 
 
@@ -679,6 +695,7 @@ class WorkflowNodes:
                         org_id=org_id,
                         user_id=user_id,
                         script_id=int(state.get("script_id") or 0),
+                        era_hint=_era_hint(state),
                     )
                     logger.info(
                         "[script-gen][final_gate] asset_ops applied (%d)",
@@ -784,6 +801,7 @@ class WorkflowNodes:
                     scene.participants,
                     profiles_by_name,
                     era_hint=_era_hint(state),
+                    kind=generation_kind,
                 ),
             )
             if picked is not None:
@@ -812,6 +830,7 @@ class WorkflowNodes:
                         branch.participants or scene.participants,
                         profiles_by_name,
                         era_hint=_era_hint(state),
+                        kind=generation_kind,
                     ),
                 )
                 if picked is not None:
@@ -831,6 +850,11 @@ class WorkflowNodes:
                 script_id=script_id,
                 user_id=user_id,
                 label=f"人物「{profile.name}」",
+                # 头像同样经画师层：外貌锚点 + 与场面图同一画风段，
+                # 保证人物列表里的头像与游戏内场面图「同一个人」。
+                prompt_context=_character_prompt_context(
+                    profile, era_hint=_era_hint(state)
+                ),
             )
             if picked is not None:
                 ref, credit = picked
@@ -879,15 +903,16 @@ class WorkflowNodes:
         script_id: int,
         user_id: uuid.UUID | None,
         label: str,
-        prompt_context: dict | None = None,
+        prompt_context: ScenePromptContextDict | None = None,
     ) -> tuple[AssetRef, AssetCredit | None] | None:
         """单个主体的配图：READY → (AssetRef, 契约署名)；FAILED/异常 → None。
 
         场景循环与人物循环的差异只在键与回填目标，此处收拢「调用 → 判状态 →
         异常兜底」这一共享形状；失败主体记 warning 后返回 None，剧本照常可用。
         署名只对检索件非 None（#51，生成/上传件无许可语义）。
-        `prompt_context` 随请求传给画师层（转写结构化外貌/锚点）；检索路径
-        与头像不携带。
+        `prompt_context` 随请求传给画师层（转写结构化外貌/锚点）；场景、分支与
+        人物头像都携带，全员共用同一画风段。生成期自动配图不经检索
+        （`design_scene` 默认路径即画师生成，`search_replace` 才是检索入口）。
         """
         try:
             record = await designer.design_scene(
@@ -927,6 +952,7 @@ class WorkflowNodes:
         org_id: uuid.UUID,
         user_id: uuid.UUID | None,
         script_id: int,
+        era_hint: str = "",
     ) -> ScriptPackage:
         """对终审剧本包应用教师配图操作（GateEdits.asset_ops）。
 
@@ -982,6 +1008,13 @@ class WorkflowNodes:
                         else None
                     ),
                     current_credit=scene.background_credit,
+                    prompt_context=_scene_prompt_context(
+                        scene,
+                        scene.participants,
+                        profiles_by_name,
+                        era_hint=era_hint,
+                        kind=kind,
+                    ),
                 )
                 scene_ops[scene.scene_id] = ref
                 scene_credit_ops[scene.scene_id] = credit
@@ -1016,6 +1049,13 @@ class WorkflowNodes:
                         else None
                     ),
                     current_credit=target.background_credit,
+                    prompt_context=_scene_prompt_context(
+                        target,
+                        target.participants or scene.participants,
+                        profiles_by_name,
+                        era_hint=era_hint,
+                        kind=AssetKind.SCENE_MONTAGE,
+                    ),
                 )
                 key = (scene.scene_id, target.branch_id)
                 branch_ops[key] = ref
@@ -1043,6 +1083,9 @@ class WorkflowNodes:
                         profile.avatar_asset.asset_id if profile.avatar_asset else None
                     ),
                     current_credit=profile.avatar_credit,
+                    prompt_context=_character_prompt_context(
+                        profile, era_hint=era_hint
+                    ),
                 )
                 profile_ops[name] = ref
                 profile_credit_ops[name] = credit
@@ -1110,6 +1153,7 @@ class WorkflowNodes:
         description: str,
         current_asset_id: uuid.UUID | None,
         current_credit: AssetCredit | None,
+        prompt_context: ScenePromptContextDict | None = None,
     ) -> tuple[AssetRef | None, AssetCredit | None]:
         """单条操作 → 槽位新值 (ref, credit)；ref=None 的语义随 op 而定。
 
@@ -1158,7 +1202,9 @@ class WorkflowNodes:
                 script_id=script_id,
                 user_id=user_id,
                 exclude_asset_ids=(current_asset_id,) if current_asset_id else (),
-                search_only=op.op == "search_replace",
+                # 教师「重新生成」= 画师重画；只有「检索替换」才碰素材库
+                search_replace=op.op == "search_replace",
+                prompt_context=prompt_context,
             )
         except Exception as exc:  # noqa: BLE001 - 单条操作失败不拖垮剧本
             logger.warning(

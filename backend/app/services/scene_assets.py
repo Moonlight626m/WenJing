@@ -180,6 +180,8 @@ class SceneAssetScheduler:
                 script_id=request.script_id,
                 session_id=request.session_id,
                 user_id=request.user_id,
+                # 运行期配图同样画师优先：默认路径不检索图库（那只会给玩家塞一张
+                # 与剧情不对应的免费图），检索只保留给教师「检索替换」。
                 prompt_context=request.prompt_context or None,
             )
         except asyncio.CancelledError:

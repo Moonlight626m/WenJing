@@ -80,8 +80,17 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 
 ### 场景设计（SceneDesigner）
 
-场景资产编排组件（`domain/game/media.py`）：检索开放版权素材 → 审核 → 回退文生图 →
-存储 → 产出 `AssetRef`。Stage2 在剧本生成期预生成；Stage3 由引擎中转异步生成。
+场景资产编排组件（`domain/game/media.py`）：**画师层转写 → 文生图 → 存储 → 产出
+`AssetRef`**（画师优先，自动配图不再检索素材库）；检索只在教师显式「检索替换」
+（`allow_search` / `search_only`）时启用。Stage2 在剧本生成期预生成；Stage3 由引擎
+中转异步生成。
+
+### 画师层（Painter / PromptWriter）
+
+`domain/game/prompt_writer.py`：把节拍文本 + 人物外貌锚点 + 视觉备注转写为「画面
+主体描述」的 LLM 层。画风段（`DEFAULT_STYLE`：课本插画/中国水墨意韵/手绘/非照片写实，
+可配 `WENJING_MEDIA_IMAGE_GEN_STYLE`）与构图尾巴由 `build_generation_prompt` 确定性
+追加；转写失败回退确定性描述（场景永远有图）。
 
 ### 编剧 Agent / DM
 

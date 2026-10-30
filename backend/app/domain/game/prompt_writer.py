@@ -17,8 +17,9 @@ SceneDesigner 付费生成路径里的 LLM 转写层：输入「节拍文本 + �
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypedDict, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -29,10 +30,14 @@ from app.domain.llm import LLMService
 
 logger = logging.getLogger("wenjing.game.prompt_writer")
 
-# 转写产物版本：由组合根并入 SceneDesigner.provider_version——改 prompt 必须
-# bump，否则同描述命中旧图缓存。去重键主体仍是确定性 description（本模块
-# 输出不进键，见模块 docstring）。
-SCENE_PROMPT_VERSION = "scene_prompt.v1"
+# 转写产物版本：由组合根并入 SceneDesigner.provider_version——改 prompt/schema
+# 必须 bump，否则同描述命中旧图缓存。去重键主体仍是确定性 description（本模块
+# 输出不进键，见模块 docstring）。v2：笔调改为课本插画/水墨（配合默认画风）。
+SCENE_PROMPT_VERSION = "scene_prompt.v2"
+
+# 外貌锚点字段（契约 `Appearance` 的同名投影）：appearance 片段与本模块的
+# 渲染共用一份字段清单，避免第三个副本漂移。
+APPEARANCE_FIELDS: tuple[str, ...] = ("face", "hair", "clothing", "accessories", "build")
 
 # 未交代降级词：appearance 的「原文未交代」/空字段按此渲染——绝不把
 # 「原文未交代」四个字送 provider（对生图模型是噪声，对预算是浪费）。
@@ -46,7 +51,9 @@ _DEFAULT_BUILD = "体态自然"
 class ScenePromptWriterPort(Protocol):
     """画师层端口：转写画面主体描述（SceneDesigner 注入；None = 回退现状拼装）。"""
 
-    async def write(self, context: ScenePromptContext, *, max_chars: int) -> str: ...
+    async def write(
+        self, context: ScenePromptContext | Mapping[str, object], *, max_chars: int
+    ) -> str: ...
 
 
 @dataclass
@@ -59,6 +66,13 @@ class CharacterAppearance:
     clothing: str = ""
     accessories: str = ""
     build: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        """JSON 安全形态（workflow state / asset_jobs.prompt_context 中转用）。"""
+        return {
+            "name": self.name,
+            **{f: getattr(self, f) for f in APPEARANCE_FIELDS},
+        }
 
     def fragment(self) -> str:
         """渲染为一段画面语：已交代的原样用，未交代的降级为时代中性词。"""
@@ -86,6 +100,58 @@ class ScenePromptContext:
     def era(self) -> str:
         return self.visual_notes.get("era", "")
 
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> ScenePromptContext:
+        """dict 形态（workflow state / asset_jobs.prompt_context）→ 转写上下文。
+
+        配图请求要过 checkpointer 与 JSONB，调用侧只能传 JSON 安全形态；
+        本方法是 dict 与对象的唯一桥接点。**曾经缺失**：writer 直接拿到 dict
+        后 `context.era` 抛 AttributeError，被 `_writer_subject` 当异常吞掉，
+        画师层每次都静默回退到确定性描述（等于从未生效）。
+        """
+        kind_raw = payload.get("kind") or AssetKind.SCENE_MONTAGE.value
+        try:
+            kind = AssetKind(str(kind_raw))
+        except ValueError:
+            kind = AssetKind.SCENE_MONTAGE
+        participants: list[CharacterAppearance] = []
+        raw_participants = payload.get("participants") or []
+        if isinstance(raw_participants, list):
+            for item in raw_participants:
+                if isinstance(item, Mapping):
+                    participants.append(
+                        render_appearance(dict(item), str(item.get("name") or ""))
+                    )
+        raw_visual = payload.get("visual_notes") or {}
+        visual_notes = (
+            {str(k): str(v) for k, v in raw_visual.items() if v}
+            if isinstance(raw_visual, Mapping)
+            else {}
+        )
+        raw_beats = payload.get("beats") or []
+        beats = [str(b) for b in raw_beats] if isinstance(raw_beats, list) else []
+        return cls(
+            title=str(payload.get("title") or ""),
+            beats=beats,
+            visual_notes=visual_notes,
+            participants=participants,
+            kind=kind,
+        )
+
+
+class ScenePromptContextDict(TypedDict, total=False):
+    """`ScenePromptContext` 的 JSON 安全形态（checkpointer / JSONB 通道）。
+
+    与 `ScenePromptContext.from_dict` 成对维护：这是配图请求中转的隐式契约，
+    用 TypedDict 写出来，调用侧（workflow 节点）可静态检查键名。
+    """
+
+    title: str
+    beats: list[str]
+    visual_notes: dict[str, str]
+    participants: list[dict[str, str]]
+    kind: str
+
 
 class _WriterOutput(BaseModel):
     """画师层结构化输出：只写画面主体，不带画风段/尾巴（那是拼装器职责）。"""
@@ -99,7 +165,11 @@ class LLMPromptWriter:
     def __init__(self, llm: LLMService) -> None:
         self._llm = llm
 
-    async def write(self, context: ScenePromptContext, *, max_chars: int) -> str:
+    async def write(
+        self, context: ScenePromptContext | Mapping[str, object], *, max_chars: int
+    ) -> str:
+        if isinstance(context, Mapping):
+            context = ScenePromptContext.from_dict(context)
         raw = await self._llm.chat(
             [{"role": "user", "content": _build_user_message(context, max_chars)}],
             session_id="",  # 媒体路径不挂会话语义
@@ -147,7 +217,7 @@ def _build_user_message(context: ScenePromptContext, max_chars: int) -> str:
         if value:
             lines.append(f"【{label}】{value}")
     if context.title:
-        lines.append(f"【场景】{context.title}")
+        lines.append(f"【画面对象】{context.title}")
     if context.beats:
         lines.append("【情节（按序发生）】")
         for beat in context.beats:
@@ -182,8 +252,8 @@ COMPOSITION = """\
 - 全身立绘：单人直立全身像，可带外貌锚点或情节里的标志性动作；
 - 空镜环境图：不出现任何人物，只写环境与氛围。
 
-【笔调】课堂展示用插图，克制、写实、光线柔和自然；\
-避免夸张变形、戏剧化强光与影视海报感。\
+【笔调】课堂展示用的课本插画：中国水墨山水的意韵、手绘线描与淡彩的质感；\
+构图层干净、光线柔和自然；避免照片写实感、夸张变形、强光特效与影视海报感。\
 """
 
 ANCHOR_RULES = """\
@@ -212,19 +282,7 @@ def render_appearance(appearance, name: str) -> CharacterAppearance:
     if appearance is None:
         return CharacterAppearance(name=name)
     if isinstance(appearance, dict):
-        return CharacterAppearance(
-            name=name,
-            face=appearance.get("face", ""),
-            hair=appearance.get("hair", ""),
-            clothing=appearance.get("clothing", ""),
-            accessories=appearance.get("accessories", ""),
-            build=appearance.get("build", ""),
-        )
-    return CharacterAppearance(
-        name=name,
-        face=getattr(appearance, "face", ""),
-        hair=getattr(appearance, "hair", ""),
-        clothing=getattr(appearance, "clothing", ""),
-        accessories=getattr(appearance, "accessories", ""),
-        build=getattr(appearance, "build", ""),
-    )
+        values = {f: appearance.get(f, "") or "" for f in APPEARANCE_FIELDS}
+    else:
+        values = {f: getattr(appearance, f, "") or "" for f in APPEARANCE_FIELDS}
+    return CharacterAppearance(name=name, **values)

@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     media_image_gen_size_mode: Literal["preset", "exact"] = "preset"
     # 火山方舟（image_gen_ark）：AI 生成内容标识合规默认——保持官方水印。
     media_image_gen_watermark: bool = True
+    # 统一画风段（原样拼进每条生图 prompt；留空用 domain 默认：
+    # 课本插画风格 + 中国水墨山水意韵 + 手绘线描淡彩 + 非照片写实）。
+    # 参与去重键：改画风 = 改产出，旧缓存不命中、按新画风重付一次。
+    media_image_gen_style: str = ""
 
     # 检索 provider（M2 #44 接入）。
     media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"

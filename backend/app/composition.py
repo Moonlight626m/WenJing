@@ -16,7 +16,7 @@ from typing import Any
 
 from app.domain.game.asr import AsrTranscriber
 from app.domain.game.image_review import ImageReviewAgent
-from app.domain.game.media import MediaKind, SceneDesigner
+from app.domain.game.media import DEFAULT_STYLE, MediaKind, SceneDesigner
 from app.domain.game.prompt_writer import SCENE_PROMPT_VERSION, LLMPromptWriter
 from app.domain.game.tts import VoiceMap
 from app.infrastructure.config import Settings, get_settings
@@ -246,7 +246,8 @@ class Container:
                 workflow_enabled=script_llm is not None,
                 # 生成进度广播（教师端 SSE 推送）：hub 与生成任务同进程
                 progress_hub=GenerationProgressHub(),
-                # 生成期配图（#48）：design_assets 节点经此编排检索→审核→回退生成。
+                # 生成期配图（#48）：design_assets 节点经此编排画师转写→生成
+                # （画师优先；检索只服务教师「检索替换」）。
                 # 传 lambda 延迟到首次生成才构建媒体栈（ScriptLibrary 可能在
                 # 无媒体配置的测试桩下被构造）。
                 scene_designer=lambda: self.scene_designer,
@@ -382,7 +383,7 @@ class Container:
 
     @property
     def scene_designer(self) -> SceneDesigner:
-        """场景资产编排（ADR-0005 §6 / #47）：检索→审核→回退生成→存储。
+        """场景资产编排（ADR-0005 §6 / #47）：画师转写→生成→存储。
 
         转码以 `ImageProcessor().process` 注入（domain 不 import infra，故不形式化成端口）；
         审核用 agent 侧 LLM，其失败在 `ImageReviewAgent` 内部降级为「拒绝候选」，
@@ -401,6 +402,9 @@ class Container:
                 reviewer=ImageReviewAgent(llm=self._build_agent_llm()),
                 transcode=ImageProcessor().process,
                 prompt_writer=prompt_writer,
+                # 统一画风（课本插画/水墨/手绘，非照片写实）：配置可覆盖；
+                # 画风参与去重键，改这一项等于换产出。
+                style=self.settings.media_image_gen_style or DEFAULT_STYLE,
                 # 参与去重键：换 model 等于换画风，历史资产不能继续命中缓存；
                 # 画师层提示词升级时把 SCENE_PROMPT_VERSION 并进来让缓存失效。
                 provider_version=SCENE_PROMPT_VERSION,

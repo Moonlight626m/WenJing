@@ -385,3 +385,12 @@ async def test_recover_does_not_double_schedule_inflight():
 
     assert report.requeued == 0
     assert len(designer.calls) == 1
+
+
+def test_asset_request_kind_coercion():
+    """引擎字符串 kind → 枚举；未知值按背景图处理，不炸命令路径。"""
+    from app.services.session_runtime import _asset_kind
+
+    assert _asset_kind("scene_montage") is AssetKind.SCENE_MONTAGE
+    assert _asset_kind("background") is AssetKind.BACKGROUND
+    assert _asset_kind("nonsense") is AssetKind.BACKGROUND

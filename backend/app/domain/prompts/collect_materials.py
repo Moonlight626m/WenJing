@@ -1,4 +1,4 @@
-"""素材收集节点 prompt v2（prompt 落库：段落经 PromptBundle 取值，DB 可覆盖）。
+"""素材收集节点 prompt（prompt 落库：段落经 PromptBundle 取值，DB 可覆盖）。
 
 段落构成（section）：
 - system：角色定位与使命；

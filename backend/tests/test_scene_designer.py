@@ -20,6 +20,7 @@ import pytest
 
 from app.domain.game.image_review import ImageReviewResult, LicenseStatus, ReviewReason
 from app.domain.game.media import (
+    DEFAULT_STYLE,
     AssetCredit,
     AssetKind,
     AssetRecord,
@@ -36,6 +37,7 @@ from app.domain.game.media import (
     to_contract_credit,
 )
 from app.domain.game.media_safety import MAX_PROMPT_CHARS
+from app.domain.game.prompt_writer import ScenePromptContext
 from app.infrastructure.errx import codes, new
 
 _ORG = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -151,6 +153,30 @@ class FakeGen:
         )
 
 
+class FakeWriter:
+    """画师层 stub：走真实 `ScenePromptContext.from_dict` 桥接，记录上下文。
+
+    刻意不直接吃 dict——dict 与对象的桥接就是曾经的故障点，stub 必须经过它，
+    回归用例才能在校验失败时红。
+    """
+
+    def __init__(self, *, text: str = "父亲在月台上攀爬的背影", error: bool = False) -> None:
+        self.text = text
+        self._error = error
+        self.calls: list[ScenePromptContext] = []
+
+    async def write(self, context, *, max_chars: int) -> str:
+        ctx = (
+            context
+            if isinstance(context, ScenePromptContext)
+            else ScenePromptContext.from_dict(context)
+        )
+        self.calls.append(ctx)
+        if self._error:
+            raise RuntimeError("llm down")
+        return self.text
+
+
 class FakeQuota:
     def __init__(self, *, allowed: bool = True) -> None:
         self.allowed = allowed
@@ -201,6 +227,8 @@ def _designer(
     meter=None,
     transcode=None,
     provider_version: str = "",
+    prompt_writer=None,
+    style: str = DEFAULT_STYLE,
 ) -> SceneDesigner:
     return SceneDesigner(
         storage=storage or FakeStorage(),
@@ -211,6 +239,8 @@ def _designer(
         transcode=transcode or _renditions,
         meter=meter,
         quota=quota,
+        prompt_writer=prompt_writer,
+        style=style,
         provider_version=provider_version,
     )
 
@@ -233,7 +263,7 @@ def _dedup_key(
         org_id=_ORG,
         subject_key="scene:1",
         description_summary=_DESCRIPTION,
-        style="写实",
+        style=DEFAULT_STYLE,
         provider_version=provider,
         kind=kind,
         scope=scope,
@@ -251,7 +281,7 @@ async def test_search_accept_path_returns_ready_record():
     storage = FakeStorage()
     designer = _designer(storage=storage, search=FakeSearch(candidates=[candidate]))
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
     assert record.status is AssetStatus.READY
     assert record.source is AssetSource.SEARCH
@@ -263,54 +293,56 @@ async def test_search_accept_path_returns_ready_record():
     assert all(k.startswith(f"{_ORG}/assets/{record.asset_id}/") for k in storage.puts)
 
 
-async def test_fallback_to_generation_when_no_candidate():
+async def test_search_replace_without_candidate_fails_without_generation():
+    """检索替换（#49）：教师点名检索来源时无候选 → FAILED，不悄悄替他生成。"""
     gen = FakeGen()
     designer = _designer(search=FakeSearch(candidates=[]), gen=gen)
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
-    assert record.status is AssetStatus.READY
-    assert record.source is AssetSource.GENERATED
-    assert gen.calls == 1
-    # prompt 带上「不出现人物」的构图约束（ADR-0005 §6）
-    assert "不出现任何人物" in gen.prompts[0]
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0, "检索替换不得回退付费生成"
 
 
-async def test_rejected_candidate_falls_back_to_generation():
+async def test_search_replace_rejected_candidate_fails_without_generation():
     candidate = ImageCandidate(image_bytes=_png())
     gen = FakeGen()
     designer = _designer(
-        search=FakeSearch(candidates=[candidate]), reviewer=FakeReviewer(accept=False), gen=gen
+        search=FakeSearch(candidates=[candidate]),
+        reviewer=FakeReviewer(accept=False),
+        gen=gen,
     )
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
-    assert record.source is AssetSource.GENERATED
-    assert gen.calls == 1
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0
 
 
-async def test_degraded_review_falls_back_to_generation():
+async def test_search_replace_degraded_review_fails_without_generation():
     """审核降级（LLM 失败）按拒绝处理，不采用未审核素材（#45 语义）。"""
     candidate = ImageCandidate(image_bytes=_png())
     gen = FakeGen()
     designer = _designer(
-        search=FakeSearch(candidates=[candidate]), reviewer=FakeReviewer(degrade=True), gen=gen
+        search=FakeSearch(candidates=[candidate]),
+        reviewer=FakeReviewer(degrade=True),
+        gen=gen,
     )
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
-    assert record.source is AssetSource.GENERATED
-    assert gen.calls == 1
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0
 
 
-async def test_search_failure_does_not_block_generation():
+async def test_search_replace_search_failure_fails_without_generation():
     gen = FakeGen()
     designer = _designer(search=FakeSearch(error=True), gen=gen)
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
-    assert record.status is AssetStatus.READY
-    assert gen.calls == 1
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0
 
 
 # ===== 幂等与缓存（不重复付费）=====
@@ -325,7 +357,7 @@ async def test_second_run_hits_cache_and_skips_paid_calls():
 
     assert second.asset_id == first.asset_id
     assert gen.calls == 1, "第二次必须命中缓存，不得再次付费生成"
-    assert search.calls == 1, "命中缓存后连检索都不该再走"
+    assert search.calls == 0, "自动配图根本不该走检索"
 
 
 async def test_cache_hit_skips_paid_calls():
@@ -477,6 +509,72 @@ def test_generation_prompt_varies_by_kind():
     assert background != avatar
 
 
+def test_default_style_is_textbook_illustration_not_photo():
+    """画风定调：课本插画 + 中国水墨山水意韵 + 手绘，而非照片写实。"""
+    prompt = build_generation_prompt(description="江南水乡", kind=AssetKind.BACKGROUND)
+    assert DEFAULT_STYLE in prompt
+    assert "课本插画" in prompt
+    assert "水墨" in prompt
+
+
+async def test_automatic_generation_does_not_search_by_default():
+    """画师优先：自动配图不得再经搜索素材库取图。"""
+    candidate = ImageCandidate(image_bytes=_png())
+    search, gen = FakeSearch(candidates=[candidate]), FakeGen()
+    designer = _designer(search=search, gen=gen)
+
+    record = await _design(designer)
+
+    assert record.source is AssetSource.GENERATED
+    assert search.calls == 0
+    assert gen.calls == 1
+
+
+async def test_painter_context_dict_drives_generation_prompt():
+    """回归：画师层曾收到 dict 后 AttributeError 静默回退，转写从未生效。"""
+    gen, writer = FakeGen(), FakeWriter()
+    designer = _designer(gen=gen, prompt_writer=writer)
+
+    record = await _design(
+        designer,
+        prompt_context={
+            "title": "月台",
+            "beats": ["父亲攀爬月台买橘子"],
+            "visual_notes": {"era": "民国初年"},
+            "participants": [{"name": "父亲", "face": "紫色圆脸"}],
+            "kind": "scene_montage",
+        },
+    )
+
+    assert record.status is AssetStatus.READY
+    assert writer.calls and writer.calls[0].title == "月台"
+    assert writer.calls[0].kind is AssetKind.SCENE_MONTAGE
+    assert writer.text in gen.prompts[0], "画师层输出必须进入最终 prompt"
+    assert "课本插画" in gen.prompts[0], "画风段与转写描述一起拼进 prompt"
+
+
+async def test_painter_failure_falls_back_to_deterministic_description():
+    gen, writer = FakeGen(), FakeWriter(error=True)
+    designer = _designer(gen=gen, prompt_writer=writer)
+
+    record = await _design(designer, prompt_context={"title": "月台", "participants": []})
+
+    assert record.status is AssetStatus.READY
+    assert _DESCRIPTION in gen.prompts[0]
+
+
+async def test_painter_blocked_output_falls_back_to_deterministic_description():
+    """画师转写命中本地安全过滤时回退，而不是让整场景被拦成 FAILED。"""
+    gen, writer = FakeGen(), FakeWriter(text="血腥的战场特写")
+    designer = _designer(gen=gen, prompt_writer=writer)
+
+    record = await _design(designer, prompt_context={"title": "月台", "participants": []})
+
+    assert record.status is AssetStatus.READY
+    assert _DESCRIPTION in gen.prompts[0]
+    assert "血腥" not in gen.prompts[0]
+
+
 # ===== 契约投影（验收：「给定场景产出 AssetRef」）=====
 
 
@@ -610,15 +708,15 @@ async def test_unusable_candidate_falls_through_to_next_one():
         search=FakeSearch(candidates=candidates), transcode=transcode
     )
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
     assert record.status is AssetStatus.READY
     assert record.source is AssetSource.SEARCH
     assert transcode.calls == 2
 
 
-async def test_all_candidates_unusable_still_falls_back_to_generation():
-    """回归：候选全部不可用时，付费回退生成曾被短路（gen.calls==0）。"""
+async def test_all_candidates_unusable_yields_failed_without_generation():
+    """候选全部不可用：检索替换只报 FAILED，不回退生成。"""
     candidates = [ImageCandidate(image_bytes=b"bad")]
     gen = FakeGen()
     designer = _designer(
@@ -627,11 +725,10 @@ async def test_all_candidates_unusable_still_falls_back_to_generation():
         transcode=_FlakyTranscode(fail_times=1),
     )
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
-    assert record.status is AssetStatus.READY
-    assert record.source is AssetSource.GENERATED
-    assert gen.calls == 1
+    assert record.status is AssetStatus.FAILED
+    assert gen.calls == 0
 
 
 class _CountingReviewer(FakeReviewer):
@@ -652,8 +749,9 @@ async def test_degraded_review_stops_asking_remaining_candidates():
     reviewer = _CountingReviewer(degrade=True)
     designer = _designer(search=FakeSearch(candidates=candidates), reviewer=reviewer)
 
-    await _design(designer)
+    record = await _design(designer, search_replace=True)
 
+    assert record.status is AssetStatus.FAILED
     assert reviewer.calls == 1, "见到 REVIEW_FAILED 就该收束，不再逐条追问"
 
 
@@ -665,7 +763,7 @@ async def test_free_search_asset_does_not_consume_paid_budget():
         search=FakeSearch(candidates=[candidate]), meter=meter, quota=quota
     )
 
-    record = await _design(designer)
+    record = await _design(designer, search_replace=True)
 
     assert record.source is AssetSource.SEARCH
     assert [r.units for r in meter.records] == [0], "免费来源必须 units=0"
@@ -777,27 +875,14 @@ async def test_exclude_content_hashes_skips_identical_search_candidate():
     ))
 
     # exclude_asset_ids 里给旧 id：design_scene 内部反查 content_hash 补齐排除集
-    record = await _design(designer, exclude_asset_ids=[old.asset_id])
+    record = await _design(
+        designer, exclude_asset_ids=[old.asset_id], search_replace=True
+    )
 
     assert record.status is AssetStatus.READY
     assert record.content_hash != old_hash, "检索替换不得原样返回旧字节"
 
 
-async def test_search_only_does_not_fall_back_to_generation():
-    """检索替换（#49）：教师点名检索来源时无候选 → FAILED，不悄悄替他生成。"""
-    gen_calls: list[int] = []
-
-    class CountingGen(FakeGen):
-        async def generate(self, **kwargs):
-            gen_calls.append(1)
-            return await super().generate(**kwargs)
-
-    designer = _designer(search=FakeSearch(candidates=[]), gen=CountingGen())
-
-    record = await _design(designer, search_only=True)
-
-    assert record.status is AssetStatus.FAILED
-    assert gen_calls == [], "search_only 不得触发付费生成"
 
 
 async def test_publish_upload_roundtrip_and_dedup():

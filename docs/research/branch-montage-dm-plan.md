@@ -138,8 +138,15 @@ ADR-0005 §1/§6/§8 修订草案（不改状态）；新建 `docs/adr/0007-bran
   budget_rules。
 - `render_appearance(appearance, era)`：未交代/空字段映射为时代中性词
   （「身着时代常见的素色长衫」「面容端正」）。
-- 画风：为 SCENE_MONTAGE 单独 `SCENE_STYLE`（如「写实的油画质感插画风格…适合中学课堂展示」）；
-  **不动全局 DEFAULT_STYLE「写实」**——避免全量头像缓存失效。
+- 画风：**2026-10-30 定稿修订**——统一画风定在全局 `DEFAULT_STYLE`
+  「课本插画风格 + 中国水墨山水画意韵 + 手绘线描与淡彩 + 非照片写实」
+  （配置 `WENJING_MEDIA_IMAGE_GEN_STYLE` 可覆盖）。头像/场面/背景共用同一段，
+  画风参与去重键，改画风即整体换产出（不再为省缓存保全旧「写实」）。
+  同时**自动配图不再检索素材库**：`design_scene` 默认只走画师生成，检索仅由
+  教师「检索替换」（`search_replace=True`）启用。
+- 画师层输入桥接：`ScenePromptContext.from_dict()` 把 workflow/asset_jobs 的
+  JSON dict 转为上下文（**初版缺失该桥接，writer 对 dict 取 `.era` 抛错被吞，
+  画师层实际从未生效**——归档为回归用例 `test_painter_context_dict_drives_generation_prompt`）。
 - `provider_version` 纳入 `scene_prompt.v1`（改 prompt 必须 bump，否则同描述命中旧图）。
 - `composition.py` 注入 LLMPromptWriter；无 key → None → 回退现状拼装。
 

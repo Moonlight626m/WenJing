@@ -114,8 +114,12 @@ def test_build_image_gen_openai_without_key_is_config_error():
 
 
 def test_adapter_defaults_match_settings_defaults():
-    """模块常量与 Settings 默认值是两份副本，靠本用例防止分叉（评审发现）。"""
-    settings = Settings()
+    """模块常量与 Settings 默认值是两份副本，靠本用例防止分叉（评审发现）。
+
+    显式忽略本地 `.env`（`_env_file=None`）：本用例比较的是**代码默认值**，
+    开发机上把 provider 切成 ark 后 env 会覆盖 base_url/model，让断言假红。
+    """
+    settings = Settings(_env_file=None)
     assert settings.media_image_gen_base_url == DEFAULT_BASE_URL
     assert settings.media_image_gen_model == DEFAULT_MODEL
     assert settings.media_image_gen_connect_timeout == DEFAULT_CONNECT_TIMEOUT

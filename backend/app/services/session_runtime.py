@@ -36,6 +36,7 @@ from app.domain.access import Actor, require_session_access, script_visible_to
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.game_runtime import GameRuntime, StepResult
 from app.domain.game.media import (
+    AssetKind,
     AssetRecord,
     AssetRepositoryPort,
     SceneAssetRequest,
@@ -82,6 +83,14 @@ class AsyncCommandReceipt:
 
     claimed: bool
     state: str
+
+
+def _asset_kind(raw: str) -> AssetKind:
+    """引擎侧字符串 kind → 枚举；未知值按背景图处理（不炸游玩）。"""
+    try:
+        return AssetKind(raw)
+    except ValueError:
+        return AssetKind.BACKGROUND
 
 
 class SessionApplication:
@@ -616,6 +625,8 @@ class SessionApplication:
                     org_id=sess.org_id,
                     script_id=sess.script_id,
                     user_id=sess.owner_user_id,
+                    kind=_asset_kind(req.kind),
+                    prompt_context=req.prompt_context or {},
                 ),
                 on_ready=self._apply_asset_ready,
             )

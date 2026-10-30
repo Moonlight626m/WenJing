@@ -123,6 +123,12 @@ class SceneAssetIntent:
 
     scene_key: str
     description: str
+    #: 配图种类（branch-montage-dm §5）：Stage3 自由探索场景发 scene_montage
+    #: （完整场面图）；旧引擎路径保持 background（运行期背景图语义）。
+    kind: str = "background"
+    #: 画师层转写上下文（JSON 安全 dict，见 `prompt_writer.ScenePromptContextDict`）。
+    #: 引擎在当前阶段还填不出视觉备注/外貌锚点，Phase 3 由 DM 场景补齐。
+    prompt_context: dict = field(default_factory=dict)
 
 
 # ===== 交互与玩家 =====

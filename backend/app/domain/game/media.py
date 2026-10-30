@@ -7,7 +7,8 @@
   `AssetRepositoryPort` / `MediaMeterPort` / `MediaQuotaPort` /
   `AssetJobPort`（运行期配图任务的持久台账，#57）。
 - 端口间传递的**领域数据结构**（不落契约，契约 `AssetRef`/`AssetCredit` 见 #43）。
-- `SceneDesigner`：检索→审核→回退生成→存储→产出 `AssetRecord` 的编排组件（#47）。
+- `SceneDesigner`：画师转写→生成→存储→产出 `AssetRecord` 的编排组件（#47）；
+  检索只在教师「检索替换」（`search_replace`）时启用。
 
 分层约束：domain 不 import infrastructure；适配器在 `infrastructure/media/`。
 转码（Pillow）与审核（LLM）都**不**在本模块里实现——转码以 `transcode` 可调用注入
@@ -425,8 +426,12 @@ def build_dedup_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-# 生成 prompt 的统一画风/构图约束（ADR-0005 §6：背景不含人物、统一画风）。
-DEFAULT_STYLE = "写实"
+# 生成 prompt 的统一画风/构图约束（ADR-0005 §6：统一画风）。
+# 教育场景定调：**课本插画 + 中国水墨山水意韵，手绘而非照片**。
+# 负向措辞（"非照片"）对生图模型效力有限，故以正向描述为主（插画/水墨/手绘/
+# 线描淡彩），"非照片写实"只作显式补充；该串同时参与去重键（build_dedup_key
+# 的 style），改画风即改产出，旧缓存不会命中。
+DEFAULT_STYLE = "课本插画风格，中国水墨山水画意韵，手绘线描与淡彩，非照片写实"
 
 #: 失败原因入库前的长度上限（`assets.reason` / `asset_jobs.reason` 同宽）。
 _REASON_MAX_CHARS = 200
@@ -477,13 +482,16 @@ def build_generation_prompt(
 ) -> str:
     """场景/角色描述 → 文生图 prompt（按 kind 取构图约束，并收敛到长度预算内）。
 
+    `style` 是**完整画风段**（原样进 prompt，不再拼「画风」后缀）：默认值见
+    `DEFAULT_STYLE`（课本插画/水墨/手绘/非照片写实）。
+
     预算必须在这里守住：adapter 侧的 `screen_generation_prompt` 命中超长会抛**不可重试**
     的 `MEDIA_IMAGE_GEN_BLOCKED`，结果是该场景永远没有配图。Stage2 的场景描述由 beats
     拼接，长场景很容易超限，故超长时从描述尾部截断、**优先保构图与画风尾巴**。
     """
     subject = " ".join((description or "").split())
     tail = _KIND_TAILS.get(kind, _KIND_TAILS[AssetKind.BACKGROUND])
-    suffix = "，".join(part for part in (f"{style}画风" if style else "", tail) if part)
+    suffix = "，".join(part for part in (style, tail) if part)
 
     separator = "，" if subject and suffix else ""
     budget = max(1, max_chars - len(suffix) - len(separator))
@@ -523,14 +531,17 @@ class _UnusableCandidate(Exception):
 
 
 class SceneDesigner:
-    """场景资产编排（ADR-0005 §6，issue #47）：检索→审核→回退生成→存储→AssetRecord。
+    """场景资产编排（ADR-0005 §6，issue #47）：画师转写→生成→存储→AssetRecord。
+
+    默认路径**不检索素材库**（画师优先，2026-10 修订）；检索只服务教师
+    「检索替换」（`search_replace=True`），那条路径仍是「检索→审核→FAILED」。
 
     - **幂等与缓存**：`build_dedup_key` 按 (org, 归属作用域, 场景, kind, 风格, provider 版本)
       去重；命中 `READY` 资产直接复用，这是「不重复付费」的第一道闸。
     - **付费前意图票据**：付费调用之前先落 `assets` 行 `status=pending`
       （ADR-0005 §4 的固定顺序 pending → 上传对象 → ready），崩溃/重跑留下痕迹。
       在途任务的崩溃恢复（`asset_jobs` 重排）留待 #57。
-    - **降级**：检索、审核、生成、转码、上传任一失败都**不抛给调用方**，而是返回
+    - **降级**：转写、检索、审核、生成、转码、上传任一失败都**不抛给调用方**，而是返回
       `status=FAILED` 的记录，由上层（workflow #48 / 运行期 #56）以占位图或纯文本继续。
       DB 等非预期故障仍照常抛出（只有可预期的媒体失败才降级）。
     - 依赖全部端口注入；转码实现由组合根以 `transcode` 可调用注入（domain 不 import infra）。
@@ -589,7 +600,7 @@ class SceneDesigner:
         user_id: uuid.UUID | None = None,
         exclude_asset_ids: Sequence[uuid.UUID] = (),
         exclude_content_hashes: Sequence[str] = (),
-        search_only: bool = False,
+        search_replace: bool = False,
         prompt_context: object | None = None,
     ) -> AssetRecord:
         """为某个场景/角色产出资产记录（`READY` 可签发 URL；`FAILED` 由上层降级）。
@@ -599,8 +610,12 @@ class SceneDesigner:
         「重新生成」要求换一张图；排除旧 id 后 `find_by_dedup_key`（取最新行）
         自然落到重生成产物，崩溃重放仍是幂等的。
 
-        `search_only`（#49 检索替换）：只用开放版权检索，无采纳候选时直接 FAILED，
-        不回退付费生成（教师明确要求检索来源时，替他生成一张是越权花钱）。
+        **画师优先**（2026-10 修订）：默认路径不检索素材库——自动配图（剧本生成期、
+        运行期）一律经画师层 + 文生图。
+
+        `search_replace`（#49 教师「检索替换」，唯一启用检索的路径）：只走开放版权
+        检索，无采纳候选时直接 FAILED，不回退付费生成（教师明确要求检索来源时，
+        替他生成一张是越权花钱）。
         """
         del scene_key  # 保留在签名里给审计/日志用；去重键由 subject_key 承担
         resolved_style = self.style if style is None else style
@@ -641,27 +656,29 @@ class SceneDesigner:
                 hash_exclusions.add(old.content_hash)
 
 
-        # 免费侧：逐个试已被审核采纳的候选。候选字节可能不可解码（图库截断/超像素），
-        # 那个候选不采用、继续下一个，而不是让整次编排以 FAILED 收场。
-        async for picked in self._accepted_candidates(
-            description=description,
-            kind=kind,
-            exclude_content_hashes=hash_exclusions,
-        ):
-            try:
-                return await self._publish(
-                    record, picked, org_id=org_id, user_id=user_id
-                )
-            except _UnusableCandidate as exc:
-                logger.info(
-                    "scene_asset_candidate_unusable asset=%s reason=%s",
-                    record.asset_id,
-                    exc,
-                )
+        # 免费侧（仅教师显式检索替换时）：逐个试已被审核采纳的候选。候选字节
+        # 可能不可解码（图库截断/超像素），那个候选不采用、继续下一个，而不是让
+        # 整次编排以 FAILED 收场。默认路径不经检索——画师优先。
+        if search_replace:
+            async for picked in self._accepted_candidates(
+                description=description,
+                kind=kind,
+                exclude_content_hashes=hash_exclusions,
+            ):
+                try:
+                    return await self._publish(
+                        record, picked, org_id=org_id, user_id=user_id
+                    )
+                except _UnusableCandidate as exc:
+                    logger.info(
+                        "scene_asset_candidate_unusable asset=%s reason=%s",
+                        record.asset_id,
+                        exc,
+                    )
 
         outcome = (
-            _GenOutcome(reason="search_only: no accepted candidate")
-            if search_only
+            _GenOutcome(reason="search_replace: no accepted candidate")
+            if search_replace
             else await self._generate(
                 org_id=org_id,
                 description=description,
@@ -694,6 +711,8 @@ class SceneDesigner:
         description: str,
         kind: AssetKind,
         prompt_context: object | None,
+        *,
+        style: str,
     ) -> str:
         """付费路径的画面主体：画师层转写，任何失败回退原 description。
 
@@ -702,6 +721,8 @@ class SceneDesigner:
         结果再过 build_generation_prompt 的截断，超长也不会破预算。
         画师层输出被本地安全过滤命中时**不清洗不重试**——直接回退确定性
         description（行为可预测优先于画面质量）。
+        安全探针用**本次调用的** style（与最终 prompt 同一段画风），per-call
+        覆盖画风时不会拿默认画风去探。
         """
         writer = self.prompt_writer
         if writer is None or prompt_context is None:
@@ -715,10 +736,18 @@ class SceneDesigner:
             )
             if not subject:
                 return description
-            probe = build_generation_prompt(
-                description=subject, kind=kind, style=self.style
-            )
-            inspect_prompt(probe)
+            probe = build_generation_prompt(description=subject, kind=kind, style=style)
+            # inspect_prompt 只判定不抛错——这里必须亲自看 verdict：转写产出被
+            # 安全过滤命中时回退确定性描述。否则整段 prompt 会带着命中词走到
+            # `_generate` 的 screen_generation_prompt，整场景被拦成 FAILED。
+            verdict = inspect_prompt(probe)
+            if not verdict.ok:
+                logger.warning(
+                    "scene_prompt_writer_blocked category=%s matched=%s",
+                    verdict.category,
+                    verdict.matched,
+                )
+                return description
             return subject
         except Exception as exc:  # noqa: BLE001 - 画师层失败一律回退
             logger.warning(
@@ -808,7 +837,9 @@ class SceneDesigner:
         原描述拼装；`provider_version` 由调用方并入 scene_prompt 版本，改转写
         提示词时 bump 让缓存失效。
         """
-        subject = await self._writer_subject(description, kind, prompt_context)
+        subject = await self._writer_subject(
+            description, kind, prompt_context, style=style
+        )
         prompt = build_generation_prompt(description=subject, kind=kind, style=style)
         try:
             # 本地安全过滤（#46 的确定性闸）必须在**预扣配额之前**：被拦下的 prompt
