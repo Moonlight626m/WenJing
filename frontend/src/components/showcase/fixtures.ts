@@ -75,6 +75,13 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
       name: "闰土",
       public_background:
         "闰土是忙月的儿子，紫色的圆脸，头戴一顶小毡帽，颈上套一个明晃晃的银项圈。他会装弶捉小鸟雀，能在雪地里捕鸟，也守过西瓜地。",
+      appearance: {
+        face: "紫色的圆脸",
+        hair: "短发，戴小毡帽",
+        clothing: "青布棉袄",
+        accessories: "银项圈",
+        build: "十一二岁的少年",
+      },
       personality_traits: [
         { label: "机敏", evidence: "向一匹猹尽力的刺去", behavior: "遇事先动手再解释" },
         { label: "见多识广", evidence: "讲海边拾贝、看瓜", behavior: "说起新鲜事就停不下来" },
@@ -122,7 +129,45 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
       scene_id: 1,
       title: "月下刺猹",
       participants: ["我", "闰土"],
-      background_asset: SLOT("background", "pending"),
+      background_asset: SLOT("scene_montage", "pending"),
+      visual_notes: {
+        era: "清末",
+        location: "海边沙地",
+        time_of_day: "夜",
+        weather: "晴",
+        mood: "静谧而紧张",
+      },
+      branches: [
+        {
+          branch_id: "b1",
+          label: "跟着闰土去看瓜",
+          title: "瓜地守夜",
+          participants: ["我", "闰土"],
+          beats: [
+            {
+              beat_id: 1,
+              description: "月光下，闰土指着瓜地说起猹的狡猾。",
+              is_key_event: false,
+              evidence_refs: [],
+            },
+            {
+              beat_id: 2,
+              description: "我学着他的样子握住钢叉，却不敢真刺。",
+              is_key_event: false,
+              evidence_refs: [],
+            },
+          ],
+          visual_notes: {
+            era: "清末",
+            location: "海边瓜地",
+            time_of_day: "夜",
+            weather: "晴",
+            mood: "好奇",
+          },
+          anchor_beat_id: null,
+          background_asset: SLOT("scene_montage", "pending"),
+        },
+      ],
       background_credit: {
         author: "未知作者",
         license: "CC BY 4.0",

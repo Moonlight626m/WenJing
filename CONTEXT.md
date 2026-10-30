@@ -82,7 +82,7 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 
 场景资产编排组件（`domain/game/media.py`）：**画师层转写 → 文生图 → 存储 → 产出
 `AssetRef`**（画师优先，自动配图不再检索素材库）；检索只在教师显式「检索替换」
-（`allow_search` / `search_only`）时启用。Stage2 在剧本生成期预生成；Stage3 由引擎
+（`search_replace=True`）时启用。Stage2 在剧本生成期预生成；Stage3 由引擎
 中转异步生成。
 
 ### 画师层（Painter / PromptWriter）
@@ -96,6 +96,16 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 
 编剧 Agent（`screenwriter`）是剧情推进的"主持人"角色；"DM"仅口语别名，不是独立术语，
 代码与契约沿用 `screenwriter`。
+
+### 回溯（Rollback）与回溯页
+
+回溯是**保留历史的分支切换**：`rollback_to_event`（payload 为目标事件在活动分支上的
+`sequence`）让引擎新建活动分支并从目标节点继承前缀，旧事件仍可审计（`EventStore.rollback_to`）。
+可回溯的粒度是**叙事节拍**（回溯按 beat 游标恢复，台词/系统提示不是目标）。
+
+回溯页（`/game/rollback`）数据源是 `GET /api/sessions/{id}/timeline`，只投影
+`active_events()`——剧本里**尚未演到**的场景与被放弃分支的进度都不会出现；每一幕带
+场景图与一句节拍描述（ADR-0005 §9：事件溯源是资产与进度的唯一权威）。
 
 ### 流式（Streaming）
 

@@ -63,10 +63,15 @@ test("学生完整核心流程：广场 → 详情 → 开局 → 选角 → 游
     .poll(async () => await rows.count(), { timeout: 30_000 })
     .toBeGreaterThan(messagesBefore);
 
-  // 5. 回溯：选目标 → 回到 → 确认
-  await page.locator("select").selectOption({ index: 1 });
-  await page.getByRole("button", { name: /回到 #\d+/ }).click();
-  await page.getByRole("button", { name: "确认", exact: true }).click();
+  // 5. 回溯：进入独立回溯页 → 选一拍 → 确认 → 回到游戏
+  await page.getByRole("link", { name: "回溯进度" }).click();
+  await page.waitForURL(/\/game\/rollback\?id=/);
+  await expect(page.getByRole("heading", { name: "回溯进度" })).toBeVisible();
+  const firstTarget = page.getByRole("button", { name: /回到 #\d+/ }).first();
+  await expect(firstTarget).toBeVisible();
+  await firstTarget.click();
+  await page.getByRole("button", { name: "确认回溯" }).click();
+  await page.waitForURL(/\/game\?id=/);
   await expect(
     page.getByTestId("message-stream").getByText(/已回溯到事件/)
   ).toBeVisible({ timeout: 30_000 });

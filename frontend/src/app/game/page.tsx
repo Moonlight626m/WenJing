@@ -16,7 +16,6 @@ import { GameStage } from "@/components/game-stage";
 import { InteractionCard } from "@/components/interaction-card";
 import { MessageStream } from "@/components/message-stream";
 import { RolePanel } from "@/components/role-panel";
-import { RollbackBar } from "@/components/rollback-bar";
 import { SubtitleTrack } from "@/components/subtitle-track";
 import { ToastHost } from "@/components/toast-host";
 import { buttonClass } from "@/components/ui/button";
@@ -44,6 +43,7 @@ function GameContent() {
   const playerRole = useGameStore((s) => s.playerRole);
   const connection = useGameStore((s) => s.connection);
   const pending = useGameStore((s) => s.pending);
+  const allowedCommands = useGameStore((s) => s.allowedCommands);
   const sceneKey = useGameStore((s) => s.sceneKey);
   const sceneTitle = useGameStore((s) => s.sceneTitle);
   const currentAsset = useGameStore((s) => s.currentAsset);
@@ -190,7 +190,18 @@ function GameContent() {
             </div>
 
             <InteractionCard />
-            <RollbackBar />
+            {pending === null &&
+              allowedCommands.includes("rollback_to_event") &&
+              sessionId && (
+              <div className="flex justify-end">
+                <Link
+                  href={`/game/rollback?id=${sessionId}`}
+                  className={buttonClass("quiet", "xs")}
+                >
+                  回溯进度
+                </Link>
+              </div>
+            )}
           </section>
         </div>
       </GameStage>

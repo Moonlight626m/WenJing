@@ -24,7 +24,6 @@ import { GameStage } from "@/components/game-stage";
 import { InteractionCard } from "@/components/interaction-card";
 import { MessageStream } from "@/components/message-stream";
 import { RolePanel } from "@/components/role-panel";
-import { RollbackBar } from "@/components/rollback-bar";
 import { Skeleton, SkeletonCard } from "@/components/skeleton";
 import { SubtitleTrack } from "@/components/subtitle-track";
 import { GameRow, SquareCard } from "@/components/student/student-home";
@@ -33,7 +32,7 @@ import { GenerationProgress } from "@/components/teacher/generation-progress";
 import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
 import { ScriptPreview } from "@/components/teacher/script-preview";
 import { ScriptCard } from "@/components/teacher/teacher-library";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { AuthField } from "@/components/auth/auth-field";
 import { controlClass } from "@/components/ui/field";
 import { Seal } from "@/components/ui/seal";
@@ -550,7 +549,10 @@ export function ShowcaseGallery() {
                         </div>
                       </div>
                       <InteractionCard />
-                      <RollbackBar />
+                      <div className="flex justify-end">
+                        {/* 画廊只演版式：真实回溯页要读写后端，这里用静态外观 */}
+                        <span className={buttonClass("quiet", "xs")}>回溯进度</span>
+                      </div>
                     </section>
                   </div>
                 </GameStage>

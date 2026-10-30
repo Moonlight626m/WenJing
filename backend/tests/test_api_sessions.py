@@ -112,6 +112,22 @@ def _csrf(client: TestClient) -> dict[str, str]:
     return {"X-CSRF-Token": client.cookies.get("wenjing_csrf")}
 
 
+def _wait_until_status(
+    client: TestClient, session_id: str, predicate, *, timeout: float = 10.0
+) -> dict:
+    """轮询会话状态直到满足条件（异步命令在 TestClient 的 portal loop 里收尾）。"""
+    import time
+
+    deadline = time.monotonic() + timeout
+    body: dict = {}
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/sessions/{session_id}").json()
+        if predicate(body):
+            return body
+        time.sleep(0.05)
+    raise AssertionError(f"会话状态未在 {timeout}s 内满足条件：{body}")
+
+
 async def _create_and_init_session(user_id: str, org_id: str, script_id: int) -> str:
     engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -220,16 +236,57 @@ def test_rest_full_flow(client):
 
     # TestClient 的后台 task 跑在它自己的 portal loop 里，等它收尾要轮询
     # commands 表状态（而不是在另一个 loop 里 drain）
-    import time
+    row = _wait_until_status(client, sid, lambda b: b.get("selected_role") == role)
+    assert row["stage"] == "stage2_reenacting"
 
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        row = client.get(f"/api/sessions/{sid}")
-        if row.json().get("selected_role") == role:
-            break
-        time.sleep(0.05)
-    assert row.json()["stage"] == "stage2_reenacting"
-    assert row.json()["selected_role"] == role
+
+def test_timeline_lists_only_active_branch_progress(client):
+    """回溯页数据源（REST）：只列已发生的进度，回溯后旧分支进度消失。"""
+    sid, role = _full_setup(client)
+    headers = _csrf(client)
+    receipt = client.post(
+        f"/api/sessions/{sid}/commands",
+        json={
+            "session_id": sid,
+            "kind": "select_role",
+            "payload": {"role_name": role},
+        },
+        headers=headers,
+    )
+    assert receipt.status_code == 200, receipt.text
+    _wait_until_status(client, sid, lambda b: b["stage"] == "stage2_reenacting")
+
+    resp = client.get(f"/api/sessions/{sid}/timeline")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["stage"] == "stage2_reenacting"
+    assert data["can_rollback"] is True
+    entries = data["entries"]
+    assert entries, "开局推进后应有可展示的进度"
+    assert {e["kind"] for e in entries} <= {
+        "narrative",
+        "character_speech",
+        "system",
+    }
+    assert all(e["sequence"] <= data["head_sequence"] for e in entries)
+    target = next(
+        e for e in entries if e["kind"] == "narrative" and e["rollbackable"]
+    )
+
+    rolled = client.post(
+        f"/api/sessions/{sid}/commands",
+        json={
+            "session_id": sid,
+            "kind": "rollback_to_event",
+            "payload": {"target_sequence": target["sequence"]},
+        },
+        headers=headers,
+    )
+    assert rolled.status_code == 200, rolled.text
+    after = client.get(f"/api/sessions/{sid}/timeline").json()
+    assert any(
+        e["kind"] == "system" and "已回溯" in e["text"] for e in after["entries"]
+    )
 
 
 def test_rest_error_envelopes(client):

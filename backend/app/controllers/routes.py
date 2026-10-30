@@ -28,6 +28,7 @@ from app.contracts.dto import (
     CreateSessionRequest,
     SessionListResponse,
     SessionStatusResponse,
+    SessionTimelineResponse,
 )
 from app.contracts.media import TranscribeResponse
 from app.controllers.auth_deps import Principal, get_principal, require_csrf, resolve_principal
@@ -145,6 +146,23 @@ async def session_status(
     except WJError as exc:
         return _error_response(exc)
     return resp.model_dump(mode="json")
+
+
+@router.get(
+    "/api/sessions/{session_id}/timeline",
+    response_model=SessionTimelineResponse,
+)
+async def session_timeline(
+    session_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> SessionTimelineResponse:
+    """回溯页进度（只含活动分支已发生的事件；未来场景不经此接口泄露）。"""
+    try:
+        return await get_application().get_timeline(
+            _ensure_uuid(session_id), actor=principal.actor
+        )
+    except WJError as exc:
+        return _error_response(exc)
 
 
 @router.post("/api/sessions/{session_id}/commands")

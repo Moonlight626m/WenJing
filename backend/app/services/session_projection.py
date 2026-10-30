@@ -10,8 +10,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.contracts.dto import SessionStatusResponse
-from app.contracts.enums import EventType, InteractionMode, StageValue
+from app.contracts.dto import (
+    SessionStatusResponse,
+    SessionTimelineResponse,
+    TimelineEntry,
+)
+from app.contracts.enums import (
+    CommandKind,
+    EventType,
+    InteractionMode,
+    MessageCategory,
+    StageValue,
+)
 from app.contracts.runtime import (
     ActiveInteraction,
     DomainEventRef,
@@ -20,6 +30,7 @@ from app.contracts.runtime import (
     RuntimeUpdate,
 )
 from app.contracts.script import AssetRef
+from app.domain.game.assets import RuntimeAssets
 from app.domain.game.game_runtime import StepResult
 from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
@@ -191,6 +202,15 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
     return event_type
 
 
+def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
+    """事件 → 用户可见文本（WS 消息与回溯页共用，避免两处口径漂移）。"""
+    if category == "narrative":
+        return str(p.get("summary", ""))
+    if category == "character_speech":
+        return str(p.get("text", ""))
+    return _system_text(event_type, p)
+
+
 def project_messages(
     session_id: uuid.UUID,
     store: Any,
@@ -225,9 +245,9 @@ def project_messages(
             }
         elif category == "character_speech":
             payload["speaker"] = p.get("speaker")
-            payload["text"] = str(p.get("text", ""))
+            payload["text"] = _event_text(ev.event_type, p, category)
         elif category == "narrative":
-            payload["text"] = str(p.get("summary", ""))
+            payload["text"] = _event_text(ev.event_type, p, category)
             # 场景切换信息（#53）：前端据此更新背景/场景标题。
             # current_asset 也随事件下发——实时跨场景时不必等重连的 session_init
             if p.get("scene_key"):
@@ -237,7 +257,7 @@ def project_messages(
             if p.get("current_asset") is not None:
                 payload["current_asset"] = p["current_asset"]
         else:
-            payload["text"] = _system_text(ev.event_type, p)
+            payload["text"] = _event_text(ev.event_type, p, category)
         msgs.append({"type": category, "seq": seq, "payload": payload})
     if interaction is not None:
         msgs.append(
@@ -252,6 +272,83 @@ def project_messages(
             }
         )
     return msgs
+
+
+def project_timeline(
+    session_id: uuid.UUID,
+    store: Any,
+    *,
+    stage: StageValue | str,
+    allowed_commands: list[str],
+    max_rollback_steps: int,
+) -> SessionTimelineResponse:
+    """活动分支事件流 → 回溯页进度（与 WS 消息同一条投影口径）。
+
+    只遍历 `active_events()`：回溯/分支放弃后的事件自然消失，剧本包里**尚未
+    发生**的场景也永远不会出现。场景图与标题按事件流累积——`plot_advancement`
+    携带当时的场景上下文，`asset_ready` 到达后替换为该场景的图。
+
+    只有叙事节拍可作回溯目标：回溯按 beat 游标恢复，目标落在台词或系统提示上
+    会让「回到哪一幕」不可预期。
+    """
+    path = store.active_events()
+    latest = store.latest_event_id
+    # 事件索引优先、剧本槽位兜底（AGENTS.md：RuntimeAssets.rebuild 是资产索引的
+    # 指定入口）——`plot_advancement` 的 current_asset 是生成期离线预生成的槽位，
+    # 运行期 asset_ready 才算在事件索引里。
+    runtime_assets = RuntimeAssets.rebuild(store)
+    entries: list[TimelineEntry] = []
+    scene_key: str | None = None
+    scene_title: str | None = None
+    plot_asset: AssetRef | None = None
+    for seq, ev in enumerate(path):
+        p = ev.payload or {}
+        if ev.event_type == "plot_advancement":
+            next_key = p.get("scene_key")
+            if next_key and next_key != scene_key:
+                # 换场必须清掉上一场的图：新场还没有图时（current_asset 为空），
+                # 沿用它会把上一幕的画面配到这一幕上。
+                plot_asset = None
+            scene_key = next_key or scene_key
+            scene_title = p.get("scene_title") or scene_title
+            if p.get("current_asset") is not None:
+                plot_asset = AssetRef.model_validate(p["current_asset"])
+        if ev.event_type in _SILENT_EVENTS:
+            continue
+        category = _MESSAGE_CATEGORY_MAP.get(ev.event_type)
+        if category not in ("narrative", "character_speech", "system"):
+            continue
+        scened = category != "system"
+        speaker = p.get("speaker") if category == "character_speech" else None
+        steps = latest - ev.event_id
+        entries.append(
+            TimelineEntry(
+                sequence=seq,
+                kind=MessageCategory(category),
+                text=_event_text(ev.event_type, p, category),
+                speaker=str(speaker) if speaker else None,
+                scene_key=scene_key if scened else None,
+                scene_title=scene_title if scened else None,
+                current_asset=(
+                    (runtime_assets.current(scene_key) or plot_asset)
+                    if scened
+                    else None
+                ),
+                rollbackable=(
+                    category == "narrative" and 0 < steps <= max_rollback_steps
+                ),
+            )
+        )
+    return SessionTimelineResponse(
+        session_id=session_id,
+        stage=stage.value if isinstance(stage, StageValue) else str(stage),
+        head_sequence=max(0, len(path) - 1),
+        can_rollback=(
+            CommandKind.ROLLBACK_TO_EVENT.value in allowed_commands
+            and any(e.rollbackable for e in entries)
+        ),
+        entries=entries,
+    )
 
 
 def messages_from_update(

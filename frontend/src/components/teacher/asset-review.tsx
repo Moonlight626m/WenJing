@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef } from "react";
+import { Fragment, useRef } from "react";
 
 import { ASSET_IMAGE_BG, AssetImage } from "@/components/asset-image";
 import { Button } from "@/components/ui/button";
@@ -195,7 +195,7 @@ function AssetSlotCard({
   );
 }
 
-/** 终审配图审批区（#50）：场景背景 + 人物头像两组槽位。 */
+/** 终审配图审批区（#50）：场景场面图（含分支）+ 人物头像。 */
 export function AssetReviewSection({
   scriptId,
   scenes,
@@ -224,18 +224,45 @@ export function AssetReviewSection({
       </p>
       {scenes.map((scene) => {
         const subjectKey = `scene:${scene.scene_id}`;
+        // 旧脚本的槽位是纯空镜 background；新生成的是含人物的 scene_montage。
+        // 槽位操作的 kind 必须与现有资产对齐，否则「重新生成」会改错槽。
+        const kind: AssetOp["kind"] =
+          scene.background_asset?.kind === "background"
+            ? "background"
+            : "scene_montage";
         return (
-          <AssetSlotCard
-            key={subjectKey}
-            label={`场景「${scene.title}」背景`}
-            subjectKey={subjectKey}
-            kind="background"
-            asset={scene.background_asset ?? null}
-            op={drafts.get(assetOpKey(subjectKey, "background")) ?? null}
-            scriptId={scriptId}
-            onChange={(op) => setOp(subjectKey, "background", op)}
-            disabled={disabled}
-          />
+          <Fragment key={subjectKey}>
+            <AssetSlotCard
+              label={
+                kind === "background"
+                  ? `场景「${scene.title}」背景`
+                  : `场景「${scene.title}」场面图`
+              }
+              subjectKey={subjectKey}
+              kind={kind}
+              asset={scene.background_asset ?? null}
+              op={drafts.get(assetOpKey(subjectKey, kind)) ?? null}
+              scriptId={scriptId}
+              onChange={(op) => setOp(subjectKey, kind, op)}
+              disabled={disabled}
+            />
+            {(scene.branches ?? []).map((branch) => {
+              const branchKey = `${subjectKey}::branch:${branch.branch_id}`;
+              return (
+                <AssetSlotCard
+                  key={branchKey}
+                  label={`分支「${branch.title}」场面图`}
+                  subjectKey={branchKey}
+                  kind="scene_montage"
+                  asset={branch.background_asset ?? null}
+                  op={drafts.get(assetOpKey(branchKey, "scene_montage")) ?? null}
+                  scriptId={scriptId}
+                  onChange={(op) => setOp(branchKey, "scene_montage", op)}
+                  disabled={disabled}
+                />
+              );
+            })}
+          </Fragment>
         );
       })}
       {characters.map((character) => {

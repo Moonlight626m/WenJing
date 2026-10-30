@@ -17,6 +17,7 @@ from app.contracts.commands import PlayerCommand
 from app.contracts.enums import MessageCategory
 from app.contracts.errors import ErrorEnvelope
 from app.contracts.runtime import ActiveInteraction
+from app.contracts.script import AssetRef
 
 # ===== REST DTO =====
 
@@ -62,6 +63,41 @@ class SessionStatusResponse(ContractModel):
     head_sequence: int = Field(ge=0)
     playable_roles: list[str] = Field(default_factory=list)
     selected_role: str | None = None
+
+
+class TimelineEntry(ContractModel):
+    """回溯页的一条进度：活动分支上**已发生**的事件投影。
+
+    与 WS 消息同一套投影（seq = 分支路径序号，回溯命令按它定位目标），额外带上
+    累计的场景上下文（图/标题）——回溯页据此给每幕配图并写描述。未来场景从不
+    出现在这里：它只遍历 `active_events()`，而不是剧本包的 `scenes`。
+    """
+
+    sequence: int = Field(ge=0)
+    kind: MessageCategory
+    text: str
+    speaker: str | None = None
+    scene_key: str | None = None
+    scene_title: str | None = None
+    current_asset: AssetRef | None = None
+    #: 只有叙事节拍是回溯目标：回溯按 beat 游标恢复，落在台词/系统提示上会让
+    #: 「回到哪一幕」变得不可预期。
+    rollbackable: bool = False
+
+
+class SessionTimelineResponse(ContractModel):
+    """GET /api/sessions/{id}/timeline：独立回溯页的数据源。
+
+    与 `SessionStatusResponse` 同属**未导出的 REST DTO**（`ContractModel`，不带
+    `schema_version`）——因此不进 fixtures/jsonschema；前端镜像与状态响应一样
+    手写在 `frontend/src/lib/api.ts`。
+    """
+
+    session_id: uuid.UUID
+    stage: str
+    head_sequence: int = Field(ge=0)
+    can_rollback: bool = False
+    entries: list[TimelineEntry] = Field(default_factory=list)
 
 
 # ===== WebSocket 协议 =====

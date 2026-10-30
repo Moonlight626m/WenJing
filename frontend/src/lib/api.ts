@@ -200,6 +200,31 @@ export interface RuntimeUpdateDto {
   emitted_event_types: string[];
 }
 
+/**
+ * 回溯页的一条进度（backend/app/contracts/dto.py TimelineEntry 镜像）。
+ *
+ * 只来自**活动分支已发生**的事件：游标之后的剧本场景不会出现在这里，
+ * `rollbackable` 由服务端按「叙事节拍 + 步数上限 + 当前阶段允许回溯」判定。
+ */
+export interface TimelineEntry {
+  sequence: number;
+  kind: "narrative" | "character_speech" | "system";
+  text: string;
+  speaker: string | null;
+  scene_key: string | null;
+  scene_title: string | null;
+  current_asset: AssetRef | null;
+  rollbackable: boolean;
+}
+
+export interface SessionTimeline {
+  session_id: string;
+  stage: string;
+  head_sequence: number;
+  can_rollback: boolean;
+  entries: TimelineEntry[];
+}
+
 // ===== 端点 =====
 
 /** 学生从剧本开局：POST /api/sessions {script_id} → 201 SessionStatusResponse。 */
@@ -212,6 +237,11 @@ export function openSession(scriptId: number): Promise<SessionStatus> {
 
 export function getStatus(sessionId: string): Promise<SessionStatus> {
   return request(`/api/sessions/${sessionId}`);
+}
+
+/** 回溯页进度（GET /api/sessions/{id}/timeline）：只含已发生的事件。 */
+export function getTimeline(sessionId: string): Promise<SessionTimeline> {
+  return request(`/api/sessions/${sessionId}/timeline`);
 }
 
 /** 我的游戏列表（GET /api/sessions，仅自己的剧情世界）。 */

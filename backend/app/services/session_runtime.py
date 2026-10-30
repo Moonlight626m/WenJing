@@ -29,6 +29,7 @@ from app.contracts.dto import (
     SessionListResponse,
     SessionStatusResponse,
     SessionSummary,
+    SessionTimelineResponse,
 )
 from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
@@ -58,6 +59,7 @@ from app.services.session_projection import (
     project_messages,
     project_state,
     project_status,
+    project_timeline,
     project_update,
 )
 from app.services.session_store import SessionStore
@@ -682,6 +684,26 @@ class SessionApplication:
             head_event_id=sess.head_event_id,
             playable_roles=playable,
             selected_role=sess.player_role,
+        )
+
+    async def get_timeline(
+        self, session_id: uuid.UUID, *, actor: Actor
+    ) -> SessionTimelineResponse:
+        """独立回溯页的数据源：活动分支上已发生的进度。
+
+        与重连补发同一条路径（`_restore_runtime` + `active_events`），所以回溯后
+        旧分支的进度自动消失；剧本包里尚未演到的场景根本不在事件流里，也就不会
+        被「预告」出来。
+        """
+        await self._access_session(session_id, actor)
+        runtime, store, _ = await self._restore_runtime(session_id)
+        state = project_state(session_id, store, runtime.export_state())
+        return project_timeline(
+            session_id,
+            store,
+            stage=state.stage,
+            allowed_commands=[k.value for k in state.allowed_commands()],
+            max_rollback_steps=runtime.config.max_rollback_steps,
         )
 
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====

@@ -387,3 +387,130 @@ async def test_asset_ready_updates_current_asset_in_projection(make_runtime):
     update = project_update(_SID, rt.event_store, result)
     assert update.state.current_asset is not None
     assert update.state.current_asset.asset_id == runtime_asset
+
+
+async def test_project_timeline_lists_only_happened_beats(make_runtime):
+    """回溯页：只列活动分支已发生的事件，未演到的场景不出现。
+
+    「还没发生」有两层：剧本包里游标之后的场景（断言「送别」不出现），以及
+    可以回溯的粒度只到叙事节拍（台词不是回溯目标）。
+    """
+    from app.contracts.enums import MessageCategory
+    from app.services.session_projection import project_timeline
+
+    rt = make_runtime(session_id=str(_SID))
+    bg1, bg2 = _bg(), _bg()
+    _attach_backgrounds(rt, bg1, bg2)
+    await _start_and_select(rt)  # 场景 1 第 1 拍
+
+    tl = project_timeline(
+        _SID,
+        rt.event_store,
+        stage=rt.state.stage,
+        allowed_commands=[
+            "choose_option",
+            "free_input",
+            "rollback_to_event",
+            "exit_game",
+        ],
+        max_rollback_steps=rt.config.max_rollback_steps,
+    )
+    assert tl.can_rollback
+    assert tl.stage == "stage2_reenacting"
+    assert tl.head_sequence == len(rt.event_store.active_events()) - 1
+
+    narratives = [e for e in tl.entries if e.kind is MessageCategory.NARRATIVE]
+    assert narratives, "至少一拍的叙事进进度"
+    assert all(e.scene_title == "相遇" for e in narratives)
+    assert all(e.scene_key == "scene:1" for e in narratives)
+    assert narratives[0].current_asset is not None
+    assert narratives[0].current_asset.asset_id == bg1.asset_id
+    # 第二幕还没演到：回溯页不能剧透
+    assert all("送别" not in (e.scene_title or "") for e in tl.entries)
+    # 台词不是回溯目标（回溯按 beat 游标恢复）
+    speeches = [e for e in tl.entries if e.kind is MessageCategory.CHARACTER_SPEECH]
+    assert all(not e.rollbackable for e in speeches)
+
+    # 步数上限 0 → 一律不可回溯，can_rollback 降级为 False（前端只读浏览）
+    strict = project_timeline(
+        _SID,
+        rt.event_store,
+        stage=rt.state.stage,
+        allowed_commands=["rollback_to_event"],
+        max_rollback_steps=0,
+    )
+    assert not strict.can_rollback
+    assert not any(e.rollbackable for e in strict.entries)
+    # 允许列表里没有 rollback_to_event 时同样不可回溯
+    locked = project_timeline(
+        _SID,
+        rt.event_store,
+        stage=rt.state.stage,
+        allowed_commands=["choose_option"],
+        max_rollback_steps=rt.config.max_rollback_steps,
+    )
+    assert not locked.can_rollback
+
+
+async def test_project_timeline_drops_superseded_branch_progress(make_runtime):
+    """回溯后旧分支的进度不再出现在回溯页（事件溯源是唯一权威）。"""
+    from app.contracts.enums import MessageCategory
+    from app.services.session_projection import project_timeline
+
+    rt = make_runtime(session_id=str(_SID))
+    await _start_and_select(rt)
+    await _choose(rt, 1)  # 推进到场景 2
+
+    old_branch = rt.event_store.active_branch_id
+    path = rt.event_store.active_events()
+    first_narrative = next(e for e in path if e.event_type == "plot_advancement")
+    await rt.submit(
+        command_id=str(uuid.uuid4()),
+        kind="rollback_to_event",
+        payload={"target_event_id": first_narrative.event_id},
+    )
+    superseded = {
+        e.event_id for e in rt.event_store.events_in_branch(old_branch)
+    } - {e.event_id for e in rt.event_store.active_events()}
+    assert superseded, "回溯应放弃旧分支的一段事件"
+
+    tl = project_timeline(
+        _SID,
+        rt.event_store,
+        stage=rt.state.stage,
+        allowed_commands=["choose_option", "rollback_to_event"],
+        max_rollback_steps=rt.config.max_rollback_steps,
+    )
+    active = rt.event_store.active_events()
+    assert all(active[e.sequence].event_id not in superseded for e in tl.entries)
+    # 序号唯一且都落在活动路径内
+    sequences = [e.sequence for e in tl.entries]
+    assert len(sequences) == len(set(sequences))
+    assert all(0 <= seq < len(active) for seq in sequences)
+    assert any(
+        e.kind is MessageCategory.SYSTEM and "已回溯" in e.text for e in tl.entries
+    )
+
+
+async def test_project_timeline_scene_without_image_does_not_inherit_previous(
+    make_runtime,
+):
+    """换场时清掉上一场的图：新场没图就显示「暂无配图」，不能沿用上一幕画面。"""
+    from app.services.session_projection import project_timeline
+
+    rt = make_runtime(session_id=str(_SID))
+    rt.script.scenes[0].background_asset = _bg()  # 只给场景 1 配图
+    await _start_and_select(rt)
+    await _choose(rt, 1, 1)  # 推进到场景 2
+
+    tl = project_timeline(
+        _SID,
+        rt.event_store,
+        stage=rt.state.stage,
+        allowed_commands=["choose_option", "rollback_to_event"],
+        max_rollback_steps=rt.config.max_rollback_steps,
+    )
+    scene1 = [e for e in tl.entries if e.scene_title == "相遇"]
+    scene2 = [e for e in tl.entries if e.scene_title == "送别"]
+    assert scene1 and any(e.current_asset is not None for e in scene1)
+    assert scene2 and all(e.current_asset is None for e in scene2)
