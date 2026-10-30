@@ -1,0 +1,859 @@
+"""剧本库教师创作 API 集成测试（issue #19 / ADR-0002 §3，真实 PG + fake LLM）。
+
+覆盖验收：
+- 教师导入素材 → 建草稿 → 生成 → 发布（org/public）/下架 → 列表/详情；
+- 草稿可删除/重新生成；同一素材可生成多个独立剧本；
+- 发布后核心内容不可编辑（仅可改可见性/下架）；仅草稿可删除；
+- 学生角色调用创作/发布端点被拒（403）；跨 org 可见性规则。
+
+依赖真实 PostgreSQL；不可用时 skip。
+
+注：异步生成在进程内 asyncio 任务中运行，TestClient 下轮询不稳定；本测试用
+`_generate_direct`（同一 DB 上以独立事件循环 await 生成）准备已完成剧本，
+HTTP 只验证 API 表面与状态机。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import os
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+import app.infrastructure.models  # noqa: F401
+from app.contracts.enums import UserRole
+from app.contracts.generation import GenerationStatus
+from app.contracts.review import AssetOp, GateEdits
+from app.contracts.script import ScriptPackage
+from app.contracts.script_library import GenerationResumeRequest
+from app.domain.access import Actor
+from app.main import create_app
+from app.services.script_library import ScriptLibrary
+
+_DB_URL = os.environ.get(
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+)
+
+_MATERIAL_TEXT = (
+    "那年冬天，母亲病了。我离开家，到城里去买药。"
+    "母亲说：路上小心。我回头看见她站在门口，眼泪流了下来。"
+)
+
+_REGISTER = {"schema_version": "2.4.0", "phone": None, "password": "supersecret1"}
+
+
+def _engine():
+    return create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+
+
+async def _db_available() -> bool:
+    engine = _engine()
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("select 1"))
+        return True
+    except Exception:
+        return False
+    finally:
+        await engine.dispose()
+
+
+def _execute(sql: str, **params) -> None:
+    async def _run():
+        engine = _engine()
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(sql), params)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+@pytest.fixture(scope="module")
+def _schema():
+    if not asyncio.run(_db_available()):
+        pytest.skip("PostgreSQL 未可用，跳过剧本库集成测试")
+
+    from conftest import drop_baseline_schema, reset_baseline_schema
+
+    engine = _engine()
+
+    async def _create():
+        async with engine.begin() as conn:
+            await reset_baseline_schema(conn)
+
+    async def _drop():
+        async with engine.begin() as conn:
+            await drop_baseline_schema(conn)
+
+    asyncio.run(_create())
+    asyncio.run(engine.dispose())
+    yield
+    engine2 = _engine()
+    try:
+        asyncio.run(_drop())
+    finally:
+        asyncio.run(engine2.dispose())
+
+
+@pytest.fixture(scope="module")
+def client(_schema):
+    from app.infrastructure.db import session as db_session
+
+    asyncio.run(db_session.engine.dispose())
+    app = create_app()
+    with TestClient(app) as c:
+        yield c
+    asyncio.run(db_session.engine.dispose())
+
+
+@pytest.fixture(autouse=True)
+def _fresh(client):
+    _execute(
+        "truncate table commands, snapshots, events, event_branches, sessions, "
+        "materials, scripts, auth_sessions, users, orgs restart identity cascade"
+    )
+    client.cookies.clear()
+    yield
+
+
+def _register(client: TestClient, email: str, role: str = "teacher") -> dict:
+    client.cookies.clear()
+    resp = client.post(
+        "/api/auth/register", json={**_REGISTER, "email": email, "nickname": "用户"}
+    )
+    assert resp.status_code == 201, resp.text
+    if role != "student":
+        _execute("update users set role = :r where email = :e", r=role, e=email)
+    me = client.get("/api/auth/me").json()
+    assert me["role"] == role
+    return {
+        "session": client.cookies.get("wenjing_session"),
+        "csrf": client.cookies.get("wenjing_csrf"),
+        "me": me,
+    }
+
+
+def _act_as(client: TestClient, account: dict) -> None:
+    client.cookies.clear()
+    client.cookies.set("wenjing_session", account["session"])
+    client.cookies.set("wenjing_csrf", account["csrf"])
+
+
+def _csrf_header(client: TestClient) -> dict[str, str]:
+    return {"X-CSRF-Token": client.cookies.get("wenjing_csrf")}
+
+
+def _post(client: TestClient, url: str, json: dict | None = None):
+    return client.post(url, json=json, headers=_csrf_header(client))
+
+
+def _delete(client: TestClient, url: str):
+    return client.delete(url, headers=_csrf_header(client))
+
+
+def _import_material(client: TestClient) -> int:
+    resp = _post(
+        client,
+        "/api/materials",
+        {
+            "schema_version": "2.4.0",
+            "source": "paste",
+            "filename": None,
+            "raw_text": _MATERIAL_TEXT,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def _create_script(client: TestClient, material_id: int, name: str = "剧本") -> int:
+    resp = _post(
+        client,
+        "/api/scripts",
+        {
+            "schema_version": "2.4.0",
+            "material_id": material_id,
+            "name": name,
+            "description": None,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
+def _generate_direct(client: TestClient, script_id: int) -> None:
+    """在独立事件循环里 await 生成（确定性 fake），避免 TestClient 后台任务竞态。"""
+    me = client.get("/api/auth/me").json()
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            library = ScriptLibrary(session_factory=factory, script_llm=None)
+            await library.start_generation(script_id, actor)
+            await library.await_generation(script_id)
+            progress = await library.progress(script_id)
+            assert progress and progress.status == "succeeded", progress
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def _publish(client: TestClient, script_id: int, visibility: str = "org"):
+    return _post(
+        client,
+        f"/api/scripts/{script_id}/publish",
+        {"schema_version": "2.4.0", "visibility": visibility},
+    )
+
+
+# ===== 教师创作流程 =====
+
+
+def test_teacher_full_flow(client):
+    _register(client, "teacher@wenjing.local")
+
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+
+    detail = client.get(f"/api/scripts/{script_id}").json()
+    assert detail["script"]["status"] == "draft"
+    assert detail["package"] is None
+
+    _generate_direct(client, script_id)
+    detail = client.get(f"/api/scripts/{script_id}").json()
+    assert detail["package"] is not None
+    assert detail["script"]["status"] == "draft"
+
+    published = _publish(client, script_id, "org")
+    assert published.status_code == 200
+    assert published.json()["status"] == "published"
+
+    student = _register(client, "student@wenjing.local", role="student")
+    _act_as(client, student)
+    seen = client.get(f"/api/scripts/{script_id}")
+    assert seen.status_code == 200
+    assert seen.json()["package"] is not None
+    assert seen.json()["generation"] is None  # 非 owner 不暴露生成进度
+
+    # 重新以 owner 身份登录（注册新人会覆盖 cookie），下架后学生不再可见
+    owner = _login_owner(client, "teacher@wenjing.local")
+    _act_as(client, owner)
+    off = _post(client, f"/api/scripts/{script_id}/unpublish")
+    assert off.status_code == 200
+    assert off.json()["status"] == "unpublished"
+    _act_as(client, student)
+    assert client.get(f"/api/scripts/{script_id}").status_code == 404
+
+
+def _login_owner(client: TestClient, email: str) -> dict:
+    client.cookies.clear()
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "schema_version": "2.4.0",
+            "identifier": email,
+            "password": "supersecret1",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    me = client.get("/api/auth/me").json()
+    return {
+        "session": client.cookies.get("wenjing_session"),
+        "csrf": client.cookies.get("wenjing_csrf"),
+        "me": me,
+    }
+
+
+def test_generate_endpoint_accepts(client):
+    _register(client, "teacher-gen@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+
+    started = _post(client, f"/api/scripts/{script_id}/generate")
+    assert started.status_code == 202
+    # 路由同步写入 running 进度，详情立即可轮询（完成与否无所谓）
+    detail = client.get(f"/api/scripts/{script_id}").json()
+    assert detail["generation"] is not None
+    assert detail["generation"]["status"] in ("running", "succeeded")
+
+
+def test_cancel_running_generation(client):
+    """教师停止运行中的生成：取消任务 → attempt 回写 failed + 教师可读文案。
+
+    在独立事件循环用服务级 API 驱动（generate → 不完等 → cancel → 核对终态），
+    HTTP 层面验证 cancel 端点状态机：未运行时 409、学生 403。
+    """
+    me = _register(client, "cancel-teacher@wenjing.local")["me"]
+    material_id = _import_material(client)
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            library = ScriptLibrary(session_factory=factory, script_llm=None)
+            material = await library.get_material(material_id, actor)
+            script = await library.create_script(
+                actor, material_id=material.id, name="取消流程", description=None
+            )
+            await library.start_generation(script.id, actor)
+            task = library._tasks[script.id]  # noqa: SLF001 取消需要拿到运行中任务
+            assert not task.done()
+            row = await library.cancel_generation(script.id, actor)
+            assert row.id == script.id
+            progress = await library.progress(script.id)
+            assert progress is not None
+            assert progress.status.value == GenerationStatus.FAILED.value
+            assert "停止" in (progress.error or "")
+            # 被取消任务应很快终结（CancelledError 由 done callback 吸收）
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+    # HTTP 面：未运行时再取消 → 409（CONTENT_SCRIPT_NOT_RUNNING，信封单出口）。
+    # 用数学上不会撞全局 library 残留任务的剧本：同一 creative 流程再造一份，
+    # 从未 generate 过（_fresh truncate 后前测残留 _tasks[1] 会吞掉 id=1 的取消）。
+    script2_id = _create_script(client, material_id, name="取消重复")
+    resp = _post(client, f"/api/scripts/{script2_id}/generation/cancel")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "CONTENT_SCRIPT_NOT_RUNNING"
+
+    # 学生不可取消
+    student = _register(client, "cancel-student@wenjing.local", role="student")
+    _act_as(client, student)
+    resp = _post(client, f"/api/scripts/{script2_id}/generation/cancel")
+    assert resp.status_code == 403
+
+
+def test_same_material_multiple_independent_scripts(client):
+    _register(client, "teacher2@wenjing.local")
+    material_id = _import_material(client)
+    a = _create_script(client, material_id, name="甲")
+    b = _create_script(client, material_id, name="乙")
+    _generate_direct(client, a)
+    _generate_direct(client, b)
+
+    listing = client.get("/api/scripts").json()["items"]
+    ids = {item["id"] for item in listing}
+    assert {a, b} <= ids
+
+
+def test_publish_requires_generated_content(client):
+    _register(client, "teacher3@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+
+    resp = _publish(client, script_id, "public")
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CONTENT_SCRIPT_NOT_EDITABLE"
+
+
+def test_regenerate_and_delete_draft(client):
+    _register(client, "teacher4@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+
+    regen = _post(client, f"/api/scripts/{script_id}/regenerate")
+    assert regen.status_code == 202
+    # 清空内容并重启生成
+    assert regen.json()["package"] is None
+    assert regen.json()["generation"]["status"] in ("running", "succeeded")
+
+    assert _delete(client, f"/api/scripts/{script_id}").status_code == 204
+    assert client.get(f"/api/scripts/{script_id}").status_code == 404
+
+
+def test_published_script_cannot_be_deleted(client):
+    _register(client, "teacher5@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+    _publish(client, script_id, "org")
+
+    resp = _delete(client, f"/api/scripts/{script_id}")
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CONTENT_SCRIPT_NOT_EDITABLE"
+
+
+def test_published_script_cannot_be_regenerated(client):
+    _register(client, "teacher8@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+    _publish(client, script_id, "org")
+
+    resp = _post(client, f"/api/scripts/{script_id}/generate")
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "CONTENT_SCRIPT_NOT_EDITABLE"
+
+
+def test_other_teacher_cannot_modify_script(client):
+    _register(client, "teacher9@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+
+    other = _register(client, "teacher10@wenjing.local")
+    _act_as(client, other)
+    assert _post(client, f"/api/scripts/{script_id}/generate").status_code == 403
+    assert _publish(client, script_id, "public").status_code == 403
+    assert _delete(client, f"/api/scripts/{script_id}").status_code == 403
+
+
+def test_import_non_narrative_rejected(client):
+    _register(client, "teacher12@wenjing.local")
+    resp = _post(
+        client,
+        "/api/materials",
+        {
+            "schema_version": "2.4.0",
+            "source": "paste",
+            "filename": None,
+            "raw_text": "地球绕太阳公转。水由氢和氧组成。光速约为每秒三十万公里。",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "CONTENT_UNSUPPORTED_GENRE"
+
+
+# ===== 可见性 =====
+
+
+def test_public_script_visible_cross_org(client):
+    _register(client, "teacher7@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+    _publish(client, script_id, "public")
+
+    outsider = _register(client, "outsider@wenjing.local", role="student")
+    _move_to_new_org("outsider@wenjing.local")
+    _act_as(client, outsider)
+    assert client.get(f"/api/scripts/{script_id}").status_code == 200
+
+
+def test_org_visibility_hidden_from_other_org(client):
+    _register(client, "teacher11@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+    _generate_direct(client, script_id)
+    _publish(client, script_id, "org")
+
+    outsider = _register(client, "outsider2@wenjing.local", role="student")
+    _move_to_new_org("outsider2@wenjing.local")
+    _act_as(client, outsider)
+    assert client.get(f"/api/scripts/{script_id}").status_code == 404
+
+
+def _move_to_new_org(email: str) -> None:
+    _execute(
+        "insert into orgs (id, name, created_at) values (:id, :name, now())",
+        id=uuid.uuid4(),
+        name=f"isolated-{uuid.uuid4().hex[:8]}",
+    )
+    _execute(
+        "update users set org_id = "
+        "(select id from orgs order by created_at desc limit 1) where email = :e",
+        e=email,
+    )
+
+
+# ===== RBAC =====
+
+
+def test_student_cannot_use_creation_endpoints(client):
+    _register(client, "teacher6@wenjing.local")
+    material_id = _import_material(client)
+    script_id = _create_script(client, material_id)
+
+    student = _register(client, "student2@wenjing.local", role="student")
+    _act_as(client, student)
+
+    import_denied = _post(
+        client,
+        "/api/materials",
+        {
+            "schema_version": "2.4.0",
+            "source": "paste",
+            "filename": None,
+            "raw_text": _MATERIAL_TEXT,
+        },
+    )
+    assert import_denied.status_code == 403
+    assert import_denied.json()["code"] == "AUTH_FORBIDDEN"
+
+    create_denied = _post(
+        client,
+        "/api/scripts",
+        {
+            "schema_version": "2.4.0",
+            "material_id": material_id,
+            "name": "x",
+            "description": None,
+        },
+    )
+    assert create_denied.status_code == 403
+    assert _post(client, f"/api/scripts/{script_id}/generate").status_code == 403
+    assert _publish(client, script_id, "org").status_code == 403
+    assert client.get("/api/scripts").status_code == 403
+
+
+def test_generation_materials_gate_resume_flow(client):
+    """#34 首个闸门服务级流程：生成停在 awaiting_review → 教师恢复 → 成功。
+
+    - 指导指令经闸门注入下游（剧本书写 prompt 可感知）；
+    - 恢复后的进度快照保留闸门前的 doubter 打回历史。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from test_workflow import ScriptedWorkflowLLM, make_analysis
+
+    from app.contracts.generation import GenerationStatus as GenerationStatusEnum
+    from app.contracts.material import MaterialInput, MaterialSource
+
+    account = _register(client, "gate-teacher@wenjing.local")
+    me = account["me"]
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            llm = ScriptedWorkflowLLM(make_analysis())
+            library = ScriptLibrary(
+                session_factory=factory,
+                script_llm=llm,
+                workflow_enabled=True,
+                workflow_checkpointer=MemorySaver(),
+            )
+            material = await library.import_material(
+                actor,
+                MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+            )
+            script = await library.create_script(
+                actor, material_id=material.id, name="闸门流程", description=None
+            )
+            await library.start_generation(script.id, actor)
+            await library.await_generation(script.id)
+
+            paused = await library.progress(script.id)
+            assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+            # #34：闸门审阅载荷随暂停落库，教师端经 detail.review 读取
+            review = await library.review(script.id)
+            assert review is not None and review.gate == "materials"
+            assert review.dossier is not None
+
+            directive = "母亲的背影要更突出"
+            # 链式闸门：素材 → 人物+场景 → 终审，逐闸恢复；恢复后停在下一闸
+            next_gate = {"materials": "pre_write", "pre_write": "final"}
+            for gate in ("materials", "pre_write"):
+                await library.resume_generation(
+                    script.id,
+                    actor,
+                    resume=GenerationResumeRequest(
+                        directives=[directive] if gate == "materials" else []
+                    ),
+                )
+                await library.await_generation(script.id)
+                paused = await library.progress(script.id)
+                assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+                review = await library.review(script.id)
+                assert review is not None and review.gate == next_gate[gate]
+                if review.gate == "pre_write":
+                    assert review.division is not None and review.profiles
+                elif review.gate == "final":
+                    assert review.package is not None
+
+            await library.resume_generation(
+                script.id, actor, resume=GenerationResumeRequest(action="approve")
+            )
+            await library.await_generation(script.id)
+
+            final = await library.progress(script.id)
+            assert final and final.status == GenerationStatusEnum.SUCCEEDED
+            # 指令到达剧本书写节点（#34 指导语义）
+            assert any(directive in p for p in llm.writing_prompts)
+            # 恢复后的进度保留闸门前的 doubter 事件（素材考证 pass）
+            assert any(
+                e.node.value == "verify_materials" and e.verdict == "pass"
+                for e in final.doubter_events
+            )
+            # 终态后审阅载荷已清空
+            assert await library.review(script.id) is None
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_upload_asset_endpoint_flow(client):
+    """#49 上传端点：draft 教师 multipart 上传 → READY AssetRef；发布后拒绝。"""
+    from io import BytesIO
+
+    from PIL import Image as PILImage
+
+    buf = BytesIO()
+    PILImage.new("RGB", (32, 32), (10, 60, 120)).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
+
+    account = _register(client, "upload-teacher@wenjing.local")
+    _act_as(client, account)
+    material_id = _import_material(client)
+    resp = _post(
+        client,
+        "/api/scripts",
+        json={
+            "schema_version": "2.6.0",
+            "material_id": material_id,
+            "name": "上传剧本",
+            "description": None,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    script_id = resp.json()["id"]
+
+    # 合法上传
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "background" and body["status"] == "ready"
+    assert body["asset_id"]
+
+    # 同文件重传命中上传缓存（幂等，不重复占存储）
+    resp2 = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp2.status_code == 201
+    assert resp2.json()["asset_id"] == body["asset_id"]
+
+    # 非法 subject_key → 422
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "bogus", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 422
+
+    # 不支持的类型 → 422（INPUT_INVALID_MEDIA_INPUT，信封单出口）
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("x.bmp", b"xx", "image/bmp")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["code"] == "INPUT_INVALID_MEDIA_INPUT"
+
+    # 学生不可上传
+    student = _register(client, "upload-student@wenjing.local", role="student")
+    _act_as(client, student)
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 403
+
+    # 发布即冻结：教师发布后上传被拒（SCR_NOT_EDITABLE）
+    _act_as(client, account)
+    # 发布要求剧本已有内容：塞入合成包（绕过生成，只测冻结语义）
+    from app.domain.generation.stage1 import synthesize_script_package
+    from tests.test_workflow import make_analysis as _mk_analysis
+
+    _execute(
+        "update scripts set script_data = :d where id = :i",
+        d=synthesize_script_package(_mk_analysis()).model_dump_json(),
+        i=script_id,
+    )
+    resp = _post(
+        client,
+        f"/api/scripts/{script_id}/publish",
+        json={"schema_version": "2.6.0", "visibility": "org"},
+    )
+    assert resp.status_code == 200
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("bg.png", png_bytes, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 409, resp.text  # SCR_NOT_EDITABLE
+
+
+def test_final_gate_resume_with_asset_ops_service_flow(client):
+    """#49 服务级 asset_ops 流：终审恢复携带 ops → 上传件绑定进落库剧本包。
+
+    覆盖 HTTP 契约之下的完整边界：GenerationResumeRequest（asset_id 字符串
+    经 Pydantic 转 UUID）→ resume_generation → final_gate._apply_asset_ops
+    → _persist_package 落库的 script_data 槽位值。
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+    from test_workflow import ScriptedWorkflowLLM, make_analysis
+
+    from app.contracts.generation import GenerationStatus as GenerationStatusEnum
+    from app.contracts.material import MaterialInput, MaterialSource
+    from app.domain.game.media import AssetRecord, AssetSource, AssetStatus
+
+    account = _register(client, "ops-teacher@wenjing.local")
+    me = account["me"]
+
+    async def _run():
+        engine = _engine()
+        factory = async_sessionmaker(
+            engine, class_=AsyncSession, expire_on_commit=False
+        )
+        try:
+            actor = Actor(
+                user_id=uuid.UUID(me["id"]),
+                org_id=uuid.UUID(me["org_id"]),
+                role=UserRole(me["role"]),
+            )
+            upload_id = uuid.uuid4()
+
+            class _OpDesigner:
+                async def design_scene(self, **kwargs):
+                    return AssetRecord(
+                        asset_id=uuid.uuid4(),
+                        object_key="o/x.webp",
+                        kind=kwargs["kind"],
+                        status=AssetStatus.READY,
+                        org_id=kwargs["org_id"],
+                    )
+
+                async def find_bindable_upload(self, **kwargs):
+                    return AssetRecord(
+                        asset_id=upload_id,
+                        object_key="o/upload.webp",
+                        kind=kwargs["kind"],
+                        status=AssetStatus.READY,
+                        source=AssetSource.UPLOADED,
+                        org_id=kwargs["org_id"],
+                    )
+
+            llm = ScriptedWorkflowLLM(make_analysis())
+            library = ScriptLibrary(
+                session_factory=factory,
+                script_llm=llm,
+                workflow_enabled=True,
+                workflow_checkpointer=MemorySaver(),
+                scene_designer=_OpDesigner(),
+            )
+            material = await library.import_material(
+                actor,
+                MaterialInput(source=MaterialSource.PASTE, raw_text=_MATERIAL_TEXT),
+            )
+            script = await library.create_script(
+                actor, material_id=material.id, name="资产操作流", description=None
+            )
+            await library.start_generation(script.id, actor)
+            await library.await_generation(script.id)
+            for _gate in ("materials", "pre_write"):
+                await library.resume_generation(
+                    script.id, actor, resume=GenerationResumeRequest()
+                )
+                await library.await_generation(script.id)
+
+            review = await library.review(script.id)
+            assert review is not None and review.gate == "final"
+            char_name = review.package.characters[0].name
+
+            # 终审恢复：上传件绑定到人物头像槽（asset_id 走字符串→UUID 边界）
+            await library.resume_generation(
+                script.id,
+                actor,
+                resume=GenerationResumeRequest(
+                    edits=GateEdits(
+                        asset_ops=[
+                            AssetOp(
+                                op="bind_upload",
+                                subject_key=f"character:{char_name}",
+                                kind="avatar",
+                                asset_id=str(upload_id),
+                            )
+                        ]
+                    ),
+                ),
+            )
+            await library.await_generation(script.id)
+            final = await library.progress(script.id)
+            assert final and final.status == GenerationStatusEnum.SUCCEEDED
+
+            # 落库剧本包里头像槽 = 上传件
+            row = await library.get_script(script.id, actor)
+            pkg = ScriptPackage.model_validate(row.script_data)
+            av = pkg.characters[0].avatar_asset
+            assert av is not None and av.asset_id == upload_id
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_upload_asset_rejects_oversize(client):
+    """#49（Standards 审查补）：超过 8MB 上限 → MEDIA_UPLOAD_TOO_LARGE 信封。"""
+    account = _register(client, "oversize-teacher@wenjing.local")
+    _act_as(client, account)
+    material_id = _import_material(client)
+    resp = _post(
+        client,
+        "/api/scripts",
+        json={
+            "schema_version": "2.6.0",
+            "material_id": material_id,
+            "name": "超限",
+            "description": None,
+        },
+    )
+    assert resp.status_code == 201
+    script_id = resp.json()["id"]
+
+    big = b"x" * (8 * 1024 * 1024 + 1)
+    resp = client.post(
+        f"/api/scripts/{script_id}/assets/upload",
+        data={"subject_key": "scene:1", "kind": "background"},
+        files={"image": ("big.png", big, "image/png")},
+        headers=_csrf_header(client),
+    )
+    assert resp.status_code == 413
+    assert resp.json()["code"] == "MEDIA_UPLOAD_TOO_LARGE"

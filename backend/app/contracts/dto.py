@@ -1,0 +1,211 @@
+"""REST/WebSocket 协议 DTO 与显式 mapper。
+
+- 领域契约（material/script/runtime/…）与对外协议 DTO 在此分离。
+- 所有转换经本模块的显式函数完成，禁止消费者直接把领域模型当 DTO 发送。
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Annotated, Any, Literal
+
+from pydantic import Field, TypeAdapter
+
+from app.contracts.base import ContractModel, VersionedContract
+from app.contracts.commands import PlayerCommand
+from app.contracts.enums import MessageCategory
+from app.contracts.errors import ErrorEnvelope
+from app.contracts.runtime import ActiveInteraction
+
+# ===== REST DTO =====
+
+
+class CreateSessionRequest(VersionedContract):
+    """POST /api/sessions：从可见剧本开一局「剧情世界」。"""
+
+    script_id: int = Field(ge=1)
+
+
+class CreateSessionResponse(ContractModel):
+    """内部：新建会话行后的响应（对外开局端点返回 SessionStatusResponse）。"""
+
+    session_id: uuid.UUID
+    created_at: datetime | None = None
+
+
+class SessionSummary(VersionedContract):
+    """「我的游戏」列表项：会话元数据 + 引用剧本名。"""
+
+    session_id: uuid.UUID
+    script_id: int | None = None
+    script_name: str | None = None
+    stage: str
+    status: str
+    player_role: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class SessionListResponse(VersionedContract):
+    """「我的游戏」列表（当前用户自己的剧情世界）。"""
+
+    items: list[SessionSummary] = Field(default_factory=list)
+
+
+class SessionStatusResponse(ContractModel):
+    """GET /api/sessions/{id} 状态查询。"""
+
+    session_id: uuid.UUID
+    stage: str
+    active_branch_id: uuid.UUID
+    head_sequence: int = Field(ge=0)
+    playable_roles: list[str] = Field(default_factory=list)
+    selected_role: str | None = None
+
+
+# ===== WebSocket 协议 =====
+
+
+class InteractionPayload(ContractModel):
+    """当前交互点投影：前端据此渲染三输入模式。"""
+
+    interaction_id: str
+    mode: str
+    prompt: str
+    options: list[dict] = Field(default_factory=list)
+    hint: str = ""
+
+
+def interaction_to_payload(interaction: ActiveInteraction) -> InteractionPayload:
+    """领域交互点 → WS 投影（显式 mapper）。"""
+    return InteractionPayload(
+        interaction_id=interaction.interaction_id,
+        mode=interaction.mode.value,
+        prompt=interaction.prompt,
+        options=[opt.model_dump() for opt in interaction.options],
+        hint=interaction.hint,
+    )
+
+
+def error_to_payload(error: ErrorEnvelope) -> dict[str, Any]:
+    """错误 envelope → 安全对外 dict（不含 cause/stack）。"""
+    return {
+        "error_id": str(error.error_id),
+        "code": error.code,
+        "domain": error.domain.value,
+        "message": error.message,
+        "retryable": error.retryable,
+        "details": error.details,
+    }
+
+
+class ContentBlock(ContractModel):
+    """叙事内容块：category 决定前端渲染方式。"""
+
+    category: MessageCategory
+    speaker: str | None = None
+    text: str
+
+
+class ServerMessage(VersionedContract):
+    """服务端 WS 消息封套；seq 用于确认与重连补发。
+
+    - `seq` 在会话内单调递增，客户端以 last_confirmed_seq 恢复。
+    - `payload` 按 type 判别（见 ClientMessage 侧注释）。
+    - 瞬态流式消息**不在本模型**：它们没有 seq、不进 outbox，见 `StreamMessage`。
+    """
+
+    type: str = Field(
+        description=(
+            "session_init|narrative|character_speech|system|interaction"
+            "|asset_ready|error"
+        )
+    )
+    session_id: uuid.UUID
+    seq: int = Field(ge=0)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class StreamMessage(ContractModel):
+    """瞬态流式消息（ADR-0005 §10 / #60）：**有 type 无 seq**。
+
+    `stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →
+    `stream_end{stream_id}`。它描述的是"此刻屏幕上滚动的字幕"，不参与
+    `seq`/`confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的
+    `character_speech`——前端收到它即丢弃对应 `stream_id` 的流缓冲。
+    """
+
+    type: Literal["stream_start", "stream_delta", "stream_end"]
+    session_id: uuid.UUID
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AudioStartMessage(ContractModel):
+    """音轨开始（ADR-0005 §11 / #63）：**有 type 无 seq**，与 `StreamMessage` 同类。
+
+    紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言
+    一条音轨，多角色并发时前端挂多个 `<audio>`；后端不混音。
+
+    `codec` 是 MIME（`audio/mpeg` 等），不是裸格式名——前端直接喂
+    `Blob([bytes], {type: codec})` 造 `objectURL`，不必再维护一张格式映射表。
+    """
+
+    type: Literal["audio_start"] = "audio_start"
+    session_id: uuid.UUID
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AudioEndMessage(ContractModel):
+    """音轨结束：该 `track_id` 的二进制帧到此为止。"""
+
+    type: Literal["audio_end"] = "audio_end"
+    session_id: uuid.UUID
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubmitCommandMessage(ContractModel):
+    """客户端提交命令（PlayerCommand 直接作为 payload 强校验）。"""
+
+    type: Literal["submit_command"] = "submit_command"
+    command: PlayerCommand
+
+
+class ConfirmMessagesMessage(ContractModel):
+    """客户端确认已收到 seq（幂等对账与补发锚点）。"""
+
+    type: Literal["confirm_messages"] = "confirm_messages"
+    last_confirmed_seq: int = Field(ge=0)
+
+
+class ResyncRequestMessage(ContractModel):
+    """客户端请求从指定位置重建投影（重连恢复）。"""
+
+    type: Literal["resync_request"] = "resync_request"
+    last_confirmed_seq: int = Field(ge=0)
+
+
+class CancelAudioMessage(ContractModel):
+    """客户端打断（barge-in，ADR-0005 §11）：停播并放掉这条音轨。
+
+    **不抢占 LLM**：命令仍串行、事件同事务持久化，服务端在生成中根本收不到新命令，
+    所以打断只可能作用于已经流到客户端的那条音轨。音频出口是 M6（#63）：今天没有
+    音轨可取消，服务端只需接受这条消息而不是把它当畸形帧。
+    """
+
+    type: Literal["cancel_audio"] = "cancel_audio"
+    track_id: str = Field(min_length=1)
+
+
+ClientMessage = Annotated[
+    SubmitCommandMessage
+    | ConfirmMessagesMessage
+    | ResyncRequestMessage
+    | CancelAudioMessage,
+    Field(discriminator="type"),
+]
+
+client_message_adapter: TypeAdapter[SubmitCommandMessage
+                                   | ConfirmMessagesMessage
+                                   | ResyncRequestMessage
+                                   | CancelAudioMessage] = TypeAdapter(ClientMessage)

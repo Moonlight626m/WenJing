@@ -1,0 +1,80 @@
+"""确定性假 Agent LLM（#5 fake-backed 竖切的默认适配器）。
+
+未配置真实 provider API key 时，运行时（角色提议/反应/验证）使用本实现，
+保证竖切端到端可跑、行为可复现。#12 接入真实 LLM 后仅替换注入对象。
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import TypeAlias
+
+from app.contracts.enums import UsagePurpose
+from app.domain.llm import StreamChunk
+
+Message: TypeAlias = dict[str, str]
+
+DEFAULT_PROPOSAL = "我提议按照课文情节继续推进"
+DEFAULT_REACTION = "我平静地回应你的选择。"
+
+
+class DeterministicAgentLLM:
+    """零网络依赖的确定性 LLM：验证 pass、提议/反应返回固定文案。"""
+
+    provider = "deterministic"
+    model = "deterministic"
+
+    def __init__(
+        self,
+        *,
+        proposal_text: str = DEFAULT_PROPOSAL,
+        react_text: str = DEFAULT_REACTION,
+    ) -> None:
+        self._proposal_text = proposal_text
+        self._react_text = react_text
+        self.call_count = 0
+
+    async def chat(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> str:
+        self.call_count += 1
+        user = messages[-1]["content"] if messages else ""
+        if "验证 Agent" in user or "你是验证" in user:
+            return "pass"
+        if "react" in user:
+            return self._react_text
+        return self._proposal_text
+
+    async def astream(
+        self,
+        messages: list[Message],
+        *,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[str]:
+        """无真实 token 流，单段产出；满足 `LLMService.astream` 端口形状。"""
+
+        text = await self.chat(messages, session_id=session_id, purpose=purpose)
+        if text:
+            yield text
+
+    async def astream_with_tools(
+        self,
+        messages: list[Message],
+        *,
+        tools: list[dict] | None = None,
+        session_id: str = "",
+        purpose: UsagePurpose = UsagePurpose.AGENT,
+    ) -> AsyncIterator[StreamChunk]:
+        """同上，装成 `StreamChunk`；确定性实现从不调用工具（`tool_calls` 恒为空）。
+
+        保留本方法是为了让 `WenjingChatModel._astream` 在无 key 的竖切里也走流式
+        分支——否则测试与本地演示会落到另一条代码路径上。
+        """
+        text = await self.chat(messages, session_id=session_id, purpose=purpose)
+        if text:
+            yield StreamChunk(content=text)

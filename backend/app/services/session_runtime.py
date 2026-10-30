@@ -1,0 +1,861 @@
+"""SessionApplication：游玩竖切的应用核心（issue #5；#19 起剧本由剧本库提供）。
+
+职责与接缝：
+- 生命周期：open_session(script_id) → submit_command → get_status；剧本由剧本库
+  生成并发布，会话经 `script_id` 引用（生成/导入素材不在此，见 `app/services/script_library`）。
+- 持久化（事务/CAS/恢复）委托 `app.services.session_store.SessionStore`：本类只做
+  用例编排、访问控制与投影，不再直接拼事务。
+- 幂等：commands 表主键为第一道闸（无内存运行时后仍是唯一权威闸）。
+- 投影：StepResult/export_state → 契约 RuntimeUpdate/RuntimeState（projection.py）。
+- **无状态命令路径（#21）**：不常驻内存运行时；每次命令从 DB（最新快照 + 事件）
+  重建运行时（`SessionStore.restore` 以 `SELECT ... FOR UPDATE` 取一致快照）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.contracts.commands import CommandKind, PlayerCommand
+from app.contracts.dto import (
+    CreateSessionResponse,
+    SessionListResponse,
+    SessionStatusResponse,
+    SessionSummary,
+)
+from app.contracts.runtime import RuntimeUpdate
+from app.contracts.script import ScriptPackage
+from app.domain.access import Actor, require_session_access, script_visible_to
+from app.domain.game.engine_config import EngineConfig
+from app.domain.game.game_runtime import GameRuntime, StepResult
+from app.domain.game.media import (
+    AssetRecord,
+    AssetRepositoryPort,
+    SceneAssetRequest,
+)
+from app.domain.game.script_adapter import script_package_to_script
+from app.domain.game.streaming import SpeechStreamSink
+from app.domain.llm import LLMService
+from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
+from app.infrastructure.errx import Error as WJError
+from app.infrastructure.errx import codes, match_code, new
+from app.infrastructure.models.command import CommandStatus
+from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
+from app.infrastructure.models.script import Script as ScriptRecord
+from app.infrastructure.models.session import Session as SessionRecord
+from app.services.scene_assets import RecoveryReport, SceneAssetScheduler
+from app.services.session_events import SessionEventHub
+from app.services.session_projection import (
+    messages_from_update,
+    project_messages,
+    project_state,
+    project_status,
+    project_update,
+)
+from app.services.session_store import SessionStore
+
+logger = logging.getLogger("wenjing.session.application")
+
+#: 命令外事件落库的 CAS 重试次数。冲突只可能来自「后台任务与玩家命令撞在同一
+#: 版本上」，重试即重放一次（restore → append → commit）；仍冲突就放弃这一次
+#: 投递——事件流是权威，配图下次会由后续命令或 #57 的恢复路径补上，不值得为它
+#: 阻塞或反复抢锁。
+_RUNTIME_EVENT_MAX_ATTEMPTS = 3
+
+
+@dataclass
+class AsyncCommandReceipt:
+    """`submit_async` 的受理回执：claimed=True 表示已在后台执行。
+
+    `state` 是幂等闸的细分结果：accepted（新受理）/ pending（本进程在途）/
+    done（已成功，调用方应对账拿结果）/ stale（上个进程的孤儿行，事件未落、
+    状态未推进，换新 command_id 重发即可）/ failed（上次执行失败，同样换新
+    command_id 重试）。
+    """
+
+    claimed: bool
+    state: str
+
+
+class SessionApplication:
+    """会话应用服务：REST/WS 之下的唯一业务入口。"""
+
+    def __init__(
+        self,
+        *,
+        session_factory: async_sessionmaker[AsyncSession],
+        agent_llm: LLMService,
+        config: EngineConfig | None = None,
+        usage_recorder=None,
+        store: SessionStore | None = None,
+        asset_scheduler: SceneAssetScheduler | None = None,
+        event_hub: SessionEventHub | None = None,
+        assets: AssetRepositoryPort | None = None,
+    ) -> None:
+        self._factory = session_factory
+        self._agent_llm = agent_llm
+        self._config = config or EngineConfig()
+        self._usage_recorder = usage_recorder
+        self._store = store or SessionStore(session_factory=session_factory)
+        # 运行期配图（#56）：None = 该环境不做运行期生成（测试桩 / 未装配媒体栈）
+        self._asset_scheduler = asset_scheduler
+        # WS 广播（#56）：命令外事件没有请求上下文可回，只能经它投递
+        self._event_hub = event_hub
+        # 资产仓库（#57）：启动恢复要拿它把崩溃留下的 pending 票据判死
+        self._assets = assets
+        # 后台命令（select_role 202 化）：command_id → 在途 task。
+        # 强引用兜住 Task 的 GC，进程崩溃时进程内的这里自然消失；台账上的
+        # 孤儿 RECEIVED 由 `submit_async` 的 "stale" 语义承接（重发可复原）。
+        self._async_inflight: dict[uuid.UUID, asyncio.Task[None]] = {}
+
+    # ===== 创建 =====
+
+    async def create_session(
+        self,
+        *,
+        org_id: uuid.UUID,
+        owner_user_id: uuid.UUID,
+        script_id: int | None = None,
+    ) -> CreateSessionResponse:
+        """新建「剧情世界」，归属创建者并引用一个剧本（owner/org 由 Principal 带来）。"""
+        sid = uuid.uuid4()
+        async with self._factory() as s:
+            s.add(
+                SessionRecord(
+                    id=sid,
+                    org_id=org_id,
+                    owner_user_id=owner_user_id,
+                    script_id=script_id,
+                )
+            )
+            await s.commit()
+        return CreateSessionResponse(session_id=sid, created_at=datetime.now(UTC))
+
+    async def open_session(self, *, actor: Actor, script_id: int) -> SessionStatusResponse:
+        """从可见剧本开局（#21）：校验可见性 → 建会话 → 初始化运行时 → 返回状态。
+
+        可见性：owner 任意状态可玩；他人仅 `published` 且（`org` 同 org / `public` 跨 org）。
+        初始化失败即回收刚建的会话行，绝不在「我的游戏」留下不可玩的 init 空壳。
+        """
+        await self._require_playable_script(actor, script_id)
+        created = await self.create_session(
+            org_id=actor.org_id, owner_user_id=actor.user_id, script_id=script_id
+        )
+        try:
+            await self.initialize_session(created.session_id, actor)
+        except Exception:
+            await self._store.discard(created.session_id)
+            raise
+        return await self.get_status(created.session_id, actor=actor)
+
+    async def list_my_sessions(self, actor: Actor) -> SessionListResponse:
+        """「我的游戏」（#21）：当前用户自己的剧情世界，按最近更新倒序。"""
+        async with self._factory() as s:
+            rows = (
+                await s.execute(
+                    select(SessionRecord, ScriptRecord.name)
+                    .outerjoin(ScriptRecord, SessionRecord.script_id == ScriptRecord.id)
+                    .where(SessionRecord.owner_user_id == actor.user_id)
+                    .order_by(SessionRecord.updated_at.desc())
+                )
+            ).all()
+        return SessionListResponse(
+            items=[
+                SessionSummary(
+                    session_id=sess.id,
+                    script_id=sess.script_id,
+                    script_name=name,
+                    stage=sess.current_stage,
+                    status=sess.status,
+                    player_role=sess.player_role,
+                    created_at=sess.created_at,
+                    updated_at=sess.updated_at,
+                )
+                for sess, name in rows
+            ]
+        )
+
+    async def _require_playable_script(self, actor: Actor, script_id: int) -> None:
+        """不可见剧本按不存在处理（不泄露存在性）；无生成内容则 SCR_NOT_READY。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+        if row is None or not script_visible_to(actor, row):
+            raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
+        if row.script_data is None:
+            raise new(codes.SCR_NOT_READY, extra={"id": script_id})
+
+    async def _access_session(self, session_id: uuid.UUID, actor: Actor) -> SessionRecord:
+        """加载会话并校验访问权：不存在 404，非 owner 403。"""
+        async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+        if sess is None:
+            raise new(codes.SESS_NOT_FOUND, extra={"id": str(session_id)})
+        require_session_access(actor, sess)
+        return sess
+
+    async def initialize_session(self, session_id: uuid.UUID, actor: Actor) -> None:
+        """从会话引用的剧本初始化运行时：stage1_complete + 开场事件落库。
+
+        无状态：运行时构建后即丢弃（#21），后续命令一律从 DB 重建。
+        """
+        sess = await self._access_session(session_id, actor)
+        package = await self._store.load_package(session_id)
+        if package is None:
+            raise new(
+                codes.SESS_NOT_FOUND,
+                extra={"id": str(session_id), "reason": "script not generated"},
+            )
+        runtime, store = self._build_runtime(
+            session_id,
+            package,
+            usage_context=self._usage_context(session_id, sess),
+        )
+        await runtime.start()
+        await self._commit_system_events(session_id, store, stage=runtime.state.stage)
+
+    # ===== 命令受理（幂等 + 单事务持久化 + 无状态重建）=====
+
+    async def submit_command(
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+    ) -> RuntimeUpdate:
+        update_result, _store = await self._submit(session_id, command, actor=actor)
+        return update_result
+
+    # ===== 后台命令（select_role 202 化）=====
+
+    #: select_role 要并发跑完 N 个角色提议 + 若干轮验证（真实 LLM，分钟级），
+    #: 卡在 HTTP 请求里会让前端十分钟转圈（#65 的教训）。这类长命令先 202 异步化：
+    #: 端点立刻返回「已受理」，命令在后台 task 执行，完成事件经 event_hub 推给
+    #: WS 连接；REST 轮询方以 `commands_table_status` 对账（replay/polled）。
+    ASYNC_COMMAND_KINDS = frozenset({"select_role"})
+
+    async def submit_async(
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+    ) -> AsyncCommandReceipt:
+        """受理一条后台命令：先 claim 台账再派 task，立刻返回受理回执（不等待）。
+
+        语义与 `_submit` 的幂等闸**对齐但不对账**——本方法只回答「受理与否」：
+        - 未受理过：写 RECEIVED + 派发，返回 `claimed=True`；
+        - 已 SUCCEEDED：返回 `claimed=False, state="done"`（调用方应走 `_submit`
+          的幂等对账拿当前状态）；
+        - 已 RECEIVED（在途，或进程重启前的孤儿行）：返回
+          `claimed=False, state="pending"` / `"stale"`（stale = 上个进程留下的
+          RECEIVED，本进程不会再跑，重发方应重新 claim 新 command_id）。
+        - 已 FAILED：运行时状态没推进过，等同未受理——重新 claim**同一** id
+          不行（主键冲突），返回 `claimed=False, state="failed"`，调用方换新
+          command_id 重试。
+        """
+        kind = command.kind.value
+        if kind not in self.ASYNC_COMMAND_KINDS:
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID,
+                extra={"kind": kind, "reason": "not an async command"},
+            )
+        await self._access_session(session_id, actor)
+        status = await self._store.command_status(command.command_id)
+        if status == CommandStatus.SUCCEEDED.value:
+            return AsyncCommandReceipt(claimed=False, state="done")
+        if status == CommandStatus.RECEIVED.value:
+            if command.command_id in self._async_inflight:
+                return AsyncCommandReceipt(claimed=False, state="pending")
+            return AsyncCommandReceipt(claimed=False, state="stale")
+        if status == CommandStatus.FAILED.value:
+            return AsyncCommandReceipt(claimed=False, state="failed")
+        if not await self._store.claim_command(command, session_id):
+            # 上一刻刚被别的请求 claim（竞态窗口）：当作在途处理
+            return AsyncCommandReceipt(claimed=False, state="pending")
+        self._async_inflight[command.command_id] = asyncio.create_task(
+            self._run_async_command(session_id, command, actor=actor)
+        )
+        return AsyncCommandReceipt(claimed=True, state="accepted")
+
+    async def commands_table_status(self, command_id: uuid.UUID) -> str | None:
+        """REST 轮询对账口：命令当前落地状态（未受理 None → 404 语义给调用方）。"""
+        return await self._store.command_status(command_id)
+
+    async def drain_async_commands(self) -> None:
+        """等待全部在途后台命令收尾（优雅停机 / 测试用，对齐 `SceneAssetScheduler.drain`）。"""
+        while self._async_inflight:
+            tasks = list(self._async_inflight.values())
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def async_inflight_count(self, command_id: uuid.UUID) -> int:
+        return 1 if command_id in self._async_inflight else 0
+
+    async def _run_async_command(
+        self, session_id: uuid.UUID, command: PlayerCommand, *, actor: Actor
+    ) -> None:
+        """后台命令主体：执行 + 状态收口 + 结果推送。任何路径都收口一定状态。
+
+        与同步 `_submit` 的差别只有两点：失败时写 FAILED 而非上抛；成功时把
+        RuntimeUpdate 的投影消息经 event_hub 推给在线连接（离线方靠事件流）。
+        """
+        task = asyncio.current_task()
+        command_id = command.command_id
+        try:
+            runtime, store, version = await self._restore_runtime(session_id)
+            update_result, store = await self._submit_claimed(
+                session_id, command, store, runtime, version
+            )
+        except WJError as exc:
+            logger.error(
+                "async_command_failed",
+                extra={
+                    "session_id": str(session_id),
+                    "wj_extra": {
+                        "command_id": str(command_id),
+                        "kind": command.kind.value,
+                        "error_code": exc.code,
+                    },
+                },
+            )
+            await self._store.settle_command(command_id, status=CommandStatus.FAILED.value)
+            if self._event_hub is not None:
+                from app.infrastructure.diagnostics.errors import envelope_for
+
+                env = envelope_for(exc)
+                await self._event_hub.publish(
+                    session_id,
+                    [
+                        {
+                            "type": "error",
+                            "seq": 0,
+                            "session_id": str(session_id),
+                            "payload": {
+                                "error_id": str(env.error_id),
+                                "code": env.code,
+                                "domain": env.domain.value,
+                                "message": env.message,
+                                "retryable": env.retryable,
+                                "details": env.details,
+                                "command_id": str(command_id),
+                            },
+                        }
+                    ],
+                )
+            return
+        except Exception:  # noqa: BLE001 - 后台任务兜底收口
+            logger.exception(
+                "async_command_crashed",
+                extra={"session_id": str(session_id)},
+            )
+            await self._store.settle_command(command_id, status=CommandStatus.FAILED.value)
+            return
+        finally:
+            self._async_inflight.pop(command_id, None)
+            if task is not None:
+                task = None
+        messages = messages_from_update(session_id, store, update_result)
+        if messages and self._event_hub is not None:
+            await self._event_hub.publish(session_id, messages)
+        logger.info(
+            "async_command_done",
+            extra={
+                "session_id": str(session_id),
+                "wj_extra": {
+                    "command_id": str(command_id),
+                    "events": len(update_result.new_events),
+                },
+            },
+        )
+
+    async def submit_command_messages(
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        *,
+        actor: Actor,
+        speech_sink: SpeechStreamSink | None = None,
+    ) -> list[dict]:
+        """WS 用：一次提交同时返回投影更新与本次应发布的消息（复用同一 store）。
+
+        `speech_sink` 非空时，本次命令里的角色发言额外走**瞬态**流式出口（#60）：
+        它只影响"此刻屏幕上的字幕"，落库的仍是由本方法返回的那条
+        `character_speech`。
+        """
+        update_result, store = await self._submit(
+            session_id, command, actor=actor, speech_sink=speech_sink
+        )
+        return messages_from_update(session_id, store, update_result)
+
+    async def _submit(
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        *,
+        actor: Actor,
+        speech_sink: SpeechStreamSink | None = None,
+    ) -> tuple[RuntimeUpdate, PersistentEventStore]:
+        await self._access_session(session_id, actor)
+        runtime, store, version = await self._restore_runtime(session_id, speech_sink=speech_sink)
+
+        # 幂等闸：quota 已受理（含后台命令的 RECEIVED 占位）→ 对账返回当前状态，
+        # 不重复执行。后台命令（202 化）的执行路径走 `_submit_claimed`，越过本闸。
+        if await self._store.has_command(command.command_id):
+            return (
+                project_update(session_id, store, self._idle_result(runtime, duplicate=True)),
+                store,
+            )
+        return await self._submit_claimed(
+            session_id, command, store, runtime, version, speech_sink=speech_sink
+        )
+
+    async def _submit_claimed(
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        store: PersistentEventStore,
+        runtime: GameRuntime,
+        version: int,
+        *,
+        speech_sink: SpeechStreamSink | None = None,
+    ) -> tuple[RuntimeUpdate, PersistentEventStore]:
+        """实际执行一条已过幂等闸的命令（`_submit` 幂等命中后的后半段）。
+
+        后台命令（202 化）claim 写的是 RECEIVED 占位行——`has_command` 会命中，
+        但命令还没跑，绝不能对账假装完成；`_run_async_command` 直接调本方法。
+        """
+        # 终局闸：已结束的会话不再受理玩家命令（SESSION_ENDED 语义域）
+        if runtime.state.ended:
+            raise new(codes.SESS_ENDED, extra={"id": str(session_id)})
+
+        payload = self._engine_payload(command, store)
+        result = await runtime.submit(
+            command_id=str(command.command_id),
+            kind=command.kind.value,
+            payload=payload,
+        )
+        await self._persist_command(
+            session_id,
+            command,
+            store,
+            runtime,
+            result,
+            expected_version=version,
+        )
+        # 配图意图在**命令事务提交后**才派发：事务回滚时不得留下在途生成，
+        # 否则会为一次没落库的场景切换付费。
+        await self._schedule_asset_requests(session_id, store, result)
+        return project_update(session_id, store, result), store
+
+    async def _persist_command(
+        self,
+        session_id: uuid.UUID,
+        command: PlayerCommand,
+        store: PersistentEventStore,
+        runtime: GameRuntime,
+        result: Any = None,
+        *,
+        expected_version: int,
+    ) -> None:
+        """命令 + 事件 + head/version/active_branch + 快照，同一事务（见 SessionStore）。"""
+        await self._store.commit(
+            session_id=session_id,
+            store=store,
+            stage=runtime.state.stage,
+            expected_version=expected_version,
+            op="persist_command",
+            command=command,
+            player_role=runtime.state.player_role,
+            ended=bool(result.terminal) if result is not None else False,
+            runtime_state=runtime.export_state,
+        )
+
+    async def _commit_system_events(
+        self, session_id: uuid.UUID, store: PersistentEventStore, *, stage: str
+    ) -> None:
+        """系统动作（如 runtime.start）产生的事件 + head/stage 推进，单事务。"""
+        await self._store.commit(
+            session_id=session_id,
+            store=store,
+            stage=stage,
+            expected_version=None,
+            op="commit_system_events",
+        )
+
+    # ===== 命令之外的领域事件（ADR-0005 §5，#56）=====
+
+    async def report_runtime_event(
+        self,
+        session_id: uuid.UUID,
+        *,
+        branch_id: uuid.UUID,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> list[dict]:
+        """把一条**不带 player command** 的领域事件落进事件流，返回应推送的 WS 消息。
+
+        复用 `SessionStore.commit()` 的同一套 CAS 拼写（ADR-0005 §5、ADR-0006），
+        不另起事务形状；区别只有两点：不带 `command`（幂等闸是命令的语义，配图
+        就绪不是命令）、不带 `runtime_state`（没有运行时可导出快照，下一次命令
+        照常在旧快照 + 重放上重建）。
+
+        `branch_id` 是请求期绑定的分支：落库前校验它仍是活动分支，否则 **no-op**
+        ——回溯放弃的分支上补图会让资产挂到已被抛弃的历史上（§9 事件是资产继承的
+        唯一权威，错了会静默显示错图）。
+
+        CAS 冲突（与并发命令撞版本）不视为错误：重试到落库或次数耗尽。
+
+        新增事件类型时别忘了两处登记（漏了都不报错、只静默降级）：要推给前端就得
+        进 `session_projection._MESSAGE_CATEGORY_MAP`，要影响运行时状态就得进
+        `GameRuntime._replay_event`。
+        """
+        for attempt in range(1, _RUNTIME_EVENT_MAX_ATTEMPTS + 1):
+            loaded = await self._store.restore(session_id)
+            active = branch_uuid(session_id, loaded.store.active_branch_id)
+            if active != branch_id:
+                logger.info(
+                    "runtime_event_branch_inactive",
+                    extra={
+                        "session_id": str(session_id),
+                        "event_type": event_type,
+                        "expected_branch": str(branch_id),
+                        "active_branch": str(active),
+                    },
+                )
+                return []
+            loaded.store.append(event_type, payload, session_id=str(session_id))
+            try:
+                await self._store.commit(
+                    session_id=session_id,
+                    store=loaded.store,
+                    stage=loaded.session.current_stage,
+                    expected_version=loaded.version,
+                    op="report_runtime_event",
+                )
+            except WJError as exc:
+                # match_code 而非 `exc.code ==`：沿 cause 链匹配（errx 的指定用法），
+                # commit 哪天把冲突包一层也不会让重试静默失效。
+                if not match_code(exc, codes.SESS_CONFLICT):
+                    raise
+                if attempt < _RUNTIME_EVENT_MAX_ATTEMPTS:
+                    continue
+                logger.warning(
+                    "runtime_event_conflict_give_up",
+                    extra={
+                        "session_id": str(session_id),
+                        "event_type": event_type,
+                    },
+                )
+                return []
+            # 刚追加的事件就是活动分支的最后一条：seq 即它在分支路径上的序号
+            seq = len(loaded.store.active_events()) - 1
+            return project_messages(session_id, loaded.store, after_seq=seq - 1)
+        return []  # 不可达（上面每条路径都 return），仅为类型检查保留
+
+    async def report_asset_ready(
+        self,
+        session_id: uuid.UUID,
+        *,
+        branch_id: uuid.UUID,
+        scene_key: str,
+        asset_id: uuid.UUID,
+        kind: str = "background",
+        status: str = "ready",
+    ) -> list[dict]:
+        """运行期配图就绪（ADR-0005 §5）：`asset_ready` 事件 + 应推送的 WS 消息。
+
+        `scene_key` 用**运行时的场景键**（`scene:{scene_id}`）：事件索引按它归属
+        （`RuntimeAssets.by_scene`），键不一致的话前端会拿到一张永远匹配不上的图。
+        """
+        return await self.report_runtime_event(
+            session_id,
+            branch_id=branch_id,
+            event_type="asset_ready",
+            payload={
+                "scene_key": scene_key,
+                "asset_id": str(asset_id),
+                "kind": kind,
+                "status": status,
+            },
+        )
+
+    async def recover_asset_jobs(self) -> RecoveryReport:
+        """启动时的在途配图恢复（ADR-0005 §5 / issue #57）。
+
+        进程崩溃会留下两样东西：`assets` 里一行永远 `pending` 的票据，和 `asset_jobs`
+        里一行永远 `pending` 的任务。**启动这一刻进程内没有任何在途生成**，所以此刻
+        还是 pending 的票据必然是上一个进程写的——先全部判死，让表不再挂僵尸；
+        任务则交给调度器按 TTL 决定重排还是判死（见 `SceneAssetScheduler.recover`）。
+        """
+        if self._assets is not None:
+            await self._assets.fail_stale_pending(before=datetime.now(UTC))
+        if self._asset_scheduler is None:
+            return RecoveryReport()
+        return await self._asset_scheduler.recover(on_ready=self._apply_asset_ready)
+
+    async def _schedule_asset_requests(
+        self,
+        session_id: uuid.UUID,
+        store: PersistentEventStore,
+        result: StepResult,
+    ) -> None:
+        """命令事务提交后派发引擎提出的配图意图（#56）。"""
+        requests = list(result.asset_requests)
+        if not requests or self._asset_scheduler is None:
+            return
+        async with self._factory() as s:
+            sess = await s.get(SessionRecord, session_id)
+        if sess is None:
+            return
+        branch_id = branch_uuid(session_id, store.active_branch_id)
+        for req in requests:
+            scheduled = self._asset_scheduler.schedule(
+                SceneAssetRequest(
+                    session_id=session_id,
+                    branch_id=branch_id,
+                    scene_key=req.scene_key,
+                    description=req.description,
+                    org_id=sess.org_id,
+                    script_id=sess.script_id,
+                    user_id=sess.owner_user_id,
+                ),
+                on_ready=self._apply_asset_ready,
+            )
+            logger.info(
+                "scene_asset_requested",
+                extra={
+                    "session_id": str(session_id),
+                    "scene_key": req.scene_key,
+                    "scheduled": scheduled,
+                },
+            )
+
+    async def _apply_asset_ready(self, request: SceneAssetRequest, record: AssetRecord) -> None:
+        """后台生成完成 → 落库 + 推送（在途任务的唯一收口）。"""
+        messages = await self.report_asset_ready(
+            request.session_id,
+            branch_id=request.branch_id,
+            scene_key=request.scene_key,
+            asset_id=record.asset_id,
+            kind=record.kind.value,
+            status=record.status.value,
+        )
+        if not messages or self._event_hub is None:
+            return
+        delivered = await self._event_hub.publish(request.session_id, messages)
+        logger.info(
+            "scene_asset_ready_published",
+            extra={
+                "session_id": str(request.session_id),
+                "scene_key": request.scene_key,
+                "connections": delivered,
+            },
+        )
+
+    # ===== 状态查询 =====
+
+    async def access_context(self, session_id: uuid.UUID, *, actor: Actor) -> SessionRecord:
+        """公开的访问校验：不存在 404、非 owner 403，返回会话行。
+
+        #64 的语音识别要用它拿 org/user/script 归属上下文——识别要计量、要配额，
+        这些都得挂在会话的归属上。比 `get_status` 轻：不重建运行时、不读剧本包。
+        """
+        return await self._access_session(session_id, actor)
+
+    async def get_status(self, session_id: uuid.UUID, *, actor: Actor) -> SessionStatusResponse:
+        sess = await self._access_session(session_id, actor)
+        pkg = await self._store.load_package(session_id)
+        playable = [c.name for c in pkg.characters if c.is_player_playable] if pkg else []
+        return project_status(
+            session_id=session_id,
+            stage=sess.current_stage,
+            active_branch_id=sess.active_branch_id or branch_uuid(session_id, 1),
+            head_event_id=sess.head_event_id,
+            playable_roles=playable,
+            selected_role=sess.player_role,
+        )
+
+    # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====
+
+    async def session_init(self, session_id: uuid.UUID, *, actor: Actor) -> dict:
+        """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。"""
+        sess = await self._access_session(session_id, actor)
+        runtime, store, _ = await self._restore_runtime(session_id)
+        state = project_state(session_id, store, runtime.export_state())
+        return {
+            "session_id": str(session_id),
+            # 会话引用的剧本（#63）：音频/媒体计量的归属上下文之一。
+            # `_access_session` 本就加载了这一行，顺带带出来比让路由再查一次划算。
+            "script_id": sess.script_id,
+            "stage": state.stage.value,
+            "branch_id": str(state.branch_id),
+            "last_sequence": state.last_sequence,
+            "plot_log": state.plot_context.get("plot_log", []),
+            "player_role": state.plot_context.get("player_role"),
+            # 场景切换背景（#53）：稳定引用 + 键 + 标题，前端据此签 URL / 判淡入
+            "scene_key": state.scene_key,
+            "scene_title": state.scene_title,
+            "current_asset": (
+                state.current_asset.model_dump(mode="json")
+                if state.current_asset is not None
+                else None
+            ),
+            "active_interaction": (
+                state.active_interaction.model_dump(mode="json")
+                if state.active_interaction is not None
+                else None
+            ),
+            "allowed_commands": [k.value for k in state.allowed_commands()],
+        }
+
+    async def replay_after(
+        self, session_id: uuid.UUID, after_seq: int, *, actor: Actor
+    ) -> list[dict]:
+        """按 last_confirmed_seq 补发：从 DB 活动分支重建消息序列。"""
+        await self._access_session(session_id, actor)
+        runtime, store, _ = await self._restore_runtime(session_id)
+        state = project_state(session_id, store, runtime.export_state())
+        return project_messages(
+            session_id,
+            store,
+            after_seq=after_seq,
+            interaction=state.active_interaction,
+            allowed_commands=[k.value for k in state.allowed_commands()],
+        )
+
+    # ===== 恢复（断线重连 / 进程重启 / 每命令）=====
+
+    async def _restore_runtime(
+        self, session_id: uuid.UUID, *, speech_sink: SpeechStreamSink | None = None
+    ) -> tuple[GameRuntime, PersistentEventStore, int]:
+        """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。
+
+        无状态（#21）：每次命令都走此路径，返回 (runtime, store, 恢复时会话版本)；
+        版本用于命令落库的乐观锁 CAS（见 `_persist_command`）。
+
+        一致性：以 `SELECT ... FOR UPDATE` 锁定会话行，使读到的 (version, events)
+        来自同一一致快照（不持锁做 LLM）。
+
+        容错（issue #13）：剧本/快照损坏或 schema 不兼容时，宁可忽略快照
+        从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
+        """
+        loaded = await self._store.restore(session_id)
+        runtime, store = self._build_runtime(
+            session_id,
+            loaded.package,
+            store=loaded.store,
+            usage_context=self._usage_context(session_id, loaded.session),
+            speech_sink=speech_sink,
+        )
+        snap = loaded.snapshot
+        base: dict | None = None
+        if snap is not None:
+            if snap.schema_version != EVENTS_SCHEMA_VERSION:
+                logger.warning(
+                    "snapshot_schema_incompatible",
+                    extra={
+                        "session_id": str(session_id),
+                        "found": snap.schema_version,
+                        "expected": EVENTS_SCHEMA_VERSION,
+                    },
+                )
+            elif isinstance(snap.plot_context, dict):
+                base = snap.plot_context
+            else:
+                logger.warning(
+                    "snapshot_payload_corrupt",
+                    extra={"session_id": str(session_id)},
+                )
+        cutoff = int((base or {}).get("latest_event_id", 0))
+        replay = [e.to_dict() for e in loaded.events if e.event_id > cutoff]
+        try:
+            runtime.replay_from(base, replay)
+        except Exception as exc:
+            logger.warning(
+                "snapshot_replay_failed_rebuild",
+                extra={"session_id": str(session_id), "reason": str(exc)},
+            )
+            runtime.replay_from(None, [e.to_dict() for e in loaded.events])
+
+        return runtime, store, loaded.version
+
+    # ===== 内部工具 =====
+
+    def _build_runtime(
+        self,
+        session_id: uuid.UUID,
+        package: ScriptPackage,
+        *,
+        store: PersistentEventStore | None = None,
+        usage_context=None,
+        speech_sink: SpeechStreamSink | None = None,
+    ) -> tuple[GameRuntime, PersistentEventStore]:
+        store = store or PersistentEventStore()
+        llm = self._agent_llm
+        if self._usage_recorder is not None and usage_context is not None:
+            llm = self._usage_recorder.wrap(self._agent_llm, usage_context)
+        runtime = GameRuntime(
+            session_id=str(session_id),
+            script=script_package_to_script(package),
+            llm=llm,
+            config=self._config,
+            event_store=store,
+            speech_sink=speech_sink,
+        )
+        return runtime, store
+
+    def _usage_context(self, session_id: uuid.UUID, sess: SessionRecord):
+        """构造该会话的 LLM 用量归属上下文（无 recorder 时返回 None）。"""
+        if self._usage_recorder is None:
+            return None
+        from app.infrastructure.usage import UsageContext
+
+        return UsageContext(
+            org_id=sess.org_id,
+            user_id=sess.owner_user_id,
+            script_id=sess.script_id,
+            session_id=session_id,
+        )
+
+    @staticmethod
+    def _engine_payload(command: PlayerCommand, store: PersistentEventStore) -> dict:
+        """契约 payload → 引擎 payload；回溯以活动分支 sequence 定位本地事件。"""
+        p = command.payload_model
+        kind = command.kind
+        if kind is CommandKind.SELECT_ROLE:
+            return {"role_name": p.role_name}
+        if kind is CommandKind.CHOOSE_OPTION:
+            return {"option_id": p.option_id}
+        if kind is CommandKind.FREE_INPUT:
+            return {"text": p.text}
+        if kind is CommandKind.ROLLBACK_TO_EVENT:
+            path = store.active_events()
+            if p.target_sequence >= len(path):
+                raise new(
+                    codes.ENG_ROLLBACK_TARGET_MISSING,
+                    extra={"event_id": p.target_sequence},
+                )
+            return {"target_event_id": path[p.target_sequence].event_id}
+        return {}
+
+    @staticmethod
+    def _idle_result(runtime: GameRuntime, *, duplicate: bool):
+        from app.domain.game.game_runtime import StepResult
+
+        return StepResult(
+            state=runtime.export_state(),
+            new_events=[],
+            active_interaction=(
+                {
+                    "mode": runtime.active_interaction.mode,
+                    "context": runtime.active_interaction.context,
+                    "options": [dict(o) for o in runtime.active_interaction.options],
+                    "hint": runtime.active_interaction.hint,
+                }
+                if runtime.active_interaction is not None
+                else None
+            ),
+            allowed_commands=[],
+            duplicate=duplicate,
+        )
+
+
+__all__ = ["SessionApplication"]

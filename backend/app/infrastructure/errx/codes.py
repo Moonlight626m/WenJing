@@ -1,0 +1,306 @@
+"""错误码集中注册表。
+
+采用 `WJ-<模块>-<编号>` 分层语义，编码为整数 code（段内连续）。
+所有错误码在此处统一注册，新增错误在此登记即可。
+"""
+
+from __future__ import annotations
+
+from app.infrastructure.errx._registry import register
+
+# ===== 会话（SESS）=====
+SESS_NOT_FOUND = 1001
+SESS_ENDED = 1002
+SESS_CONFLICT = 1003                # 乐观锁版本冲突（并发命令）
+
+# ===== 引擎（ENG）=====
+ENG_INVALID_TRANSITION = 2001      # 非法 Stage 转换
+ENG_ROLLBACK_TARGET_MISSING = 2002  # 回溯目标事件不存在
+ENG_ROLLBACK_OVERFLOW = 2003        # 回溯步数超出限制
+ENG_PLAYER_ACTION_INVALID = 2004    # 玩家操作非法/缺字段
+ENG_NOT_RUNNING = 2005              # 引擎未在运行，无法处理操作
+
+# ===== Agent（AGENT）=====
+AGENT_NOT_IN_SESSION = 3001         # 指定角色不在当前会话
+AGENT_PROPOSAL_ALL_REJECTED = 3002  # 全部角色提议被驳回（僵局）
+
+# ===== LLM（LLM）=====
+LLM_CALL_FAILED = 4001              # LLM 调用失败（provider 报错/网络），不含超时
+LLM_OUTPUT_PARSE_FAILED = 4002      # LLM 结构化输出解析失败
+LLM_UNKNOWN_MODEL = 4003            # 请求了未登记/未知的 provider 或模型
+LLM_TIMEOUT = 4004                  # LLM 调用超时（可重试；#65 与 provider 报错分列）
+
+# ===== 配置（CFG）=====
+CFG_UNKNOWN_PROVIDER = 5001         # 未知的 LLM provider
+CFG_MEDIA_STORAGE_INCOMPLETE = 5002  # provider=s3 但缺少 endpoint/凭证/桶
+CFG_UNKNOWN_MEDIA_PROVIDER = 5003    # 未知的媒体 provider（检索/生图）
+CFG_MEDIA_IMAGE_GEN_INCOMPLETE = 5004  # provider=openai 但缺少 base_url/api_key
+CFG_MEDIA_TTS_INCOMPLETE = 5005       # TTS provider 配置不全（缺 base_url/api_key）
+CFG_MEDIA_ASR_INCOMPLETE = 5006       # ASR provider 配置不全（缺 base_url/api_key）
+
+# ===== 内容（CNT）=====
+CNT_UNSUPPORTED_GENRE = 6001        # 课文体裁不支持（非叙事类）
+CNT_INSUFFICIENT_SOURCE = 6002      # 原文分析不足以产出合法剧本（issue #11）
+CNT_GENERATION_FAILED = 6003        # Stage1 生成/校验重试后仍失败（issue #11）
+
+# ===== 导入（INP）=====
+INP_EMPTY_MATERIAL = 7001           # 课文内容为空
+INP_UNSUPPORTED_EXTENSION = 7002    # 上传文件扩展名不支持
+INP_INVALID_ENCODING = 7003         # 上传字节无法按受支持编码解码
+INP_TOO_LARGE = 7004                # 课文超出大小上限
+INP_INVALID_MEDIA_INPUT = 7005      # 配图上传表单字段非法（subject_key/kind/类型，#49）
+
+# ===== 检索（SEARCH，issue #10 #12 开放网络搜索）=====
+SEARCH_UNAVAILABLE = 8001           # 搜索 provider 不可用/失败
+SEARCH_BLOCKED_TARGET = 8002        # SSRF/DNS 校验拒绝目标（私有/回环/元数据）
+SEARCH_TIMEOUT = 8003               # 抓取连接/读取超时
+
+# ===== 协议（PRT）=====
+PRT_MALFORMED_MESSAGE = 9001        # 请求消息/标识格式非法
+PRT_UNKNOWN_COMMAND = 9002          # 未知的命令类型
+
+# ===== 媒体（MEDIA，issue #40 / ADR-0005）=====
+MEDIA_STORAGE_FAILED = 13001        # 对象存储 put/presign 失败
+MEDIA_IMAGE_INVALID = 13002         # 图片字节无法解码/处理
+MEDIA_ASSET_NOT_FOUND = 13003       # 资产不存在
+MEDIA_ASSET_NOT_READY = 13004       # 资产尚未就绪（pending/failed）
+MEDIA_SEARCH_FAILED = 13005         # 开放版权检索 provider 不可用/响应异常
+MEDIA_SEARCH_BLOCKED = 13006        # SSRF/DNS 校验拒绝检索目标（私有/回环/元数据）
+MEDIA_SEARCH_TIMEOUT = 13007        # 检索请求连接/读取超时
+MEDIA_IMAGE_GEN_FAILED = 13008      # 生图 provider 不可用/响应异常
+MEDIA_IMAGE_GEN_TIMEOUT = 13009     # 生图请求连接/读取超时
+MEDIA_IMAGE_GEN_BLOCKED = 13010     # 本地安全闸门拒绝（prompt 过滤 / 产物 URL 被 SSRF 拦）
+MEDIA_IMAGE_GEN_INVALID = 13011     # provider 返回的图片无效（解码/内容类型/尺寸）
+MEDIA_UPLOAD_TOO_LARGE = 13012      # 教师上传图片超过大小上限（#49）
+MEDIA_TTS_FAILED = 13013            # 语音合成 provider 不可用/响应异常
+MEDIA_TTS_TIMEOUT = 13014           # 合成请求连接/读取超时
+MEDIA_TTS_INVALID = 13015           # provider 返回的音频无效（解码/内容类型）
+MEDIA_ASR_FAILED = 13016            # 语音识别 provider 不可用/响应异常
+MEDIA_ASR_TIMEOUT = 13017           # 识别请求连接/读取超时
+MEDIA_ASR_INVALID = 13018           # provider 返回的转写无效/为空
+
+# ===== 持久化（PER，issue #13）=====
+PER_WRITE_FAILED = 10001            # 事务写入失败（可重试，无部分状态）
+PER_INCOMPATIBLE_SCHEMA = 10002     # 持久化数据 schema 不兼容
+PER_CORRUPT_SNAPSHOT = 10003        # 快照损坏，无法作为重放基线
+
+# ===== 鉴权（AUTH，issue #17 / ADR-0002）=====
+AUTH_UNAUTHENTICATED = 11001        # 未登录 / 会话无效或过期
+AUTH_INVALID_CREDENTIALS = 11002    # 登录标识或密码错误
+AUTH_FORBIDDEN = 11003              # 已登录但无权限访问该资源
+AUTH_CSRF_FAILED = 11004            # 状态变更请求缺少/错误的 CSRF token
+AUTH_IDENTIFIER_TAKEN = 11005       # 邮箱或手机号已被注册
+
+# ===== 剧本库（SCR，issue #19 / ADR-0002）=====
+SCR_NOT_FOUND = 12001               # 剧本不存在
+SCR_NOT_EDITABLE = 12002            # 当前状态不允许该操作（非草稿删除/重生、发布后改内容）
+SCR_MATERIAL_NOT_FOUND = 12003      # 素材不存在或不属于当前用户
+SCR_NOT_READY = 12004               # 剧本尚无生成内容，暂不可游玩（issue #21）
+SCR_NOT_RUNNING = 12005             # 生成任务不在运行中，无法取消
+
+
+def register_all() -> None:
+    """注册全部错误码（应用启动时调用一次，幂等）。"""
+
+    register(SESS_NOT_FOUND, "session {id} not found", is_affect_stability=False)
+    register(SESS_ENDED, "session {id} already ended", is_affect_stability=False)
+    register(
+        SESS_CONFLICT,
+        "session {id} version conflict (expected {expected})",
+        is_affect_stability=False,
+    )
+
+    register(ENG_INVALID_TRANSITION, "invalid stage transition from {src} to {dst}")
+    register(
+        ENG_ROLLBACK_TARGET_MISSING,
+        "rollback target event {event_id} does not exist",
+        is_affect_stability=False,
+    )
+    register(
+        ENG_ROLLBACK_OVERFLOW,
+        "rollback of {steps} steps exceeds limit {max_steps}",
+        is_affect_stability=False,
+    )
+    register(
+        ENG_PLAYER_ACTION_INVALID,
+        "invalid player action: {reason}",
+        is_affect_stability=False,
+    )
+    register(ENG_NOT_RUNNING, "engine {session_id} is not running")
+
+    register(AGENT_NOT_IN_SESSION, "character {name} not in session", is_affect_stability=False)
+    register(
+        AGENT_PROPOSAL_ALL_REJECTED,
+        "all character proposals rejected ({stage})",
+        is_affect_stability=False,
+    )
+
+    register(LLM_CALL_FAILED, "llm call failed: {reason}")
+    register(LLM_OUTPUT_PARSE_FAILED, "failed to parse llm structured output: {target}")
+    register(LLM_UNKNOWN_MODEL, "unknown llm model/provider: {provider}")
+    # 超时单列一个码（#65）：`str(TimeoutError())` 是空串，和 provider 报错混在一个码里
+    # 时，日志与对外信封都只剩「llm call failed: 」，现场无法自诊断。
+    register(LLM_TIMEOUT, "llm call timed out after {timeout}s: {reason}")
+
+    register(CFG_UNKNOWN_PROVIDER, "unknown llm provider: {provider}", is_affect_stability=False)
+    register(
+        CFG_MEDIA_STORAGE_INCOMPLETE,
+        "media storage provider=s3 requires: {missing}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_UNKNOWN_MEDIA_PROVIDER,
+        "unknown media provider: {provider}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_MEDIA_IMAGE_GEN_INCOMPLETE,
+        "media image gen provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_MEDIA_TTS_INCOMPLETE,
+        "media tts provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
+    register(
+        CFG_MEDIA_ASR_INCOMPLETE,
+        "media asr provider incomplete, missing: {missing}",
+        is_affect_stability=False,
+    )
+
+    register(CNT_UNSUPPORTED_GENRE, "unsupported genre: {genre}", is_affect_stability=False)
+    register(
+        CNT_INSUFFICIENT_SOURCE,
+        "insufficient source material: {reason}",
+        is_affect_stability=False,
+    )
+    register(CNT_GENERATION_FAILED, "stage1 generation failed after retries: {reason}")
+
+    register(INP_EMPTY_MATERIAL, "material text is empty", is_affect_stability=False)
+    register(
+        INP_UNSUPPORTED_EXTENSION,
+        "unsupported file extension: {ext}",
+        is_affect_stability=False,
+    )
+    register(
+        INP_INVALID_ENCODING,
+        "cannot decode material bytes: {reason}",
+        is_affect_stability=False,
+    )
+    register(INP_TOO_LARGE, "material exceeds size limit {max_chars}", is_affect_stability=False)
+    register(
+        INP_INVALID_MEDIA_INPUT,
+        "invalid media upload input: {reason}",
+        is_affect_stability=False,
+    )
+
+    register(SEARCH_UNAVAILABLE, "search unavailable: {reason}", is_affect_stability=False)
+    register(
+        SEARCH_BLOCKED_TARGET,
+        "blocked network target: {reason}",
+        is_affect_stability=False,
+    )
+    register(SEARCH_TIMEOUT, "fetch timed out: {url}")
+
+    register(
+        PRT_MALFORMED_MESSAGE,
+        "malformed message: {reason}",
+        is_affect_stability=False,
+    )
+    register(PRT_UNKNOWN_COMMAND, "unknown command: {kind}", is_affect_stability=False)
+
+    register(MEDIA_STORAGE_FAILED, "media storage {op} failed: {reason}")
+    register(MEDIA_IMAGE_INVALID, "invalid image bytes: {reason}", is_affect_stability=False)
+    register(
+        MEDIA_ASSET_NOT_FOUND,
+        "asset {asset_id} not found",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_ASSET_NOT_READY,
+        "asset {asset_id} not ready (status={status})",
+        is_affect_stability=False,
+    )
+    register(MEDIA_SEARCH_FAILED, "media image search failed: {reason}", is_affect_stability=False)
+    register(
+        MEDIA_SEARCH_BLOCKED,
+        "blocked media search target: {reason}",
+        is_affect_stability=False,
+    )
+    register(MEDIA_SEARCH_TIMEOUT, "media image search timed out: {url}")
+    register(MEDIA_IMAGE_GEN_FAILED, "media image generation failed: {reason}")
+    register(MEDIA_IMAGE_GEN_TIMEOUT, "media image generation timed out: {reason}")
+    register(
+        MEDIA_IMAGE_GEN_BLOCKED,
+        "blocked image generation prompt: {reason}",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_IMAGE_GEN_INVALID,
+        "invalid generated image: {reason}",
+        is_affect_stability=False,
+    )
+    register(
+        MEDIA_UPLOAD_TOO_LARGE,
+        "uploaded image too large: {size} bytes (limit {limit})",
+        is_affect_stability=False,
+    )
+    register(MEDIA_TTS_FAILED, "speech synthesis failed: {reason}")
+    register(MEDIA_TTS_TIMEOUT, "speech synthesis timed out: {reason}")
+    register(
+        MEDIA_TTS_INVALID,
+        "invalid synthesized audio: {reason}",
+        is_affect_stability=False,
+    )
+    register(MEDIA_ASR_FAILED, "speech recognition failed: {reason}")
+    register(MEDIA_ASR_TIMEOUT, "speech recognition timed out: {reason}")
+    register(
+        MEDIA_ASR_INVALID,
+        "invalid transcription: {reason}",
+        is_affect_stability=False,
+    )
+
+    register(PER_WRITE_FAILED, "persistence write failed: {op}")
+    register(PER_INCOMPATIBLE_SCHEMA, "incompatible persisted schema: {reason}")
+    register(PER_CORRUPT_SNAPSHOT, "corrupt snapshot: {reason}")
+
+    register(AUTH_UNAUTHENTICATED, "authentication required", is_affect_stability=False)
+    register(
+        AUTH_INVALID_CREDENTIALS,
+        "invalid credentials for {identifier}",
+        is_affect_stability=False,
+    )
+    register(AUTH_FORBIDDEN, "forbidden: {reason}", is_affect_stability=False)
+    register(
+        AUTH_CSRF_FAILED,
+        "csrf token missing or invalid",
+        is_affect_stability=False,
+    )
+    register(
+        AUTH_IDENTIFIER_TAKEN,
+        "identifier already registered: {identifier}",
+        is_affect_stability=False,
+    )
+
+    register(SCR_NOT_FOUND, "script {id} not found", is_affect_stability=False)
+    register(
+        SCR_NOT_EDITABLE,
+        "script {id} is not editable in status {status}",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_MATERIAL_NOT_FOUND,
+        "material {id} not found or not owned by actor",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_NOT_READY,
+        "script {id} has no generated content to play",
+        is_affect_stability=False,
+    )
+    register(
+        SCR_NOT_RUNNING,
+        "script {id} generation is not running",
+        is_affect_stability=False,
+    )

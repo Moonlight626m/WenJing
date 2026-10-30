@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "description": "资产预签名 URL 物化响应。",
+  "properties": {
+    "schema_version": {
+      "default": "2.7.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "asset_id": {
+      "format": "uuid",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "url": {
+      "title": "Url",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_id",
+    "url",
+    "expires_at"
+  ],
+  "title": "AssetUrlResponse",
+  "type": "object"
+}

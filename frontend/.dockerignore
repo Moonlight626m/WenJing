@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+.git/
+.env
+.env.*
+!.env.example
+*.log
+tsconfig.tsbuildinfo
+test-results/
+playwright-report/
+tests/
+Dockerfile
+.dockerignore

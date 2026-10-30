@@ -1,0 +1,128 @@
+# 文境单机部署：db + minio + backend + frontend + nginx（同源入口）。
+# 生产：复制 .env.example 为 .env，至少修改 POSTGRES_PASSWORD 与 LLM 配置，
+#      然后 `docker compose up -d --build`，访问 http://<server>/ 。
+# 开发：`make db-up` 启动 db；`make media-up` 启动 MinIO（backend/frontend 在宿主机跑热更）。
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: wenjing-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wenjing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wenjing}
+      POSTGRES_DB: ${POSTGRES_DB:-wenjing}
+    # 仅绑定回环，避免数据库直接暴露公网
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wenjing}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 开发/自托管对象存储（S3 兼容）；生产可换成 OSS/COS 并只改 endpoint/凭证。
+  # profile=media：默认 `docker compose up` 不启动（生产用 OSS 时无需 MinIO）。
+  minio:
+    image: minio/minio:latest
+    container_name: wenjing-minio
+    profiles: ["media"]
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wenjing}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wenjing123}
+      # 浏览器直取预签名图片所需 CORS（MinIO 由服务端 env 控制，非 bucket CORS API）
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:3000,http://127.0.0.1:3000}
+    # 仅绑定回环；预签名 URL 走 WENJING_MEDIA_STORAGE_PUBLIC_ENDPOINT
+    ports:
+      - "127.0.0.1:9000:9000"   # S3 API
+      - "127.0.0.1:9001:9001"   # Web 控制台
+    volumes:
+      - miniodata:/data
+
+  # 一次性初始化：建桶（私有），幂等。
+  minio-init:
+    image: minio/mc:latest
+    container_name: wenjing-minio-init
+    profiles: ["media"]
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-wenjing}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wenjing123}
+      MEDIA_BUCKET: ${WENJING_MEDIA_STORAGE_BUCKET:-wenjing-media}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        i=0
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          i=$$((i+1)); [ "$$i" -ge 30 ] && { echo "minio not ready after 30s"; exit 1; }
+          echo "waiting for minio ..."; sleep 1;
+        done
+        mc mb --ignore-existing "local/$$MEDIA_BUCKET"
+        mc anonymous set none "local/$$MEDIA_BUCKET"
+        echo "minio bucket ready: $$MEDIA_BUCKET"
+
+  backend:
+    build:
+      context: ./backend
+    container_name: wenjing-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WENJING_DEBUG: "false"
+      WENJING_RUN_MIGRATIONS: "1"
+      WENJING_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wenjing}:${POSTGRES_PASSWORD:-wenjing}@db:5432/${POSTGRES_DB:-wenjing}
+      WENJING_CORS_ORIGINS: ${WENJING_CORS_ORIGINS:-http://localhost}
+      # 走 HTTPS 时置 1，Cookie 加 Secure；纯 HTTP 部署保持 0
+      WENJING_AUTH_COOKIE_SECURE: ${WENJING_AUTH_COOKIE_SECURE:-0}
+      WENJING_LLM_PROVIDER: ${WENJING_LLM_PROVIDER:-openai}
+      WENJING_LLM_MODEL: ${WENJING_LLM_MODEL:-gpt-4o-mini}
+      WENJING_LLM_API_KEY: ${WENJING_LLM_API_KEY:-}
+      WENJING_LLM_BASE_URL: ${WENJING_LLM_BASE_URL:-}
+      # 对象存储：容器内走内网 endpoint（minio:9000），预签名用浏览器可达的 public endpoint
+      WENJING_MEDIA_STORAGE_PROVIDER: ${WENJING_MEDIA_STORAGE_PROVIDER:-null}
+      WENJING_MEDIA_STORAGE_ENDPOINT: ${WENJING_MEDIA_STORAGE_ENDPOINT:-http://minio:9000}
+      WENJING_MEDIA_STORAGE_PUBLIC_ENDPOINT: ${WENJING_MEDIA_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
+      WENJING_MEDIA_STORAGE_BUCKET: ${WENJING_MEDIA_STORAGE_BUCKET:-wenjing-media}
+      WENJING_MEDIA_STORAGE_ACCESS_KEY: ${WENJING_MEDIA_STORAGE_ACCESS_KEY:-}
+      WENJING_MEDIA_STORAGE_SECRET_KEY: ${WENJING_MEDIA_STORAGE_SECRET_KEY:-}
+    expose:
+      - "8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # 同源部署：空串 → 浏览器以相对 /api、/ws 访问（由 nginx 转发）
+        NEXT_PUBLIC_API_BASE: ""
+        NEXT_PUBLIC_WS_BASE: ""
+    container_name: wenjing-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # 服务端路由守卫经内网直连后端（浏览器仍走同源 /api 由 nginx 转发）
+      WENJING_SERVER_API_BASE: http://backend:8000
+    expose:
+      - "3000"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: wenjing-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+    ports:
+      - "${WENJING_HTTP_PORT:-80}:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  pgdata:
+  miniodata:

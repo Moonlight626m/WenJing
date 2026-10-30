@@ -1,0 +1,820 @@
+/**
+ * 共享契约（issue #2）— 前端镜像类型。
+ *
+ * 单源事实在 backend/app/contracts/（Pydantic）+ contracts/fixtures/*.json。
+ * 本文件是其在 TypeScript 侧的手工镜像；协议一致性由以下机制保证：
+ * - 契约字段变更时必须同步更新本文件（契约评审 checklist）；
+ * - contracts/jsonschema/*.schema.json 由后端导出，供运行时校验（#6 mock server 接入 ajv）；
+ * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
+ */
+
+export const CONTRACTS_SCHEMA_VERSION = "2.7.0";
+
+// ===== 阶段 / 枚举 =====
+
+export type StageValue =
+  | "init"
+  | "stage1_creating"
+  | "stage1_complete"
+  | "stage2_reenacting"
+  | "stage2_complete"
+  | "stage3_extending"
+  | "ended";
+
+export type InteractionMode = "options" | "free_input" | "options_with_fallback";
+
+export type CommandKind =
+  | "select_role"
+  | "choose_option"
+  | "free_input"
+  | "rollback_to_event"
+  | "enter_stage3"
+  | "confirm_ending"
+  | "exit_game";
+
+export const ALLOWED_COMMANDS: Record<StageValue, readonly CommandKind[]> = {
+  init: [],
+  stage1_creating: [],
+  stage1_complete: ["select_role", "exit_game"],
+  stage2_reenacting: ["choose_option", "free_input", "rollback_to_event", "exit_game"],
+  stage2_complete: ["enter_stage3", "exit_game"],
+  stage3_extending: [
+    "choose_option",
+    "free_input",
+    "rollback_to_event",
+    "confirm_ending",
+    "exit_game",
+  ],
+  ended: [],
+};
+
+export type EventType =
+  | "session_started"
+  | "material_imported"
+  | "script_generated"
+  | "role_selected"
+  | "narrative_advanced"
+  | "proposals_generated"
+  | "proposals_verified"
+  | "interaction_offered"
+  | "player_action_recorded"
+  | "agent_reactions_done"
+  | "stage_transitioned"
+  | "rollback_executed"
+  | "asset_ready";
+
+export type ErrorDomain =
+  | "input"
+  | "content"
+  | "search"
+  | "media"
+  | "llm"
+  | "game"
+  | "session"
+  | "auth"
+  | "persistence"
+  | "protocol"
+  | "internal";
+
+// ===== 账号（issue #17 / ADR-0002）=====
+
+export type UserRole = "super_admin" | "teacher" | "student";
+
+export interface RegisterRequest {
+  schema_version: string;
+  email: string | null;
+  phone: string | null;
+  password: string;
+  nickname: string;
+}
+
+export interface LoginRequest {
+  schema_version: string;
+  identifier: string;
+  password: string;
+}
+
+export interface UserPublic {
+  schema_version: string;
+  id: string;
+  org_id: string;
+  role: UserRole;
+  email: string | null;
+  phone: string | null;
+  nickname: string;
+  created_at: string | null;
+}
+
+export interface AuthSessionInfo {
+  schema_version: string;
+  user: UserPublic;
+  csrf_token: string;
+}
+
+// ===== 剧本库（issue #19 / ADR-0002 §3）=====
+
+export type ScriptStatus = "draft" | "published" | "unpublished";
+export type ScriptVisibility = "org" | "public";
+
+export type GenerationStatus =
+  | "idle"
+  | "running"
+  | "awaiting_review"
+  | "succeeded"
+  | "failed";
+
+export type GenerationNode =
+  | "collect_materials"
+  | "verify_materials"
+  | "divide_events"
+  | "design_characters"
+  | "write_script"
+  | "final_audit"
+  | "design_assets";
+
+export type GenerationNodeStatusValue =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "rejected"
+  | "failed";
+
+export interface NodeProgress {
+  node: GenerationNode;
+  status: GenerationNodeStatusValue;
+  detail: string | null;
+}
+
+export interface DoubterEvent {
+  node: GenerationNode;
+  verdict: "pass" | "reject";
+  issues: string[];
+  round: number;
+}
+
+export interface GenerationProgress {
+  schema_version: string;
+  status: GenerationStatus;
+  nodes: NodeProgress[];
+  doubter_events: DoubterEvent[];
+  error: string | null;
+  updated_at: string | null;
+}
+
+export interface MaterialPublic {
+  schema_version: string;
+  id: number;
+  title: string | null;
+  content_hash: string;
+  char_count: number;
+  created_at: string | null;
+}
+
+export interface ScriptCreateRequest {
+  schema_version: string;
+  material_id: number;
+  name: string;
+  description: string | null;
+}
+
+export interface ScriptPublishRequest {
+  schema_version: string;
+  visibility: ScriptVisibility;
+}
+
+export interface GenerationResumeRequest {
+  schema_version: string;
+  directives: string[];
+  edits: GateEdits;
+  action: "approve" | "reject";
+}
+
+export interface ScriptSummary {
+  schema_version: string;
+  id: number;
+  name: string;
+  description: string | null;
+  status: ScriptStatus;
+  visibility: ScriptVisibility;
+  material_id: number | null;
+  owner_user_id: string;
+  org_id: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ScriptDetail {
+  schema_version: string;
+  script: ScriptSummary;
+  package: ScriptPackage | null;
+  generation: GenerationProgress | null;
+  review: GateReview | null;
+}
+
+export interface ScriptListResponse {
+  schema_version: string;
+  items: ScriptSummary[];
+}
+
+// ===== 学生游玩（issue #21 / ADR-0002 §3）=====
+
+export interface CreateSessionRequest {
+  schema_version: string;
+  script_id: number;
+}
+
+export interface SessionSummary {
+  schema_version: string;
+  session_id: string;
+  script_id: number | null;
+  script_name: string | null;
+  stage: StageValue;
+  status: string;
+  player_role: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SessionListResponse {
+  schema_version: string;
+  items: SessionSummary[];
+}
+
+// ===== 运营后台（issue #22 / ADR-0002 §5）=====
+
+export type UsagePurpose =
+  | "stage1"
+  | "agent"
+  | "verify"
+  | "collect_materials"
+  | "doubter"
+  | "divide_events"
+  | "character_design"
+  | "script_writing"
+  | "image_review";
+
+export interface UsageAggregateRow {
+  schema_version: string;
+  org_id: string;
+  purpose: UsagePurpose;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  call_count: number;
+}
+
+export interface UsageAggregateResponse {
+  schema_version: string;
+  items: UsageAggregateRow[];
+  since: string | null;
+  until: string | null;
+}
+
+// ===== 材料与证据 =====
+
+export interface MaterialInput {
+  schema_version: string;
+  source: "paste" | "upload";
+  filename: string | null;
+  raw_text: string;
+}
+
+export interface Material {
+  schema_version: string;
+  content_hash: string;
+  normalized_text: string;
+  char_count: number;
+  created_at: string | null;
+}
+
+/** 按 source_type 判别：original_text | web */
+export interface OriginalEvidenceRef {
+  source_type: "original_text";
+  excerpt: string;
+  paragraph_index: number | null;
+  char_start: number | null;
+  char_end: number | null;
+}
+
+export interface WebEvidenceRef {
+  source_type: "web";
+  url: string;
+  title: string;
+  fetched_at: string;
+  content_hash: string;
+  excerpt: string;
+}
+
+export type EvidenceRef = OriginalEvidenceRef | WebEvidenceRef;
+
+// ===== 内容管线（issue #9）：体裁判断 + 原文分析 =====
+
+export type GenreType =
+  | "novel"
+  | "narrative"
+  | "drama"
+  | "character_story"
+  | "expository"
+  | "argumentative"
+  | "scenery"
+  | "poetry"
+  | "unknown";
+
+export interface GenreClassification {
+  schema_version: string;
+  genre: GenreType;
+  is_supported: boolean;
+  signals: string[];
+}
+
+export interface CharacterMention {
+  schema_version: string;
+  name: string;
+  role: string | null;
+  personality: string | null;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface RelationshipEdge {
+  schema_version: string;
+  source: string;
+  target: string;
+  nature: string;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface SceneSetting {
+  schema_version: string;
+  title: string;
+  location: string | null;
+  participants: string[];
+  core_event: string;
+  significance: string | null;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface KeyEvent {
+  schema_version: string;
+  title: string;
+  description: string;
+  participants: string[];
+  order: number;
+  evidence_refs: OriginalEvidenceRef[];
+}
+
+export interface TextAnalysis {
+  schema_version: string;
+  content_hash: string;
+  title: string | null;
+  author: string | null;
+  genre: GenreClassification;
+  characters: CharacterMention[];
+  relationships: RelationshipEdge[];
+  scenes: SceneSetting[];
+  key_events: KeyEvent[];
+}
+
+
+// ===== 剧本包 =====
+
+export interface CharacterTrait {
+  label: string;
+  evidence: string;
+  behavior: string;
+}
+
+export interface SpeechStyle {
+  era_layer: string;
+  sentence_rhythm: string;
+  address_terms: string;
+  catchphrases: string;
+  emotion_expression: string;
+  sample_lines: string[];
+}
+
+export interface KnowledgeBoundary {
+  knows: string[];
+  not_knows: string[];
+}
+
+export interface Playability {
+  value: boolean;
+  reason: string;
+}
+
+/** 稳定资产引用（ADR-0005 §3）：URL-free，访问经鉴权端点签发预签名 URL。 */
+export interface AssetRef {
+  asset_id: string;
+  kind: "background" | "avatar" | "fullbody";
+  status: "pending" | "ready" | "failed";
+}
+
+/** 素材署名/许可元数据（ADR-0005 §6）。 */
+export interface AssetCredit {
+  author: string;
+  license: string;
+  source_url: string;
+  license_url: string;
+}
+
+/** 资产预签名 URL 物化响应（GET /api/assets/{id}/url）。 */
+export interface AssetUrlResponse {
+  schema_version: string;
+  asset_id: string;
+  url: string;
+  expires_at: string;
+}
+
+/**
+ * 语音识别结果（#64 / ADR-0005 §11）。
+ *
+ * 拿到 `text` 后当作普通 `free_input` 命令提交——服务端**不**代劳：
+ * `POST /api/sessions/{id}/commands` 是唯一的游戏输入入口，语音不开旁路。
+ */
+export interface TranscribeResponse {
+  schema_version: string;
+  /** 识别出的文本（学生说的话）。 */
+  text: string;
+  /** 音频时长（毫秒）；0=未知。 */
+  duration_ms: number;
+}
+
+export interface CharacterProfile {
+  name: string;
+  public_background: string;
+  personality_traits: CharacterTrait[];
+  speech_style?: SpeechStyle | null;
+  knowledge_boundary: KnowledgeBoundary;
+  is_player_playable: Playability;
+  avatar_asset?: AssetRef | null;
+  fullbody_asset?: AssetRef | null;
+  avatar_credit?: AssetCredit | null;
+  fullbody_credit?: AssetCredit | null;
+}
+
+export interface Beat {
+  beat_id: number;
+  description: string;
+  is_key_event: boolean;
+  evidence_refs: EvidenceRef[];
+}
+
+export interface Scene {
+  scene_id: number;
+  title: string;
+  participants: string[];
+  beats: Beat[];
+  background_asset?: AssetRef | null;
+  background_credit?: AssetCredit | null;
+}
+
+export interface ScriptPackage {
+  schema_version: string;
+  title: string;
+  characters: CharacterProfile[];
+  scenes: Scene[];
+  teaching_focus: string[];
+  playable_roles: string[];
+  stage2_ending_beat_id: number;
+}
+
+// ===== 教师闸门审阅（issue #34）=====
+
+export type GateKind = "materials" | "pre_write" | "final";
+
+export interface CharacterNote {
+  name: string;
+  note: string;
+}
+
+export interface ClaimRef {
+  target: string;
+  source_type: "original_text" | "inference" | "web";
+  confidence: "high" | "medium" | "low";
+  evidence_ref?: EvidenceRef | null;
+  note?: string;
+}
+
+export interface SourceConflict {
+  claim: string;
+  original_evidence: string;
+  external_source: string;
+  resolution: string;
+}
+
+export interface MaterialDossier {
+  background: string;
+  era_setting: string;
+  character_notes: CharacterNote[];
+  plot_summary: string;
+  teaching_analysis: string[];
+  claims: ClaimRef[];
+  conflicts: SourceConflict[];
+}
+
+export interface InteractionPoint {
+  player_role_hint: string;
+  what_player_can_do: string;
+  must_not_change: number[];
+}
+
+export interface BeatDraft {
+  description: string;
+  is_key_event: boolean;
+  key_event_order: number | null;
+}
+
+export interface SceneDraft {
+  title: string;
+  participants: string[];
+  beats: BeatDraft[];
+  interaction_point?: InteractionPoint | null;
+}
+
+export interface EventDivisionDraft {
+  scenes: SceneDraft[];
+}
+
+export interface GateReview {
+  schema_version: string;
+  gate: GateKind;
+  dossier: MaterialDossier | null;
+  evidence: WebEvidenceRef[];
+  division: EventDivisionDraft | null;
+  profiles: CharacterProfile[];
+  package: ScriptPackage | null;
+}
+
+/** 教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。 */
+export interface AssetOp {
+  schema_version: string;
+  op: "remove" | "regenerate" | "search_replace" | "bind_upload";
+  subject_key: string;
+  kind: "background" | "avatar" | "fullbody";
+  asset_id?: string | null;
+}
+
+export interface GateEdits {
+  schema_version: string;
+  dossier: MaterialDossier | null;
+  division: EventDivisionDraft | null;
+  profiles: CharacterProfile[] | null;
+  package: ScriptPackage | null;
+  asset_ops: AssetOp[];
+}
+
+// ===== admin prompt 管理（PromptMgr 组件）=====
+
+export interface PromptEntry {
+  schema_version: string;
+  stage: string;
+  node: string;
+  version: string;
+  section: string;
+  body: string;
+  description?: string | null;
+  enabled: boolean;
+  updated_at?: string | null;
+}
+
+export interface PromptListResponse {
+  schema_version: string;
+  items: PromptEntry[];
+}
+
+export interface PromptUpdateRequest {
+  schema_version: string;
+  body?: string | null;
+  description?: string | null;
+  enabled?: boolean | null;
+}
+
+// ===== 玩家命令 =====
+
+export interface PlayerCommand {
+  schema_version: string;
+  command_id: string;
+  session_id: string;
+  kind: CommandKind;
+  payload: CommandPayloadByKind[CommandKind];
+  issued_at: string | null;
+}
+
+export type SelectRolePayload = { role_name: string };
+export type ChooseOptionPayload = { option_id: string };
+export type FreeInputPayload = { text: string };
+export type RollbackToEventPayload = { target_sequence: number };
+export type EmptyPayload = Record<string, never>;
+
+export interface CommandPayloadByKind {
+  select_role: SelectRolePayload;
+  choose_option: ChooseOptionPayload;
+  free_input: FreeInputPayload;
+  rollback_to_event: RollbackToEventPayload;
+  enter_stage3: EmptyPayload;
+  confirm_ending: EmptyPayload;
+  exit_game: EmptyPayload;
+}
+
+// ===== 领域事件 / 运行时状态 =====
+
+export interface DomainEvent {
+  schema_version: string;
+  event_id: string;
+  session_id: string;
+  branch_id: string;
+  sequence: number;
+  event_type: EventType;
+  causation_id: string | null;
+  correlation_id: string | null;
+  payload: Record<string, unknown>;
+  occurred_at: string | null;
+}
+
+export interface OptionItem {
+  option_id: string;
+  label: string;
+}
+
+export interface ActiveInteraction {
+  interaction_id: string;
+  mode: InteractionMode;
+  prompt: string;
+  options: OptionItem[];
+  hint: string;
+}
+
+export interface Stage3Goal {
+  goal_id: number;
+  description: string;
+  achieved: boolean;
+}
+
+export interface RuntimeState {
+  schema_version: string;
+  session_id: string;
+  branch_id: string;
+  last_sequence: number;
+  stage: StageValue;
+  phase: string | null;
+  scene_id: number | null;
+  /** 当前场景稳定键（#53）：脚本场景 `scene:{id}`；运行期新场景单调 key。 */
+  scene_key: string | null;
+  /** 当前场景标题（#53）：重连后由引擎按游标重建。 */
+  scene_title: string | null;
+  beat_cursor: number | null;
+  plot_context: Record<string, unknown>;
+  character_memories: Record<string, string[]>;
+  active_interaction: ActiveInteraction | null;
+  stage3_goals: Stage3Goal[];
+  /** 当前背景图稳定引用（#53）：URL 经鉴权端点签发。 */
+  current_asset: AssetRef | null;
+}
+
+export interface GameSnapshot {
+  schema_version: string;
+  snapshot_id: string;
+  session_id: string;
+  branch_id: string;
+  last_sequence: number;
+  state: RuntimeState;
+  created_at: string | null;
+}
+
+// ===== 错误 envelope =====
+
+export interface ErrorEnvelope {
+  error_id: string;
+  code: string;
+  domain: ErrorDomain;
+  message: string;
+  retryable: boolean;
+  details: Record<string, unknown> | null;
+}
+
+// ===== WebSocket 协议 =====
+
+export interface ServerMessage {
+  type:
+    | "session_init"
+    | "narrative"
+    | "character_speech"
+    | "system"
+    | "interaction"
+    | "asset_ready"
+    | "error";
+  session_id: string;
+  seq: number;
+  payload: ServerMessagePayloads;
+}
+
+/**
+ * 瞬态流式消息（#60 / ADR-0005 §10）：**有 type 无 seq**。
+ *
+ * `stream_start{stream_id, speaker}` → `stream_delta{stream_id, text}` × N →
+ * `stream_end{stream_id}`。它描述"此刻屏幕上滚动的字幕"，不进 outbox、不参与
+ * `confirm`/`resync` 补发；权威文本永远是随后那条带 seq 的 `character_speech`
+ * ——收到它即丢弃对应 `stream_id` 的流缓冲（终态规则）。
+ */
+export interface StreamMessage {
+  type: "stream_start" | "stream_delta" | "stream_end";
+  session_id: string;
+  payload: StreamMessagePayload;
+}
+
+export interface StreamMessagePayload {
+  stream_id: string;
+  /** 仅 stream_start 携带：本条流属于哪个角色。 */
+  speaker?: string;
+  /** 仅 stream_delta 携带。 */
+  text?: string;
+}
+
+/**
+ * 音轨开始（#63 / ADR-0005 §11）：**有 type 无 seq**，与 `StreamMessage` 同类。
+ *
+ * 紧随其后的是**裸二进制帧**（音频字节），由 `AudioEndMessage` 收尾。一条发言
+ * 一条音轨，多角色并发时挂多个 `<audio>`；后端不混音。
+ */
+export interface AudioStartMessage {
+  type: "audio_start";
+  session_id: string;
+  payload: AudioStartPayload;
+}
+
+export interface AudioStartPayload {
+  track_id: string;
+  /** 本条音轨属于哪个角色。 */
+  speaker: string;
+  /** MIME（`audio/mpeg` 等）：直接喂 `new Blob([bytes], { type: codec })`。 */
+  codec: string;
+  sample_rate: number;
+}
+
+export interface AudioEndMessage {
+  type: "audio_end";
+  session_id: string;
+  payload: { track_id: string };
+}
+
+/**
+ * 运行期配图就绪（#56）：命令外事件路径推送。
+ * `scene_key` 与 `RuntimeState.scene_key` 同源；`current_asset` 与 narrative
+ * 消息同形，前端复用同一套换背景逻辑。
+ */
+export interface AssetReadyPayload {
+  category: "asset_ready";
+  scene_key: string | null;
+  current_asset: AssetRef;
+}
+
+export interface ContentBlockPayload {
+  category: "narrative" | "character_speech" | "system";
+  speaker?: string | null;
+  text: string;
+}
+
+export interface InteractionPayload {
+  interaction_id: string;
+  mode: InteractionMode;
+  prompt: string;
+  options: OptionItem[];
+  hint: string;
+}
+
+export type ServerMessagePayloads =
+  | ContentBlockPayload
+  | InteractionPayload
+  | AssetReadyPayload
+  | ErrorEnvelope
+  | Record<string, unknown>;
+
+export type ClientMessage =
+  | SubmitCommandMessage
+  | ConfirmMessagesMessage
+  | ResyncRequestMessage
+  | CancelAudioMessage;
+
+/**
+ * 客户端打断（barge-in，#62 / ADR-0005 §11）：停播并放掉这条音轨。
+ * **不抢占 LLM**——命令串行、事件同事务，服务端在生成中收不到新命令。
+ */
+export interface CancelAudioMessage {
+  type: "cancel_audio";
+  track_id: string;
+}
+
+export interface SubmitCommandMessage {
+  type: "submit_command";
+  command: PlayerCommand;
+}
+
+export interface ConfirmMessagesMessage {
+  type: "confirm_messages";
+  last_confirmed_seq: number;
+}
+
+export interface ResyncRequestMessage {
+  type: "resync_request";
+  last_confirmed_seq: number;
+}

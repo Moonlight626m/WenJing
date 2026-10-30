@@ -1,0 +1,961 @@
+"""剧本库应用服务（issue #19 / ADR-0002 §3；#28 workflow 骨架接入）。
+
+- 教师：导入素材 → 建草稿 → 异步生成 → 发布（org/public）/下架 → 删除/重新生成。
+- 生成两条路径（#28）：配置了 LLM key 时走 LangGraph workflow（多节点 +
+  doubter，进度落 `script_generations`）；未配置时保留旧确定性合成路径
+  （测试与 E2E 依赖，#33 退役）。进度统一经 GenerationProgress 契约读取。
+- 单 worker 约束不变：workflow 在进程内 asyncio 任务执行；闸门/断点恢复
+  依赖注入的 AsyncPostgresSaver checkpointer（#34 启用 interrupt）。
+- 归属：素材与剧本独立归属 owner/org；仅 owner 可变更，已发布剧本对同 org
+  （或跨 org 公开）只读可见。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import uuid
+from collections.abc import Callable
+
+from pydantic import ValidationError
+from sqlalchemy import or_, select
+
+from app.contracts.content import TextAnalysis
+from app.contracts.enums import ScriptStatus, ScriptVisibility, UsagePurpose
+from app.contracts.generation import (
+    DoubterEvent,
+    GenerationNode,
+    GenerationNodeStatus,
+    GenerationProgress,
+    GenerationStatus,
+    NodeProgress,
+)
+from app.contracts.material import MaterialInput
+from app.contracts.review import GateReview, validate_subject_key
+from app.contracts.script import AssetRef
+from app.contracts.script_library import GenerationResumeRequest
+from app.domain.access import Actor, script_visible_to
+from app.domain.content.pipeline import ContentPipeline
+from app.domain.game.media import AssetKind, AssetStatus, SceneDesigner, to_asset_ref
+from app.domain.generation.stage1 import (
+    PROMPT_VERSION,
+    GenerationTelemetry,
+    Stage1Generator,
+    synthesize_script_package,
+)
+from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
+from app.domain.prompts import write_script
+from app.domain.prompts.manager import PromptManager
+from app.infrastructure.db.prompt_store import DbPromptStore
+from app.infrastructure.diagnostics.errors import envelope_for
+from app.infrastructure.errx import codes, exc_reason, new
+from app.infrastructure.models.material import Material as MaterialRecord
+from app.infrastructure.models.script import Script as ScriptRecord
+from app.infrastructure.models.script_generation import ScriptGeneration as ScriptGenerationRecord
+from app.infrastructure.websearch.service import WebSearchService
+from app.services.progress_hub import GenerationProgressHub
+
+logger = logging.getLogger("wenjing.scripts.library")
+
+# fire-and-forget 后台清理任务的强引用集（防 GC 中途回收，S7）
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _failure_text(exc: BaseException) -> str:
+    """教师端可见的失败原因。
+
+    原先只写整数码（`str(exc.code)`），教师端 `GenerationProgress.error` 里只有
+    「4004」这么一个数字——#65 的现象就是「看不出发生了什么」。带码的走
+    `envelope_for` 拿稳定码名 + `safe_message` 中文文案；不带码的回落异常自身措辞。
+    """
+    if hasattr(exc, "code"):
+        env = envelope_for(exc)
+        return f"{env.code}：{env.message}"
+    return exc_reason(exc)
+
+
+def _telemetry_dict(telemetry: GenerationTelemetry) -> dict:
+    """GenerationTelemetry → scripts.verification 落库形状。"""
+    return {
+        "model": telemetry.model,
+        "prompt_version": telemetry.prompt_version,
+        "schema_version": telemetry.schema_version,
+        "latency_ms": telemetry.latency_ms,
+        "token_count": telemetry.token_count,
+        "retries": telemetry.retries,
+        "used_web_evidence": telemetry.used_web_evidence,
+    }
+
+
+def _prompt_versions() -> dict[str, str]:
+    """各 workflow 节点的 prompt 版本快照（S5：telemetry 可溯源）。"""
+    from app.domain.prompts import (
+        character_design,
+        collect_materials,
+        divide_events,
+        doubter,
+    )
+
+    return {
+        "collect_materials": collect_materials.PROMPT_VERSION,
+        "doubter": doubter.PROMPT_VERSION,
+        "divide_events": divide_events.PROMPT_VERSION,
+        "character_design": character_design.PROMPT_VERSION,
+        "write_script": write_script.PROMPT_VERSION,
+    }
+
+
+def initial_progress() -> GenerationProgress:
+    """workflow 生成刚启动时的进度投影：全部 pending，首个节点 running。
+
+    不能复用 `legacy_progress`：那是旧合成路径的终态投影，会把 collect/verify
+    直接标成 SUCCEEDED，前端刚点「生成」就看到前两格打勾（假完成）。
+    """
+    return GenerationProgress(
+        status=GenerationStatus.RUNNING,
+        nodes=[
+            NodeProgress(
+                node=node,
+                status=(
+                    GenerationNodeStatus.RUNNING
+                    if node is GenerationNode.COLLECT_MATERIALS
+                    else GenerationNodeStatus.PENDING
+                ),
+            )
+            for node in (
+                GenerationNode.COLLECT_MATERIALS,
+                GenerationNode.VERIFY_MATERIALS,
+                GenerationNode.DIVIDE_EVENTS,
+                GenerationNode.DESIGN_CHARACTERS,
+                GenerationNode.WRITE_SCRIPT,
+                GenerationNode.FINAL_AUDIT,
+                GenerationNode.DESIGN_ASSETS,
+            )
+        ],
+    )
+
+
+def legacy_progress(
+    status: str,
+    *,
+    write_state: str = "pending",
+    detail: str | None = None,
+) -> GenerationProgress:
+    """旧合成路径的进度投影（#33 退役）：把 genre/research/generate/verify
+    四阶段映射到 workflow 节点形状，保证前端只有一种进度契约。"""
+    node_status = GenerationNodeStatus(write_state) if write_state in (
+        "running",
+        "succeeded",
+        "failed",
+    ) else GenerationNodeStatus.PENDING
+    return GenerationProgress(
+        status=GenerationStatus(status),
+        nodes=[
+            NodeProgress(
+                node=GenerationNode.COLLECT_MATERIALS,
+                status=GenerationNodeStatus.SUCCEEDED,
+            ),
+            NodeProgress(
+                node=GenerationNode.VERIFY_MATERIALS,
+                status=GenerationNodeStatus.SUCCEEDED,
+            ),
+            NodeProgress(node=GenerationNode.DIVIDE_EVENTS, status=GenerationNodeStatus.PENDING),
+            NodeProgress(
+                node=GenerationNode.DESIGN_CHARACTERS, status=GenerationNodeStatus.PENDING
+            ),
+            NodeProgress(node=GenerationNode.WRITE_SCRIPT, status=node_status, detail=detail),
+            NodeProgress(node=GenerationNode.FINAL_AUDIT, status=GenerationNodeStatus.PENDING),
+        ],
+    )
+
+
+class ScriptLibrary:
+    """可复用剧本的唯一业务入口（REST 之下）。"""
+
+    def __init__(
+        self,
+        *,
+        session_factory,
+        script_llm=None,
+        content_pipeline: ContentPipeline | None = None,
+        web_search: WebSearchService | None = None,
+        model_name: str = "",
+        usage_recorder=None,
+        workflow_checkpointer=None,
+        workflow_enabled: bool = False,
+        scene_designer=None,
+        progress_hub: GenerationProgressHub | None = None,
+    ) -> None:
+        self._factory = session_factory
+        self._script_llm = script_llm
+        self._pipeline = content_pipeline or ContentPipeline()
+        self._web_search = web_search
+        self._model_name = model_name
+        self._usage_recorder = usage_recorder
+        self._workflow_checkpointer = workflow_checkpointer
+        self._workflow_enabled = workflow_enabled
+        # 生成进度广播（教师端 SSE）：组合根注入；None = 无订阅能力（仅落库）
+        self._progress_hub = progress_hub
+        # 场景资产编排（#48）：组合根注入；None = 无媒体配置，生成期不出图。
+        # 可传零参 callable（组合根的延迟构建）：**首次生成**时才调用求值，
+        # 避免构造 ScriptLibrary 就急切建起整套媒体栈（测试桩 settings 无媒体字段）。
+        # 从 DomainGame media 的 SceneDesigner 导入仅作类型/文档用途。
+        self._scene_designer: SceneDesigner | Callable[[], SceneDesigner | None] | None = (
+            scene_designer
+        )
+        self._tasks: dict[int, asyncio.Task] = {}
+
+    @property
+    def progress_hub(self) -> GenerationProgressHub | None:
+        """SSE 订阅入口（controllers 用）；None = hub 未配置。"""
+        return self._progress_hub
+
+    # ===== 素材导入 =====
+
+    async def import_material(
+        self, actor: Actor, inp: MaterialInput, *, raw_bytes: bytes | None = None
+    ) -> MaterialRecord:
+        analysis = self._pipeline.analyze(inp, raw_bytes=raw_bytes)
+        async with self._factory() as s:
+            row = MaterialRecord(
+                org_id=actor.org_id,
+                owner_user_id=actor.user_id,
+                raw_text=inp.raw_text,
+                collection_output=analysis.model_dump(mode="json"),
+            )
+            s.add(row)
+            await s.commit()
+        return row
+
+    async def get_material(self, material_id: int, actor: Actor) -> MaterialRecord:
+        async with self._factory() as s:
+            row = await s.get(MaterialRecord, material_id)
+        if row is None or row.owner_user_id != actor.user_id:
+            raise new(codes.SCR_MATERIAL_NOT_FOUND, extra={"id": material_id})
+        return row
+
+    # ===== 草稿创建 / 生成 =====
+
+    async def create_script(
+        self, actor: Actor, *, material_id: int, name: str, description: str | None
+    ) -> ScriptRecord:
+        await self.get_material(material_id, actor)
+        async with self._factory() as s:
+            row = ScriptRecord(
+                org_id=actor.org_id,
+                owner_user_id=actor.user_id,
+                material_id=material_id,
+                name=name.strip(),
+                description=(description or None),
+                status=ScriptStatus.DRAFT.value,
+                visibility=ScriptVisibility.ORG.value,
+            )
+            s.add(row)
+            await s.commit()
+        return row
+
+    def _is_running(self, script_id: int) -> bool:
+        task = self._tasks.get(script_id)
+        return task is not None and not task.done()
+
+    async def _schedule_generation(self, script_id: int, script: ScriptRecord) -> None:
+        """取消同 id 的在途任务，落一条 attempt 行并调度新生成（避免并发双写）。"""
+        existing = self._tasks.get(script_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+        attempt = ScriptGenerationRecord(
+            script_id=script.id,
+            org_id=script.org_id,
+            owner_user_id=script.owner_user_id,
+            thread_id=uuid.uuid4().hex,
+            status=GenerationStatus.RUNNING.value,
+            progress=initial_progress().model_dump(mode="json"),
+        )
+        async with self._factory() as s:
+            s.add(attempt)
+            await s.commit()
+        task = asyncio.create_task(
+            self._run_generation(script.id, attempt.id, attempt.thread_id)
+        )
+        self._tasks[script.id] = task
+        task.add_done_callback(
+            lambda t, sid=script.id, aid=attempt.id: self._on_task_done(sid, t, aid)
+        )
+
+    def _on_task_done(
+        self, script_id: int, task: asyncio.Task, attempt_id: int
+    ) -> None:
+        # 身份比较：避免误删同 id 的新任务引用（重复生成竞态，S2）
+        if self._tasks.get(script_id) is task:
+            self._tasks.pop(script_id, None)
+        if task.cancelled():
+            # 在途任务被取消（教师停止/删除/重排）：attempt 显式标记失败，避免
+            # 永远挂在 running。cancel_generation 已先行写入教师可读文案与
+            # failed 终态——这里只兜底「没有终态行」的路径，不覆盖既有终态。
+            # fire-and-forget 须持有引用防 GC（S7）；行已被 CASCADE 删除时跳过。
+            cleanup = asyncio.get_running_loop().create_task(
+                self._mark_failed_if_unset(attempt_id)
+            )
+            _background_tasks.add(cleanup)
+            cleanup.add_done_callback(_background_tasks.discard)
+
+    async def _mark_failed_if_unset(self, attempt_id: int) -> None:
+        """attempt 无终态时置 failed（error=cancelled）；已是终态则不动。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptGenerationRecord, attempt_id)
+            if row is None or row.status != GenerationStatus.RUNNING.value:
+                return
+            snapshot = GenerationProgress.model_validate(row.progress)
+            snapshot.status = GenerationStatus.FAILED
+            snapshot.error = "cancelled"
+        await self._save_progress(
+            attempt_id, status=GenerationStatus.FAILED.value, progress=snapshot
+        )
+
+    async def start_generation(self, script_id: int, actor: Actor) -> ScriptRecord:
+        """校验并调度后台生成任务（非阻塞）；仅草稿可生成/重生。"""
+        script = await self._load_owned(script_id, actor)
+        self._require_editable(script)
+        if not self._is_running(script_id):
+            await self._schedule_generation(script_id, script)
+        return script
+
+    async def await_generation(self, script_id: int) -> None:
+        """测试/内部用：等待后台生成任务完成。"""
+        task = self._tasks.get(script_id)
+        if task is not None:
+            await task
+
+    async def cancel_generation(self, script_id: int, actor: Actor) -> ScriptRecord:
+        """教师停止运行中的生成（教师端可打断，#68）：取消进程内任务并回写终态。
+
+        - 任务取消后 `_on_task_done` 会把 attempt 标记 FAILED（error="cancelled"）；
+          这里再把对外进度快照的 error 改写为教师可读文案，避免教师端只看到
+          一个含糊的 "cancelled"；
+        - 与 regenerate/删除共用 `_schedule_generation` 的取消语义：同 id 新任务
+          建立前旧任务先取消，不会并发双写；
+        - 不在运行中（已是 awaiting_review/succeeded 等）→ SCR_NOT_RUNNING，
+          教师端按钮只对 running 展示，此为兜底防并发双击。
+        """
+        script = await self._load_owned(script_id, actor)
+        task = self._tasks.get(script_id)
+        if task is None or task.done():
+            raise new(codes.SCR_NOT_RUNNING, extra={"id": script_id})
+        task.cancel()
+        # 立即回写对外可见状态，不等 done_callback（教师端取消后马上刷新详情）
+        await self._mark_last_attempt_cancelled(script_id)
+        return script
+
+    async def _mark_last_attempt_cancelled(self, script_id: int) -> None:
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            return
+        snapshot = GenerationProgress.model_validate(row.progress)
+        snapshot.status = GenerationStatus.FAILED
+        snapshot.error = "已由教师停止生成"
+        await self._save_progress(
+            row.id, status=GenerationStatus.FAILED.value, progress=snapshot
+        )
+        # SSE 订阅者即时收束：广播完整契约形状的终态快照
+        if self._progress_hub is not None:
+            await self._progress_hub.publish(script_id, snapshot.model_dump(mode="json"))
+
+    async def regenerate(self, script_id: int, actor: Actor) -> ScriptRecord:
+        script = await self._load_owned(script_id, actor)
+        self._require_editable(script)
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+            row.script_data = None
+            row.verification = None
+            await s.commit()
+        await self._schedule_generation(script_id, script)
+        return row
+
+    # ===== attempt 进度（GenerationProgress 契约的落库面）=====
+
+    async def _save_progress(
+        self,
+        attempt_id: int,
+        *,
+        status: str | None = None,
+        progress: GenerationProgress | None = None,
+        error: str | None = None,
+    ) -> None:
+        async with self._factory() as s:
+            row = await s.get(ScriptGenerationRecord, attempt_id)
+            if row is None:
+                return
+            if progress is not None:
+                row.progress = progress.model_dump(mode="json")
+                # B1：观测列与快照总体状态保持一致（sink 只带 progress 时也同步）
+                if status is None:
+                    status = progress.status.value
+            if status is not None:
+                row.status = status
+                if progress is None:
+                    # 仅翻转状态时同步快照里的总体状态
+                    snapshot = GenerationProgress.model_validate(row.progress)
+                    snapshot.status = GenerationStatus(status)
+                    row.progress = snapshot.model_dump(mode="json")
+            if error is not None:
+                row.error = error
+            await s.commit()
+
+    async def progress(self, script_id: int) -> GenerationProgress | None:
+        """最近一次生成尝试的进度快照；从未生成过返回 None。
+
+        `row.error`（取消/错误码等终态信息）合入快照的 error 字段，
+        保证教师端失败详情可见（S3）。
+        """
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            return None
+        snapshot = GenerationProgress.model_validate(row.progress)
+        if row.error and not snapshot.error:
+            snapshot.error = row.error
+        return snapshot
+
+    async def review(self, script_id: int) -> GateReview | None:
+        """最近一次生成尝试的闸门审阅载荷（#34）：未暂停在闸门时为 None。"""
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None or row.review is None:
+            return None
+        try:
+            return GateReview.model_validate(row.review)
+        except ValidationError as exc:
+            logger.warning(
+                "script_gate_review_invalid script_id=%s reason=%s",
+                script_id,
+                str(exc).replace("\n", " ")[:200],
+            )
+            return None
+
+    async def _save_review(self, attempt_id: int, review: dict | None) -> None:
+        """闸门审阅载荷落库（None=清空，恢复后不再展示）。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptGenerationRecord, attempt_id)
+            if row is None:
+                return
+            row.review = review
+            await s.commit()
+
+    # ===== 生成任务（workflow 主路径 / 旧合成路径）=====
+
+    async def _run_generation(
+        self, script_id: int, attempt_id: int, thread_id: str
+    ) -> None:
+        try:
+            script, material, analysis = await self._load_generation_inputs(script_id)
+            if self._workflow_enabled and self._script_llm is not None:
+                await self._run_workflow(
+                    script, material, analysis, attempt_id=attempt_id, thread_id=thread_id
+                )
+            elif self._script_llm is not None:
+                await self._run_legacy_stage1(
+                    script, analysis, attempt_id=attempt_id
+                )
+            else:
+                await self._run_legacy_synth(script, analysis, attempt_id=attempt_id)
+        except Exception as exc:
+            logger.warning(
+                "script_generation_failed script_id=%s reason=%s",
+                script_id,
+                exc_reason(exc),
+            )
+            await self._save_progress(
+                attempt_id,
+                status=GenerationStatus.FAILED.value,
+                error=_failure_text(exc),
+            )
+
+    async def _load_generation_inputs(
+        self, script_id: int
+    ) -> tuple[ScriptRecord, MaterialRecord, TextAnalysis]:
+        async with self._factory() as s:
+            script = await s.get(ScriptRecord, script_id)
+            material = (
+                await s.get(MaterialRecord, script.material_id)
+                if script is not None and script.material_id is not None
+                else None
+            )
+        if material is None:
+            raise new(
+                codes.SCR_MATERIAL_NOT_FOUND,
+                extra={"id": getattr(script, "material_id", None)},
+            )
+        analysis = TextAnalysis.model_validate(material.collection_output)
+        return script, material, analysis
+
+    async def _run_workflow(
+        self,
+        script: ScriptRecord,
+        material: MaterialRecord,
+        analysis: TextAnalysis,
+        *,
+        attempt_id: int,
+        thread_id: str,
+    ) -> None:
+        """LangGraph workflow：节点进度逐事件落库，终态写 scripts.script_data。"""
+        web = await self._research(analysis)
+        runner = WorkflowRunner(
+            self._build_nodes(script),
+            checkpointer=self._workflow_checkpointer,
+            progress_sink=self._attempt_sink(attempt_id, script.id),
+        )
+        final = await runner.run(
+            initial_state(
+                script_id=script.id,
+                session_id=f"script-{script.id}",
+                analysis=analysis,
+                web_evidence=web,
+                # 资产归属（#48）：配图计量/配额/预生成走发起教师，字符串通道见 state.py
+                org_id=str(script.org_id) if script.org_id is not None else "",
+                user_id=str(script.owner_user_id) if script.owner_user_id is not None else "",
+            ),
+            thread_id=thread_id,
+        )
+        await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
+
+    def _designer(self) -> SceneDesigner | None:
+        """解析组合根延迟注入的编排（callable → 首次生成时求值，#48）。"""
+        return (
+            self._scene_designer() if callable(self._scene_designer)
+            else self._scene_designer
+        )
+
+    def _build_nodes(self, script: ScriptRecord) -> WorkflowNodes:
+        """workflow 节点集合；prompt 走 DB 覆盖层（缺行回退 defaults）。"""
+        designer = self._designer()
+        return WorkflowNodes(
+            self._stage1_llm(script),
+            model_name=self._model_name,
+            teacher_gates=self._workflow_checkpointer is not None,
+            prompts=PromptManager(DbPromptStore(self._factory)),
+            # 配图编排（#48）：None 时 design_assets 节点直接跳过（无媒体配置降级）
+            scene_designer=designer,
+        )
+
+    def _attempt_sink(self, attempt_id: int, script_id: int):
+        """进度落库 + SSE 广播的 sink。
+
+        广播 key 是剧本（不是 attempt——重生成/恢复换 attempt，详情页订阅不变）。
+        """
+        hub = self._progress_hub
+
+        async def sink(snapshot: GenerationProgress) -> None:
+            payload = snapshot.model_dump(mode="json")
+            await self._save_progress(attempt_id, progress=snapshot)
+            if hub is not None:
+                await hub.publish(script_id, payload)
+
+        return sink
+
+    async def _finalize_workflow(
+        self, script: ScriptRecord, final: dict, runner: WorkflowRunner, *, attempt_id: int
+    ) -> None:
+        """workflow 终态处理：闸门暂停记录审阅载荷，完成才写剧本与 telemetry。"""
+        if runner.snapshot().status == GenerationStatus.AWAITING_REVIEW:
+            # 教师闸门暂停（#34）：审阅载荷落库供教师端读取，终态待恢复后落库
+            await self._save_review(attempt_id, runner.review)
+            logger.info(
+                "script_generation_awaiting_review script_id=%s gate=%s",
+                script.id,
+                (runner.review or {}).get("gate"),
+            )
+            return
+        package = final.get("package")
+        telemetry = dict(final.get("write_telemetry") or {})
+        telemetry["doubter_rounds"] = len(runner.snapshot().doubter_events)
+        telemetry["prompt_versions"] = _prompt_versions()
+        await self._persist_package(script.id, package, telemetry)
+
+    async def upload_asset(
+        self,
+        script_id: int,
+        actor: Actor,
+        *,
+        subject_key: str,
+        kind: str,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+    ) -> AssetRef:
+        """教师自有素材上传（#49）：落库为 READY 资产，返回稳定引用。
+
+        - **仅草稿可上传**（`_require_editable`）：发布即冻结资产（ADR-0005 §4），
+          上传是内容变更，与编辑剧本字段同一冻结语义；
+        - 上传件在 resume 时经 `bind_upload` 绑进配图槽位——两步分离是因为
+          上传发生在审阅界面（multipart），生效发生在闸门恢复（原子、可审计）；
+        - 转 FAILED（字节不可解码等）转为同步错误立即反馈（上传不是生成期
+          后台任务，静默降级会让教师面对一个「成功但没图」的假象）。
+        """
+        script = await self._load_owned(script_id, actor)
+        self._require_editable(script)
+        designer = self._designer()
+        if designer is None:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "media stack not configured"},
+            )
+        try:
+            parsed_kind = AssetKind(kind)
+            validate_subject_key(subject_key)
+        except ValueError as exc:
+            raise new(codes.PRT_MALFORMED_MESSAGE, extra={"reason": str(exc)}) from exc
+        record = await designer.publish_upload(
+            org_id=script.org_id,
+            subject_key=subject_key,
+            scene_key=f"script:{script_id}:{subject_key}",
+            description=f"教师上传：{subject_key}",
+            kind=parsed_kind,
+            image_bytes=image_bytes,
+            content_type=content_type,
+            script_id=script_id,
+            user_id=actor.user_id,
+        )
+        if record.status is not AssetStatus.READY:
+            raise new(
+                codes.MEDIA_IMAGE_INVALID,
+                extra={"asset_id": str(record.asset_id), "status": record.status.value},
+            )
+        return to_asset_ref(record)
+
+    async def resume_generation(
+        self, script_id: int, actor: Actor, *, resume: GenerationResumeRequest
+    ) -> ScriptRecord:
+        """教师闸门恢复（#34）：审阅后从 checkpointer 断点继续生成。
+
+        `resume` 携带指导指令、教师编辑（GateEdits）与终审 action（approve/reject）。
+        """
+        script = await self._load_owned(script_id, actor)
+        if not (self._workflow_enabled and self._script_llm is not None):
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "workflow disabled"},
+            )
+        if self._is_running(script_id):
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "reason": "generation running"},
+            )
+        async with self._factory() as s:
+            row = (
+                await s.execute(
+                    select(ScriptGenerationRecord)
+                    .where(ScriptGenerationRecord.script_id == script_id)
+                    .order_by(ScriptGenerationRecord.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+        if row is None or row.status != GenerationStatus.AWAITING_REVIEW.value:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script_id, "status": getattr(row, "status", None)},
+            )
+        await self._save_progress(row.id, status=GenerationStatus.RUNNING.value)
+        paused_gate = str((row.review or {}).get("gate", "materials"))
+        await self._save_review(row.id, None)  # 恢复后不再展示旧审阅载荷
+        previous = (
+            GenerationProgress.model_validate(row.progress)
+            if row.progress is not None
+            else None
+        )
+        task = asyncio.create_task(
+            self._resume_attempt(
+                script,
+                attempt_id=row.id,
+                thread_id=row.thread_id,
+                resume=resume,
+                gate=paused_gate,
+                doubter_events=previous.doubter_events if previous else [],
+                paused_nodes=previous.nodes if previous else None,
+            )
+        )
+        self._tasks[script.id] = task
+        task.add_done_callback(
+            lambda t, sid=script.id, aid=row.id: self._on_task_done(sid, t, aid)
+        )
+        return script
+
+    async def _resume_attempt(
+        self,
+        script: ScriptRecord,
+        *,
+        attempt_id: int,
+        thread_id: str,
+        resume: GenerationResumeRequest,
+        gate: str,
+        doubter_events: list[DoubterEvent],
+        paused_nodes: list[NodeProgress] | None,
+    ) -> None:
+        """闸门恢复执行：断点续跑，终态与首次生成同一落库面。"""
+        try:
+            runner = WorkflowRunner(
+                self._build_nodes(script),
+                checkpointer=self._workflow_checkpointer,
+                progress_sink=self._attempt_sink(attempt_id, script.id),
+                doubter_events=doubter_events,
+            )
+            if paused_nodes is not None:
+                # 播种上一 attempt 已完成的节点状态：跨进程/跨 runner 的闸门
+                # 恢复不把进度面板归零（闸门前的勾不能丢）
+                runner.seed_nodes(paused_nodes)
+            final = await runner.resume(
+                thread_id=thread_id,
+                resume_payload=resume.model_dump(mode="json"),
+                gate=gate,
+            )
+            await self._finalize_workflow(
+                script, final, runner, attempt_id=attempt_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "script_generation_failed script_id=%s reason=%s",
+                script.id,
+                exc_reason(exc),
+            )
+            await self._save_progress(
+                attempt_id,
+                status=GenerationStatus.FAILED.value,
+                error=_failure_text(exc),
+            )
+
+    async def _run_legacy_stage1(
+        self, script: ScriptRecord, analysis: TextAnalysis, *, attempt_id: int
+    ) -> None:
+        """旧 Stage1 单次生成路径（测试注入 fake LLM 时走此路径；#33 退役）。"""
+        web = await self._research(analysis)
+        outcome = await Stage1Generator(
+            self._stage1_llm(script), model=self._model_name
+        ).generate(
+            analysis,
+            web_evidence=web,
+            session_id=f"script-{script.id}",
+        )
+        package, telemetry = outcome.script_package, outcome.telemetry
+        await self._persist_package(script.id, package, _telemetry_dict(telemetry))
+        await self._save_progress(
+            attempt_id,
+            status=GenerationStatus.SUCCEEDED.value,
+            progress=legacy_progress("succeeded", write_state="succeeded"),
+        )
+
+    async def _run_legacy_synth(
+        self, script: ScriptRecord, analysis: TextAnalysis, *, attempt_id: int
+    ) -> None:
+        """旧确定性合成路径（无 key；测试与 E2E 依赖，#33 退役）。"""
+        package = synthesize_script_package(analysis)
+        telemetry = GenerationTelemetry(
+            model="deterministic",
+            prompt_version=PROMPT_VERSION,
+            schema_version=package.schema_version,
+            latency_ms=0,
+            token_count=0,
+            retries=0,
+        )
+        # 计量不依赖真实 provider：无 key 合成路径同样按 stage1 用途
+        # 入账一条 llm_usage（#22 验收），否则 CI 全新库的用量看板为空。
+        if self._usage_recorder is not None:
+            from app.infrastructure.usage import UsageContext
+
+            await self._usage_recorder.record(
+                UsageContext(
+                    org_id=script.org_id,
+                    user_id=script.owner_user_id,
+                    script_id=script.id,
+                ),
+                provider="deterministic",
+                model="deterministic",
+                purpose=UsagePurpose.STAGE1,
+                messages=[{"role": "user", "content": ""}],
+                completion=package.model_dump_json(),
+            )
+        await self._persist_package(script.id, package, _telemetry_dict(telemetry))
+        await self._save_progress(
+            attempt_id,
+            status=GenerationStatus.SUCCEEDED.value,
+            progress=legacy_progress("succeeded", write_state="succeeded"),
+        )
+
+    async def _persist_package(
+        self, script_id: int, package, telemetry: dict
+    ) -> None:
+        """写 scripts.script_data（竞态防护：仅草稿可写）。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+            # 竞态防护：若生成期间剧本已被发布/下架/删除，丢弃结果，绝不覆盖
+            if row is None or row.status != ScriptStatus.DRAFT.value:
+                raise new(
+                    codes.SCR_NOT_EDITABLE,
+                    extra={"id": script_id, "status": getattr(row, "status", None)},
+                )
+            row.script_data = package.model_dump(mode="json")
+            row.verification = telemetry
+            await s.commit()
+
+    def _stage1_llm(self, script: ScriptRecord) -> object:
+        """按剧本归属上下文包装 LLM，使逐次调用写入 llm_usage（#22）。"""
+        if self._usage_recorder is None:
+            return self._script_llm
+        from app.infrastructure.usage import UsageContext
+
+        return self._usage_recorder.wrap(
+            self._script_llm,
+            UsageContext(
+                org_id=script.org_id,
+                user_id=script.owner_user_id,
+                script_id=script.id,
+            ),
+        )
+
+    async def _research(self, analysis: TextAnalysis) -> list:
+        """开放网络资料搜索（可选增强）：未配置/无命中/失败都返回空列表。
+
+        没有降级一说——网络资料缺席时生成就是纯原文跑，属正常路径。
+        """
+        if self._web_search is None:
+            return []
+        query = analysis.title or "、".join(c.name for c in analysis.characters[:3])
+        return await self._web_search.research(query or analysis.genre.genre.value)
+
+    # ===== 发布 / 下架 / 删除 =====
+
+    async def publish(
+        self, script_id: int, actor: Actor, visibility: ScriptVisibility
+    ) -> ScriptRecord:
+        script = await self._load_owned(script_id, actor)
+        if script.script_data is None:
+            raise new(codes.SCR_NOT_EDITABLE, extra={"id": script_id, "status": script.status})
+        if script.status == ScriptStatus.PUBLISHED.value:
+            # 已发布：仅允许改可见性（核心内容不可变）
+            return await self._set_status(
+                script_id, status=None, visibility=visibility.value
+            )
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+            row.status = ScriptStatus.PUBLISHED.value
+            row.visibility = visibility.value
+            await s.commit()
+            return row
+
+    async def unpublish(self, script_id: int, actor: Actor) -> ScriptRecord:
+        script = await self._load_owned(script_id, actor)
+        if script.status != ScriptStatus.PUBLISHED.value:
+            raise new(
+                codes.SCR_NOT_EDITABLE, extra={"id": script_id, "status": script.status}
+            )
+        return await self._set_status(
+            script_id, status=ScriptStatus.UNPUBLISHED.value, visibility=None
+        )
+
+    async def delete(self, script_id: int, actor: Actor) -> None:
+        script = await self._load_owned(script_id, actor)
+        if script.status != ScriptStatus.DRAFT.value:
+            raise new(
+                codes.SCR_NOT_EDITABLE, extra={"id": script_id, "status": script.status}
+            )
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+            if row is not None:
+                await s.delete(row)
+                await s.commit()
+        task = self._tasks.pop(script_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    # ===== 查询 =====
+
+    async def list_scripts(self, actor: Actor) -> list[ScriptRecord]:
+        async with self._factory() as s:
+            rows = (
+                await s.execute(
+                    select(ScriptRecord)
+                    .where(ScriptRecord.owner_user_id == actor.user_id)
+                    .order_by(ScriptRecord.updated_at.desc())
+                )
+            ).scalars().all()
+        return list(rows)
+
+    async def list_visible(self, actor: Actor) -> list[ScriptRecord]:
+        """剧本广场（#21）：已发布且可见（同 org 或 public）的剧本，任意登录用户可浏览。
+
+        SQL 与 `app.domain.access.script_visible_to` 的非 owner 分支等价；可见性判定以 access 为准。
+        """
+        async with self._factory() as s:
+            rows = (
+                await s.execute(
+                    select(ScriptRecord)
+                    .where(
+                        ScriptRecord.status == ScriptStatus.PUBLISHED.value,
+                        or_(
+                            ScriptRecord.visibility == ScriptVisibility.PUBLIC.value,
+                            ScriptRecord.org_id == actor.org_id,
+                        ),
+                    )
+                    .order_by(ScriptRecord.updated_at.desc())
+                )
+            ).scalars().all()
+        return list(rows)
+
+    async def get_script(self, script_id: int, actor: Actor) -> ScriptRecord:
+        """按可见性读取：owner 全量；他人仅已发布（org 同 org / public 跨 org）。"""
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+        if row is None or not script_visible_to(actor, row):
+            raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
+        return row
+
+    # ===== 内部工具 =====
+
+    async def _load_owned(self, script_id: int, actor: Actor) -> ScriptRecord:
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+        if row is None:
+            raise new(codes.SCR_NOT_FOUND, extra={"id": script_id})
+        if row.owner_user_id != actor.user_id:
+            raise new(codes.AUTH_FORBIDDEN, extra={"reason": "not script owner"})
+        return row
+
+    @staticmethod
+    def _require_editable(script: ScriptRecord) -> None:
+        if script.status != ScriptStatus.DRAFT.value:
+            raise new(
+                codes.SCR_NOT_EDITABLE,
+                extra={"id": script.id, "status": script.status},
+            )
+
+    async def _set_status(self, script_id: int, *, status, visibility):
+        async with self._factory() as s:
+            row = await s.get(ScriptRecord, script_id)
+            if status is not None:
+                row.status = status
+            if visibility is not None:
+                row.visibility = visibility
+            await s.commit()
+            return row
+
+
+__all__ = ["ScriptLibrary", "legacy_progress"]

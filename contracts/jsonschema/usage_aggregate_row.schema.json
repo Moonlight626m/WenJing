@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "UsagePurpose": {
+      "description": "LLM 调用用途（ADR-0002 §5 / issue #28 workflow 节点细分）。\n\nAGENT/VERIFY 服务于游戏运行时多 agent（Stage2/3）；其余为剧本生成\nworkflow 的节点用途（#28 骨架：write_script 暂由 Stage1Generator 承担，\n#33 退役旧路径后 STAGE1 随之废弃）。",
+      "enum": [
+        "stage1",
+        "agent",
+        "verify",
+        "collect_materials",
+        "doubter",
+        "divide_events",
+        "character_design",
+        "script_writing",
+        "image_review"
+      ],
+      "title": "UsagePurpose",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "单个 (org, purpose) 分组的 token 聚合行。",
+  "properties": {
+    "schema_version": {
+      "default": "2.7.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "org_id": {
+      "format": "uuid",
+      "title": "Org Id",
+      "type": "string"
+    },
+    "purpose": {
+      "$ref": "#/$defs/UsagePurpose"
+    },
+    "prompt_tokens": {
+      "minimum": 0,
+      "title": "Prompt Tokens",
+      "type": "integer"
+    },
+    "completion_tokens": {
+      "minimum": 0,
+      "title": "Completion Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "minimum": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    },
+    "call_count": {
+      "minimum": 0,
+      "title": "Call Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "org_id",
+    "purpose",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "call_count"
+  ],
+  "title": "UsageAggregateRow",
+  "type": "object"
+}

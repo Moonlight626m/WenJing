@@ -1,0 +1,800 @@
+"""GameRuntime：可恢复的 command/step 游戏运行时（issue #7 / 取代长驻 run）。
+
+语义：
+- `start()` 初始化会话（剧本在构造时注入），停在选角点。
+- `submit(...)` 是唯一输入入口；每次提交从当前稳定交互点推进到下一个
+  稳定交互点或终态，返回 StepResult（#5 Session 层映射为契约 RuntimeUpdate）。
+- `rollback(...)` 回退保留旧历史事件（分支语义由 #8 扩展）。
+- 进度游标、阶段、玩家角色、剧情上下文与角色记忆全部位于显式 `_RState`
+  及其序列化投影 `export_state()` / `restore()` —— 不依赖隐藏对象字段即可重建。
+- 引擎不 import FastAPI/WebSocket/SQLAlchemy/DB；LLM 仅经构造注入的 gateway。
+
+`command_id` 幂等：重复提交返回首次结果并标 `duplicate=True`，不产生重复领域事件。
+allowed_commands 从共享契约 `app.contracts.enums` 单源派生。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
+from typing import Any
+
+from app.contracts.enums import ALLOWED_COMMANDS, StageValue
+from app.contracts.script import AssetRef
+from app.domain.agents.character import CharacterAgentManager
+from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
+from app.domain.agents.verifier import VerifierAgent
+from app.domain.game import event as evt
+from app.domain.game.assets import RuntimeAssets
+from app.domain.game.engine_config import EngineConfig
+from app.domain.game.event import EventStore
+from app.domain.game.media import scene_visual_description
+from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
+from app.domain.game.streaming import SpeechStreamSink
+from app.domain.game.types import (
+    InteractionPoint,
+    PlayerAction,
+    Proposal,
+    Scene,
+    SceneAssetIntent,
+    Script,
+)
+from app.domain.game.world_view import RuntimeWorldView
+from app.domain.llm import LLMService
+from app.infrastructure.errx import codes, new
+
+_ALLOWED_BY_STAGE: dict[str, frozenset[str]] = {
+    stage.value: frozenset(kind.value for kind in kinds)
+    for stage, kinds in ALLOWED_COMMANDS.items()
+}
+_STAGE_ALIASES: dict[str, str] = {
+    "stage2": StageValue.STAGE2_REENACTING.value,
+    "stage3": StageValue.STAGE3_EXTENDING.value,
+}
+
+
+@dataclass
+class _RState:
+    """显式、可序列化的运行时状态（进度游标等全部在此，无隐藏字段）。"""
+
+    stage: str = StageValue.INIT.value
+    phase: str | None = None
+    player_role: str | None = None
+    beat_cursor: int = 0
+    stage3_round_taken: int = 0
+    plot_log: list[str] = field(default_factory=list)
+    # 公开发言台账（机制层知识边界）：(speaker, scene_key, 摘要)。只知道
+    # 「谁在哪个场景说了什么」——per-character 世界视图据此答题
+    # 「我在场时听到了谁的话」，未公开/不在场的一切不进任何角色的输入。
+    # 快照与重放的对账来源同 timeline：export_state 存元组列表，
+    # character_speech 事件重放时重建。
+    speech_log: list[tuple[str, str | None, str]] = field(default_factory=list)
+    # 当前矛盾/关键处境（D5 方向确认产物；供角色 Agent 的 view_current_direction 工具）
+    direction: dict[str, str] = field(default_factory=dict)
+    # 当前场景稳定键（#53 / ADR-0005 §8）：脚本场景 `scene:{scene_id}`。
+    # 进显式状态与 plot_advancement payload——否则重连/重放会丢背景。
+    scene_key: str | None = None
+    ended: bool = False
+
+
+@dataclass
+class StepResult:
+    """一次命令推进的结果（内部形状；Session 层映射 contracts.RuntimeUpdate）。"""
+
+    state: dict
+    new_events: list[dict]
+    active_interaction: dict | None
+    allowed_commands: list[str]
+    terminal: bool = False
+    duplicate: bool = False
+    # 运行期配图请求（#56）：引擎只**发起意图**，不自己生成——Session 层在命令
+    # 事务提交后把它绑上 session/branch 派给后台任务（ADR-0005 §5：后台任务
+    # 不得持有 GameRuntime）。
+    asset_requests: list[SceneAssetIntent] = field(default_factory=list)
+
+
+def _interaction_payload(ix: InteractionPoint | None) -> dict | None:
+    if ix is None:
+        return None
+    return {
+        "mode": ix.mode,
+        "context": ix.context,
+        "options": [dict(o) for o in ix.options],
+        "hint": ix.hint,
+    }
+
+
+class GameRuntime:
+    """文境游戏运行时主类：start / submit / restore / rollback。"""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        script: Script,
+        llm: LLMService,
+        config: EngineConfig | None = None,
+        log: logging.Logger | None = None,
+        event_store: EventStore | None = None,
+        on_flush: Callable[[], Awaitable[None]] | None = None,
+        speech_sink: SpeechStreamSink | None = None,
+    ) -> None:
+        self.session_id = session_id
+        self.script = script
+        self.config = config or EngineConfig()
+        # 注意：EventStore 定义了 __len__（空存储为 falsy），必须显式判 None，
+        # 否则 `event_store or EventStore()` 会静默丢弃空 PersistentEventStore
+        self.event_store: EventStore = event_store if event_store is not None else EventStore()
+        self._on_flush = on_flush
+        # 流式字幕出口（#60）：None = 不发流式（HTTP 命令路径、离线重放、测试）。
+        # 运行时实例按命令重建，故把"发到哪条连接"挂在这里是安全的。
+        self._speech_sink = speech_sink
+        self._log = log or logging.getLogger("wenjing.core.runtime")
+
+        self.state_machine = GameStateMachine()
+        self.state = _RState()
+        self.active_interaction: InteractionPoint | None = None
+
+        # 角色 Agent 经只读 WorldView 按需查询世界进度（ADR-0004）；
+        # 视图惰性读取 self.state，故可在状态初始化后、开始推进前构造。
+        self.world_view = RuntimeWorldView(self)
+        self.screenwriter = ScreenwriterAgent(llm)
+        self.verifier = VerifierAgent(llm)
+        self.characters = CharacterAgentManager(llm, self.world_view)
+        self.characters.create_agents(script.characters)
+        self._processed_commands: dict[str, StepResult] = {}
+        # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
+        self._command_events: list[dict] = []
+        # 本次命令产生的运行期配图请求（#56，见 StepResult.asset_requests）
+        self._asset_requests: list[SceneAssetIntent] = []
+        # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标, 该时刻的方向)
+        self._memory_marks: list[tuple[int, dict[str, Any], int, dict[str, str]]] = []
+        self._valid_proposals: list[Proposal] = []
+
+    # ===== 显式状态导出 / 恢复 =====
+
+    def _current_background(self, scene: Scene | None) -> AssetRef | None:
+        """当前场景的背景稳定引用：**事件索引优先，脚本槽位兜底**。
+
+        ADR-0005 §9：事件是资产继承的唯一权威——运行期 `asset_ready` 写下的资产
+        必须压过剧本槽位，否则续写阶段的实时配图永远显示不出来；槽位兜底覆盖
+        Stage2 的离线预生成资产（那时还没有 asset_ready 事件）。在引擎内解析
+        （ADR-0005 §8）：这里同时有 events 与 script，投影层保持纯函数。
+        未开播（游标 0）或该场景无图 → None。
+        """
+        ref = RuntimeAssets.rebuild(self.event_store).current(self.state.scene_key)
+        if ref is not None:
+            return ref
+        return scene.background_asset if scene is not None else None
+
+    def _beat_ctx(self, cursor: int) -> Scene | None:
+        """beat 游标 → 当前场景；尚未开播（cursor<=0）/空剧本返回 None。
+
+        **游标是「下一个待播 beat」，不是「当前 beat」**（`ScreenwriterAgent.advance_plot`
+        先读 `beat_index` 播报、再 `beat_index += 1`），所以刚播完的那拍是
+        `cursor - 1`——场景切换/背景解析必须用它，否则会提前跳到下一场景。
+        游标 0 表示一拍未播，此时没有「当前场景」（`scene_key` 也尚未写入），
+        返回 None 以免出现「有背景但无场景键」的字段互斥。
+        """
+        total = total_beats(self.script)
+        if total == 0 or cursor <= 0:
+            return None
+        idx = min(cursor - 1, total - 1)
+        count = 0
+        for scene in self.script.scenes:
+            for _beat in scene.beats:
+                if count == idx:
+                    return scene
+                count += 1
+        return None
+
+    def _scene_by_key(self, scene_key: str) -> Scene | None:
+        """场景稳定键（`scene:{scene_id}`）→ 场景设定；解析不到返回 None。"""
+        if not scene_key.startswith("scene:"):
+            return None
+        try:
+            scene_id = int(scene_key[len("scene:") :])
+        except ValueError:
+            return None
+        return next((s for s in self.script.scenes if s.scene_id == scene_id), None)
+
+    def export_state(self) -> dict:
+        s = self.state
+        # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
+        scene = self._beat_ctx(s.beat_cursor)
+        current_asset = self._current_background(scene)
+        return {
+            "stage": s.stage,
+            "phase": s.phase,
+            "player_role": s.player_role,
+            "beat_cursor": s.beat_cursor,
+            "stage3_round_taken": s.stage3_round_taken,
+            "plot_log": list(s.plot_log),
+            "speech_log": [list(t) for t in s.speech_log],
+            "direction": dict(s.direction),
+            "scene_key": s.scene_key,
+            "scene_title": scene.title if scene is not None else None,
+            "ended": s.ended,
+            "character_memories": self.characters.snapshot_memories(),
+            "latest_event_id": self.event_store.latest_event_id,
+            "active_branch_id": self.event_store.active_branch_id,
+            "active_interaction": _interaction_payload(self.active_interaction),
+            # 当前背景稳定引用在导出时解析（#53）：快照/投影都从这里拿
+            "current_asset": (
+                current_asset.model_dump(mode="json") if current_asset is not None else None
+            ),
+        }
+
+    def restore(self, state_dump: dict) -> None:
+        """从显式状态快照重建运行时（快照 + 重放基线；分支重放语义在 #8 完善）。"""
+        s = self.state
+        s.stage = state_dump.get("stage", StageValue.INIT.value)
+        s.phase = state_dump.get("phase")
+        s.player_role = state_dump.get("player_role")
+        s.beat_cursor = int(state_dump.get("beat_cursor", 0))
+        s.stage3_round_taken = int(state_dump.get("stage3_round_taken", 0))
+        s.plot_log = list(state_dump.get("plot_log", []))
+        s.speech_log = [tuple(entry) for entry in state_dump.get("speech_log", [])]
+        s.direction = dict(state_dump.get("direction") or {})
+        s.scene_key = state_dump.get("scene_key")
+        s.ended = bool(state_dump.get("ended", False))
+
+        self.screenwriter.beat_index = s.beat_cursor
+        self.characters.restore_memories(state_dump.get("character_memories") or {})
+        if s.player_role:
+            self.characters.player_role = s.player_role
+
+        self.state_machine.restore({"stage": s.stage, "phase": s.phase})
+
+        ix = state_dump.get("active_interaction")
+        self.active_interaction = (
+            InteractionPoint(
+                mode=ix["mode"],
+                context=ix.get("context", ""),
+                options=[dict(o) for o in ix.get("options", [])],
+                hint=ix.get("hint", ""),
+            )
+            if ix
+            else None
+        )
+
+    def replay_from(self, snapshot_state: dict | None, events: list[dict]) -> None:
+        """快照 + 事件重放重建运行时（issue #8 验收标准 1）。
+
+        快照提供记忆基线（character_memories/beat_cursor/plot_log/stage），
+        随后按事件顺序重放确定性的状态迁移：
+        - stage_transition → stage / ended
+        - plot_advancement → beat_cursor+1、plot_log 追加、剧情上下文广播
+        - direction → 角色处境上下文广播
+        - system(selected_role) → player_role
+        - player_action（Stage3）→ stage3_round_taken+1
+
+        事件形如 `GameEvent.to_dict()`（含 event_type + payload）。纯 LLM 文本
+        （角色发言/提议原文）不入状态，由快照记忆承担。
+        """
+        if snapshot_state is not None:
+            self.restore(snapshot_state)
+        else:
+            self.state = _RState()
+            self.screenwriter.beat_index = 0
+            self.characters.restore_memories({})
+
+        for ev in events:
+            self._replay_event(ev)
+
+        # 使 state_machine / screenwriter 与重放结果一致
+        self.state_machine.restore({"stage": self.state.stage, "phase": self.state.phase})
+        self.screenwriter.beat_index = self.state.beat_cursor
+        if self.state.player_role:
+            self.characters.player_role = self.state.player_role
+
+    def _replay_event(self, ev: dict) -> None:
+        etype = ev.get("event_type") or ev.get("type")
+        payload = ev.get("payload") or {}
+        if etype == evt.EVENT_STAGE_TRANSITION:
+            stage = payload.get("stage")
+            if stage:
+                self.state.stage = stage
+                if stage == GameStage.ENDED.value:
+                    self.state.ended = True
+        elif etype == evt.EVENT_PLOT_ADVANCEMENT:
+            summary = payload.get("summary", "")
+            self.state.beat_cursor += 1
+            if summary:
+                self.state.plot_log.append(summary)
+                self.characters.broadcast_plot_context(summary)
+            # 场景键重建（#53）：plot_advancement payload 携带 scene_key，
+            # 重连/重放据此恢复当前场景（背景随 export_state 按游标解析）
+            scene_key = payload.get("scene_key")
+            if isinstance(scene_key, str):
+                self.state.scene_key = scene_key
+        elif etype == evt.EVENT_DIRECTION:
+            direction = {
+                "conflict": payload.get("conflict", ""),
+                "context": payload.get("context", ""),
+            }
+            self.state.direction = direction
+            self.characters.broadcast_direction(direction)
+        elif etype == evt.EVENT_SYSTEM:
+            role = payload.get("selected_role")
+            if role:
+                self.state.player_role = role
+                self.characters.player_role = role
+        elif etype == evt.EVENT_PLAYER_ACTION:
+            if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+                self.state.stage3_round_taken += 1
+        elif etype == evt.EVENT_CHARACTER_SPEECH:
+            # 公开发言台账重放（机制层知识边界）：重连/回溯后「谁在哪个场景说了
+            # 什么」据此重建；speaker 与当前 scene_key 是事件自带/状态现有的。
+            speaker = payload.get("speaker")
+            if speaker:
+                self.state.speech_log.append(
+                    (str(speaker), self.state.scene_key, str(payload.get("text", "")))
+                )
+
+    # ===== 生命周期 =====
+
+    async def start(self) -> StepResult:
+        """初始化到 STAGE1_COMPLETE 停靠点：等待 select_role。"""
+        self._command_events = []
+        self.state.stage = StageValue.STAGE1_CREATING.value
+        self._transition_to(StageValue.STAGE1_COMPLETE.value)
+        return await self._result_at_point(new_events=[])
+
+    def summary(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "stage": self.state.stage,
+            "player_role": self.state.player_role,
+            "beat_cursor": self.state.beat_cursor,
+            "event_count": len(self.event_store),
+            "latest_event_id": self.event_store.latest_event_id,
+            "ended": self.state.ended,
+        }
+
+    # ===== 命令入口（幂等）=====
+
+    async def submit(
+        self, *, command_id: str, kind: str, payload: dict | None = None
+    ) -> StepResult:
+        key = str(command_id)
+        cached = self._processed_commands.get(key)
+        if cached is not None:
+            return StepResult(
+                state=cached.state,
+                new_events=list(cached.new_events),
+                active_interaction=cached.active_interaction,
+                allowed_commands=list(cached.allowed_commands),
+                terminal=cached.terminal,
+                duplicate=True,
+                # 不转发 asset_requests：幂等重放不重跑调度（同进程内 `_attempted`
+                # 也拦得住），第二次以后由后续命令重新从事件派生意图。
+            )
+        result = await self._dispatch(key, kind, payload or {})
+        self._processed_commands[key] = result
+        return result
+
+    async def _dispatch(self, cid: str, kind: str, payload: dict[str, Any]) -> StepResult:
+        self._command_events = []
+        self._asset_requests = []
+        stage = self.state.stage
+        if kind not in _ALLOWED_BY_STAGE.get(stage, frozenset()):
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID,
+                extra={"kind": kind, "stage": stage},
+            )
+
+        match kind:
+            case "select_role":
+                return await self._on_select_role(payload)
+            case "choose_option":
+                return await self._on_input(cid, action_type="choose_option", payload=payload)
+            case "free_input":
+                return await self._on_input(cid, action_type="speak", payload=payload)
+            case "rollback_to_event":
+                target = int(payload.get("target_event_id", 0))
+                return await self.rollback(command_id=cid, target_event_id=target)
+            case "enter_stage3":
+                return await self._on_enter_stage3()
+            case "confirm_ending":
+                self._transition_to(GameStage.ENDED.value)
+                self.state.ended = True
+                return await self._result_at_point(new_events=[], terminal=True)
+            case "exit_game":
+                self._transition_to(GameStage.ENDED.value)
+                self.state.ended = True
+                return await self._result_at_point(new_events=[], terminal=True)
+        raise new(codes.ENG_PLAYER_ACTION_INVALID, extra={"kind": kind})  # pragma: no cover
+
+    # ===== 命令实现 =====
+
+    async def _on_select_role(self, payload: dict) -> StepResult:
+        role = str(payload.get("role_name") or "")
+        playable = {c.name for c in self.script.characters if c.is_player_playable}
+        if role not in playable:
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID,
+                extra={"role": role, "playable": sorted(playable)},
+            )
+        self.characters.player_role = role
+        self.state.player_role = role
+        self._append(evt.EVENT_SYSTEM, {"selected_role": role})
+        self._transition_to(StageValue.STAGE2_REENACTING.value)
+        self._log.info("stage2_start", extra={"player": role})
+        return await self._drive_until_interaction()
+
+    async def _on_enter_stage3(self) -> StepResult:
+        self._transition_to(StageValue.STAGE3_EXTENDING.value)
+        self._log.info("stage3_start")
+        return await self._drive_until_interaction()
+
+    async def _on_input(self, cid: str, *, action_type: str, payload: dict) -> StepResult:
+        if self.active_interaction is None:
+            raise new(codes.ENG_NOT_RUNNING, extra={"reason": "no_active_interaction"})
+
+        option_raw = payload.get("option_id")
+        option_val: int | None = None
+        if isinstance(option_raw, str) and option_raw.isdigit():
+            option_val = int(option_raw)
+        elif isinstance(option_raw, int):
+            option_val = option_raw
+
+        action = PlayerAction(
+            type=action_type,
+            option_id=option_val,
+            text=payload.get("text"),
+        )
+        self._append(
+            evt.EVENT_PLAYER_ACTION,
+            {"type": action.type, "text": action.text, "option_id": action.option_id},
+        )
+        self.active_interaction = None
+
+        current_stage = self._runtime_stage_alias()
+
+        # Stage2 结局确认出口（design_interaction 到结局时提供 0=续写 / 1=结束）
+        reached_ending = current_stage == "stage2" and self.state.beat_cursor >= total_beats(
+            self.script
+        )
+        if reached_ending and action_type == "choose_option":
+            self._log.info("ending_choice", extra={"choice": action.option_id})
+            if action.option_id == 1:
+                self._transition_to(GameStage.ENDED.value)
+                self.state.ended = True
+                return await self._result_at_point(new_events=[], terminal=True)
+            self._transition_to(StageValue.STAGE2_COMPLETE.value)
+            return await self._result_at_point(new_events=[])
+
+        await self._collect_reactions(action, current_stage)
+        await self._flush_events()
+
+        if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+            self.state.stage3_round_taken += 1
+            if self.state.stage3_round_taken >= self.config.stage3_rounds:
+                self._transition_to(GameStage.ENDED.value)
+                self.state.ended = True
+                return await self._result_at_point(new_events=[], terminal=True)
+        elif self.state.stage == StageValue.STAGE2_REENACTING.value:
+            pass
+
+        return await self._drive_until_interaction()
+
+    def _runtime_stage_alias(self) -> str:
+        if self.state.stage == StageValue.STAGE2_REENACTING.value:
+            return "stage2"
+        if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+            return "stage3"
+        raise new(codes.ENG_INVALID_TRANSITION, extra={"stage": self.state.stage})
+
+    # ===== 推进引擎：跑到下一个稳定交互点 =====
+
+    async def _drive_until_interaction(self, *, new_events: list[dict] | None = None) -> StepResult:
+        sink: list[dict] = new_events if new_events is not None else []
+
+        while True:
+            self._mark_memories()
+            stage_name = self._runtime_stage_alias()
+            await self._run_cycle_head(stage_name, sink)
+
+            reached_ending = stage_name == "stage2" and self.state.beat_cursor >= total_beats(
+                self.script
+            )
+            interaction = self.screenwriter.design_interaction(
+                stage=stage_name,
+                proposals=self._valid_proposals,
+                reached_ending=reached_ending,
+            )
+            self.state.phase = InteractionPhase.PLAYER_TURN.value
+            self.state_machine.enter_phase(InteractionPhase.PLAYER_TURN)
+            self.active_interaction = interaction
+            return await self._result_at_point(new_events=sink)
+
+    async def _run_cycle_head(self, stage: str, sink: list[dict]) -> None:
+        self.state.phase = InteractionPhase.NARRATIVE.value
+        adv = self.screenwriter.advance_plot(self.script, stage)
+        # 进度游标显式同步：state 是权威，screenwriter 游标是派生
+        self.state.beat_cursor = self.screenwriter.beat_index
+        ctx = self._beat_ctx(self.state.beat_cursor)
+        self.state.scene_key = f"scene:{ctx.scene_id}" if ctx is not None else None
+        # 事件索引优先（§9）：重连/回溯重放后，已就绪的运行期配图必须随叙事一同下发，
+        # 否则前端会被 payload 里的 current_asset=null 清掉刚换上的背景。
+        current_asset = self._current_background(ctx)
+        self._request_scene_asset(stage, ctx, current_asset)
+        self._append(
+            evt.EVENT_PLOT_ADVANCEMENT,
+            {
+                "summary": adv.summary,
+                "scene": adv.scene_description,
+                # #53：场景键/标题/背景进 payload——重放重建 scene_key，
+                # 前端在**实时**切换场景时即可换图（不必等重连的 session_init）
+                "scene_key": self.state.scene_key,
+                "scene_title": ctx.title if ctx is not None else None,
+                "current_asset": (
+                    current_asset.model_dump(mode="json") if current_asset is not None else None
+                ),
+            },
+            sink=sink,
+        )
+        self.state.plot_log.append(adv.summary)
+        self.characters.broadcast_plot_context(adv.summary)
+
+        self.state.phase = InteractionPhase.DIRECTION.value
+        direction = self.screenwriter.confirm_direction(self.script, stage)
+        direction_payload = {"conflict": direction.conflict, "context": direction.context}
+        self.state.direction = dict(direction_payload)
+        self._append(
+            evt.EVENT_DIRECTION,
+            direction_payload,
+            sink=sink,
+        )
+        self.characters.broadcast_direction(direction_payload)
+
+        proposals = await self._collect_proposals(stage, sink)
+        self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
+
+    # ===== Agent 调度 =====
+
+    def _request_scene_asset(
+        self, stage: str, ctx: Scene | None, current_asset: AssetRef | None
+    ) -> None:
+        """新场景缺图时记下一次运行期配图意图（#56，ADR-0005 §5）。
+
+        只在 Stage3（续写）触发：Stage2 的配图由剧本生成 workflow 离线预生成
+        （#48），游走中再生成等于对已审批的剧本私自改图、且付两次费。这里**只记
+        意图**，不调用任何 provider——真正的生成由 Session 层在命令事务提交后
+        派给后台任务（后台任务不得持有 GameRuntime）。
+
+        去重交给两处：已在事件索引/剧本槽位里的场景不重复请求；同一进程内
+        在途或已失败的 scene_key 由调度器拦下（见 `services/scene_assets.py`）。
+        """
+        if stage != "stage3" or ctx is None or self.state.scene_key is None:
+            return
+        if current_asset is not None:
+            return
+        self._asset_requests.append(
+            SceneAssetIntent(
+                scene_key=self.state.scene_key,
+                description=scene_visual_description(ctx),
+            )
+        )
+
+    async def _collect_proposals(self, stage: str, sink: list[dict]) -> list[Proposal]:
+        names = self.characters.active_names()
+
+        async def _one(name: str) -> Proposal:
+            return await self.characters.get(name).propose_action(stage)
+
+        results = await asyncio.gather(*[_one(n) for n in names], return_exceptions=True)
+        proposals: list[Proposal] = []
+        for name, res in zip(names, results):
+            if isinstance(res, BaseException):
+                self._log.error(
+                    "propose_failed",
+                    extra={"wj_extra": {"name": name, "err": str(res)}},
+                )
+                continue
+            self._append(
+                evt.EVENT_PROPOSAL,
+                {"proposed_by": name, "description": res.description},
+                sink=sink,
+            )
+            proposals.append(res)
+        return proposals
+
+    async def _verify_proposals(
+        self, proposals: list[Proposal], stage: str, sink: list[dict]
+    ) -> list[Proposal]:
+        valid: list[Proposal] = []
+        pending = proposals
+        attempts_left = self.config.max_proposal_retries
+        while pending and attempts_left >= 0:
+            results = await asyncio.gather(
+                *[self.verifier.verify_proposal(p, stage) for p in pending],
+                return_exceptions=True,
+            )
+            still_pending: list[Proposal] = []
+            for prop, res in zip(pending, results):
+                if isinstance(res, BaseException):
+                    self._log.error("verify_failed", extra={"proposal": prop.proposal_id})
+                    valid.append(prop)  # 降级收录
+                    continue
+                self._append(
+                    evt.EVENT_VERIFICATION,
+                    {
+                        "proposal_id": prop.proposal_id,
+                        "verdict": res.verdict,
+                        "score": res.score,
+                    },
+                    sink=sink,
+                )
+                if res.verdict == "reject" and attempts_left > 0:
+                    revised = await self.characters.get(prop.proposed_by).revise_proposal(
+                        stage,
+                        res.rejections[0].suggestion if res.rejections else None,
+                    )
+                    still_pending.append(revised)
+                elif res.verdict != "reject":
+                    valid.append(prop)
+            pending = still_pending
+            attempts_left -= 1
+        return valid
+
+    async def _collect_reactions(self, action: PlayerAction, stage: str) -> None:
+        names = self.characters.active_names()
+        results = await asyncio.gather(
+            *[self._react(name, action, stage) for name in names],
+            return_exceptions=True,
+        )
+        for name, res in zip(names, results):
+            if isinstance(res, BaseException):
+                self._log.error(
+                    "react_failed",
+                    extra={"wj_extra": {"name": name, "err": str(res)}},
+                )
+                continue
+            # 落库的永远是**最终答复**；前端屏幕上已经滚过的那份是临时文本，
+            # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
+            self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
+            self.state.speech_log.append((name, self.state.scene_key, res))
+
+    async def _react(self, name: str, action: PlayerAction, stage: str) -> str:
+        """单角色反应；配了流出口就开一条流，逐段推给客户端。
+
+        多角色是并发生成的（`asyncio.gather`），每条流各有 `stream_id`，前端按
+        `stream_id` 分轨渲染（ADR-0005 §11 的多音轨同源）。`end` 走 `finally`：
+        生成中途抛错也必须收流，否则客户端会留着一条不结束的字幕。
+        """
+        sink = self._speech_sink
+        if sink is None:
+            return await self.characters.get(name).react_to(action, stage)
+        stream_id = sink.start(name)
+        try:
+            return await self.characters.get(name).react_to(
+                action,
+                stage,
+                on_delta=lambda text: sink.delta(stream_id, text),
+            )
+        finally:
+            sink.end(stream_id)
+
+    # ===== 回溯（保留旧历史；分支语义由 #8 扩展）=====
+
+    async def rollback(self, *, command_id: str, target_event_id: int) -> StepResult:
+        key = str(command_id)
+        cached = self._processed_commands.get(key)
+        if cached is not None:
+            return StepResult(
+                state=cached.state,
+                new_events=[],
+                active_interaction=cached.active_interaction,
+                allowed_commands=list(cached.allowed_commands),
+                terminal=cached.terminal,
+                duplicate=True,
+            )
+
+        steps_limit = self.config.max_rollback_steps
+        latest = self.event_store.latest_event_id
+        steps = latest - int(target_event_id)
+        if steps <= 0 or steps > steps_limit:
+            raise new(
+                codes.ENG_ROLLBACK_OVERFLOW,
+                extra={"steps": steps, "max_steps": steps_limit},
+            )
+        if target_event_id < 1:
+            raise new(
+                codes.ENG_ROLLBACK_TARGET_MISSING,
+                extra={"event_id": target_event_id},
+            )
+        active_ids = {e.event_id for e in self.event_store.active_events()}
+        if target_event_id not in active_ids:
+            raise new(
+                codes.ENG_ROLLBACK_TARGET_MISSING,
+                extra={"event_id": target_event_id},
+            )
+
+        _, snap, mark_beat, mark_direction = 0, {}, 0, {}
+        for mark_event_id, m_snap, m_beat, m_direction in reversed(self._memory_marks):
+            if mark_event_id <= target_event_id:
+                snap, mark_beat, mark_direction = m_snap, m_beat, m_direction
+                break
+        if snap:
+            self.characters.restore_memories(snap)
+            self.state.beat_cursor = min(mark_beat, self.state.beat_cursor)
+            self.state.direction = dict(mark_direction)
+        self.screenwriter.beat_index = self.state.beat_cursor
+
+        # 回溯：旧事件保留，创建新活动分支并从目标节点继承历史
+        superseded = self.event_store.rollback_to(
+            target_event_id, session_id=self.session_id, command_id=command_id
+        )
+        roll_ev = self._append(
+            evt.EVENT_ROLLBACK,
+            {
+                "steps": steps,
+                "target": target_event_id,
+                "superseded": len(superseded),
+                "branch_id": self.event_store.active_branch_id,
+            },
+        )
+        self.active_interaction = None
+        # 回溯后从恢复点重新推进到下一个稳定交互点（新分支继续追加）
+        driven = await self._drive_until_interaction(new_events=[roll_ev])
+        self._processed_commands[key] = driven
+        self._log.info(
+            "rollback_done",
+            extra={
+                "steps": steps,
+                "target": target_event_id,
+                "new_branch_id": self.event_store.active_branch_id,
+            },
+        )
+        return driven
+
+    # ===== 内部工具 =====
+
+    def _append(self, event_type: str, payload: dict, *, sink: list[dict] | None = None) -> dict:
+        ev = self.event_store.append(event_type, payload, session_id=self.session_id)
+        entry = {"event_id": ev.event_id, "event_type": event_type}
+        self._command_events.append(entry)
+        if sink is not None:
+            sink.append(entry)
+        return entry
+
+    def _mark_memories(self) -> None:
+        self._memory_marks.append(
+            (
+                self.event_store.latest_event_id,
+                self.characters.snapshot_memories(),
+                self.state.beat_cursor,
+                dict(self.state.direction),
+            )
+        )
+
+    def _transition_to(self, stage_value: str) -> None:
+        stage = GameStage(stage_value)
+        self.state_machine.set_stage(stage)
+        self.state.stage = stage_value
+        self._append(evt.EVENT_STAGE_TRANSITION, {"stage": stage_value})
+        self._log.info("stage_transition", extra={"stage": stage_value})
+
+    async def _result_at_point(
+        self, *, new_events: list[dict], terminal: bool = False
+    ) -> StepResult:
+        await self._flush_events()
+        if terminal:
+            # 终局后不得残留交互点（否则投影会把过期交互发给前端）
+            self.active_interaction = None
+        return StepResult(
+            state=self.export_state(),
+            new_events=list(self._command_events),
+            active_interaction=_interaction_payload(self.active_interaction),
+            allowed_commands=sorted(_ALLOWED_BY_STAGE[self.state.stage]),
+            terminal=terminal,
+            asset_requests=list(self._asset_requests),
+        )
+
+    async def _flush_events(self) -> None:
+        if self._on_flush is not None:
+            await self._on_flush()
