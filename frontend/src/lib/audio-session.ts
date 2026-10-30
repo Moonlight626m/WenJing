@@ -12,6 +12,8 @@
  * 这里——ADR-0005 §11 的 barge-in 是客户端行为。
  */
 
+import { useSyncExternalStore } from "react";
+
 import {
   AudioTrackPlayer,
   appendChunk,
@@ -33,7 +35,12 @@ export interface AudioPlayerLike {
   stopAll(): string[];
   setMuted(muted: boolean): void;
   dispose(): void;
+  /** 正在出声的说话人（可选：测试里的假播放器不必实现，舞台就当没人在说）。 */
+  getSpeaking?(): readonly string[];
+  subscribeSpeaking?(listener: () => void): () => void;
 }
+
+const NO_SPEAKERS: readonly string[] = Object.freeze([]);
 
 export class AudioSession {
   private tracks: PendingTrack[] = [];
@@ -82,9 +89,25 @@ export class AudioSession {
     this.tracks = [];
     this.player.dispose();
   }
+
+  // 箭头属性：引用稳定，可直接交给 useSyncExternalStore
+  getSpeaking = (): readonly string[] =>
+    this.player.getSpeaking?.() ?? NO_SPEAKERS;
+
+  subscribeSpeaking = (listener: () => void): (() => void) =>
+    this.player.subscribeSpeaking?.(listener) ?? (() => {});
 }
 
 export const audioSession = new AudioSession();
+
+/** 正在配音的角色名。SSR 与无配音环境下恒为空。 */
+export function useSpeakingSpeakers(): readonly string[] {
+  return useSyncExternalStore(
+    audioSession.subscribeSpeaking,
+    audioSession.getSpeaking,
+    () => NO_SPEAKERS
+  );
+}
 
 /** 把 WS 的二进制帧统一成 `ArrayBuffer`（浏览器给 Blob，测试里可能是别的）。 */
 export async function toArrayBuffer(data: unknown): Promise<ArrayBuffer | null> {

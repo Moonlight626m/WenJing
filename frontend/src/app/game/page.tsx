@@ -4,57 +4,26 @@ import { Suspense, useEffect } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 
-import { useAssetUrl } from "@/lib/asset-url";
 import { useGameChannel } from "@/lib/ws";
-import { getStatus } from "@/lib/api";
-import { stageLabel } from "@/lib/labels";
+import { getScriptDetail, getStatus } from "@/lib/api";
 import { loadRecents, upsertRecent } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useUiStore } from "@/stores/uiStore";
-import { AudioControls } from "@/components/audio-controls";
-import { GameStage } from "@/components/game-stage";
-import { InteractionCard } from "@/components/interaction-card";
-import { MessageStream } from "@/components/message-stream";
-import { RolePanel } from "@/components/role-panel";
-import { RollbackBar } from "@/components/rollback-bar";
-import { SubtitleTrack } from "@/components/subtitle-track";
+import { GameScreen } from "@/components/game-screen";
 import { ToastHost } from "@/components/toast-host";
 import { buttonClass } from "@/components/ui/button";
 import { Loading } from "@/components/ui/states";
-import { Tag } from "@/components/ui/tag";
-
-/** 连接状态：一枚色点 + 短语，比单靠文字颜色更易在背景图上辨认。 */
-const CONNECTION_LABELS: Record<string, { text: string; dot: string }> = {
-  idle: { text: "未连接", dot: "bg-ink-faint" },
-  connecting: { text: "连接中…", dot: "bg-warn" },
-  connected: { text: "已连接", dot: "bg-ok" },
-  reconnecting: { text: "重连中…", dot: "bg-warn animate-pulse" },
-  closed: { text: "已断开", dot: "bg-danger" },
-};
 
 function GameContent() {
   const searchParams = useSearchParams();
   const sessionId = searchParams.get("id");
 
-  const stage = useGameStore((s) => s.stage);
-  const messages = useGameStore((s) => s.messages);
-  const streams = useGameStore((s) => s.streams);
-  const characters = useGameStore((s) => s.characters);
-  const playableRoles = useGameStore((s) => s.playableRoles);
-  const playerRole = useGameStore((s) => s.playerRole);
-  const connection = useGameStore((s) => s.connection);
-  const pending = useGameStore((s) => s.pending);
-  const sceneKey = useGameStore((s) => s.sceneKey);
-  const sceneTitle = useGameStore((s) => s.sceneTitle);
-  const currentAsset = useGameStore((s) => s.currentAsset);
+  const scriptId = useGameStore((s) => s.scriptId);
   const resetSession = useGameStore((s) => s.resetSession);
   const setStatusInfo = useGameStore((s) => s.setStatusInfo);
+  const setScriptInfo = useGameStore((s) => s.setScriptInfo);
 
   const push = useUiStore((s) => s.push);
-
-  // 背景稳定引用 → 预签名 URL（#53）：按 current_asset 变化现取（短时效），
-  // 取不到就交给 GameStage 降级为无图渐变，不阻塞游玩。
-  const { url: backgroundUrl } = useAssetUrl(currentAsset);
 
   useGameChannel(sessionId);
 
@@ -99,6 +68,22 @@ function GameContent() {
     };
   }, [sessionId, searchParams, setStatusInfo, push]);
 
+  // 角色档案（立绘、头像、小传）只在剧本包里：按 session_init 带来的剧本补拉一次。
+  // 选角页已经放进 store 的那份也会被同一份覆盖，顺带纠正上一局残留的角色表。
+  // 拉不到就退化成只有名字的角色，不影响游玩。
+  useEffect(() => {
+    if (scriptId === null) return;
+    let cancelled = false;
+    getScriptDetail(scriptId)
+      .then((detail) => {
+        if (!cancelled && detail.package) setScriptInfo(detail.package);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [scriptId, setScriptInfo]);
+
   if (!sessionId) {
     return (
       <main
@@ -114,86 +99,12 @@ function GameContent() {
     );
   }
 
-  const conn = CONNECTION_LABELS[connection] ?? CONNECTION_LABELS.idle;
-
   return (
     <main
       data-surface="stage"
-      className="flex h-screen w-full flex-col overflow-hidden bg-canvas"
+      className="flex h-screen w-full flex-col overflow-clip bg-canvas"
     >
-      <GameStage
-        backgroundUrl={backgroundUrl}
-        sceneKey={sceneKey}
-        sceneTitle={sceneTitle}
-      >
-        <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-panel px-4 py-2.5 backdrop-blur-md">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="font-serif text-lg font-semibold tracking-[0.18em]">
-              文境
-            </span>
-            <span className="font-mono text-2xs text-ink-faint">
-              {sessionId.slice(0, 8)}
-            </span>
-            <Tag>{stageLabel(stage)}</Tag>
-            {playerRole && (
-              <span className="text-xs font-medium text-flag">
-                扮演：{playerRole}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-3 text-xs text-ink-soft">
-            {pending && (
-              <span className="animate-pulse text-flag">
-                正在推进 {pending.label}
-              </span>
-            )}
-            <span className="flex items-center gap-1.5">
-              <span
-                aria-hidden
-                className={`size-1.5 shrink-0 rounded-full ${conn.dot}`}
-              />
-              {conn.text}
-            </span>
-            <AudioControls />
-            <Link href="/" className={buttonClass("quiet", "xs")}>
-              返回首页
-            </Link>
-          </div>
-        </header>
-
-        <div className="flex min-h-0 flex-1 gap-3 p-3 md:gap-4 md:p-4">
-          <aside className="hidden w-60 shrink-0 overflow-y-auto md:block">
-            <h2 className="mb-2.5 font-serif text-sm text-ink-soft">在场角色</h2>
-            <RolePanel
-              characters={characters}
-              playableRoles={playableRoles}
-              playerRole={playerRole}
-            />
-          </aside>
-
-          <section className="flex min-h-0 flex-1 flex-col gap-3">
-            <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-rule bg-panel backdrop-blur-sm">
-              <div className="absolute inset-0 overflow-y-auto p-4">
-                {messages.length === 0 ? (
-                  <p className="text-sm text-ink-faint">等待剧情开始…</p>
-                ) : (
-                  <MessageStream
-                    messages={messages}
-                    playerRole={playerRole}
-                    showSeq={process.env.NODE_ENV !== "production"}
-                  />
-                )}
-              </div>
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-4 pt-14 pb-4">
-                <SubtitleTrack messages={messages} streams={streams} />
-              </div>
-            </div>
-
-            <InteractionCard />
-            <RollbackBar />
-          </section>
-        </div>
-      </GameStage>
+      <GameScreen />
       <ToastHost />
     </main>
   );

@@ -111,6 +111,8 @@ export function finishTrack(
   };
 }
 
+const NO_SPEAKERS: readonly string[] = Object.freeze([]);
+
 /**
  * 多音轨播放器：后端不混音，前端就挂多个 `<audio>` 同时放。
  *
@@ -121,6 +123,10 @@ export class AudioTrackPlayer {
   private readonly playing = new Map<string, HTMLAudioElement>();
   private readonly urls = new Set<string>();
   private muted = false;
+  /** 真正出声的轨 → 说话人。`playing` 里的轨可能还在缓冲，只有收到 `playing` 事件才算。 */
+  private readonly voicing = new Map<string, string>();
+  private readonly listeners = new Set<() => void>();
+  private speaking: readonly string[] = NO_SPEAKERS;
 
   /** 播放一条已拼好的音轨；同一 `track_id` 重复到达时忽略（幂等）。 */
   play(track: FinishedTrack): void {
@@ -136,6 +142,11 @@ export class AudioTrackPlayer {
     const done = () => this.release(track.trackId, url);
     audio.addEventListener("ended", done);
     audio.addEventListener("error", done);
+    audio.addEventListener("playing", () => {
+      if (!this.playing.has(track.trackId)) return;
+      this.voicing.set(track.trackId, track.speaker);
+      this.emitSpeaking();
+    });
     // 播放失败（自动播放策略/解码）不该把页面搞崩：音轨是增强，字幕才是权威。
     void audio.play().catch(() => this.release(track.trackId, url));
   }
@@ -149,12 +160,39 @@ export class AudioTrackPlayer {
       this.playing.delete(trackId);
     }
     this.revokeAll();
+    this.voicing.clear();
+    this.emitSpeaking();
     return ids;
   }
 
   setMuted(muted: boolean): void {
     this.muted = muted;
     for (const audio of this.playing.values()) audio.muted = muted;
+    this.emitSpeaking();
+  }
+
+  /**
+   * 正在出声的角色名（去重）。舞台据此给说话人的立绘与头像加声纹光环；
+   * 静音时视为没人在说，免得光环在跳却听不到声音。返回值在变化之间保持同一引用，
+   * 可直接作 `useSyncExternalStore` 的快照。
+   */
+  getSpeaking = (): readonly string[] => this.speaking;
+
+  subscribeSpeaking = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  };
+
+  private emitSpeaking(): void {
+    const next = this.muted ? NO_SPEAKERS : [...new Set(this.voicing.values())];
+    if (
+      next.length === this.speaking.length &&
+      next.every((name, i) => name === this.speaking[i])
+    ) {
+      return;
+    }
+    this.speaking = next;
+    for (const listener of this.listeners) listener();
   }
 
   get playingCount(): number {
@@ -169,6 +207,7 @@ export class AudioTrackPlayer {
     this.playing.delete(trackId);
     URL.revokeObjectURL(url);
     this.urls.delete(url);
+    if (this.voicing.delete(trackId)) this.emitSpeaking();
   }
 
   private revokeAll(): void {

@@ -7,6 +7,7 @@
  */
 import type {
   ActiveInteraction,
+  Stage3Goal,
   AssetRef,
   GenerationProgress,
   GateReview,
@@ -16,7 +17,7 @@ import type {
   UserPublic,
 } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION as V } from "@/lib/contracts/types";
-import type { ChatMessage, LiveStream } from "@/stores/gameStore";
+import type { ChatMessage, LiveStream, PendingCommand } from "@/stores/gameStore";
 
 const ORG = "f16ca50e-4f13-4a87-985a-38c188495239";
 
@@ -275,10 +276,34 @@ export const INTERACTION: ActiveInteraction = {
   mode: "options_with_fallback",
   prompt: "闰土正说到看瓜的夜里，你想怎么接话？",
   options: [
-    { option_id: "o1", label: "追问他刺猹那晚的细节" },
-    { option_id: "o2", label: "说起自己在城里见过的热闹" },
+    { option_id: "o1", label: "追问他刺猹那晚的细节", proposed_by: "闰土" },
+    { option_id: "o2", label: "说起自己在城里见过的热闹", proposed_by: "母亲" },
   ],
   hint: "选一项，或自己写下要说的话。",
+};
+
+/** 续写目标：一条已达成、两条未达成，摆出追踪卡与结局卡的进度。 */
+export const STAGE3_GOALS: Stage3Goal[] = [
+  { goal_id: 1, description: "让闰土说出一件只有海边孩子才知道的趣事", achieved: true },
+  { goal_id: 2, description: "让「我」答应正月过后去海边找闰土", achieved: false },
+  { goal_id: 3, description: "在续写中体现两人身份差异带来的隔膜", achieved: false },
+];
+
+/** 一条在途命令：画廊用它摆出「正在推进」的顶栏。sentAt 不参与渲染（顶栏不显示秒数）。 */
+export const PENDING: PendingCommand = {
+  commandId: "cmd-showcase",
+  kind: "choose_option",
+  label: "选项 追问他刺猹那晚的细节",
+  sentAt: 0,
+  retries: 0,
+  command: {
+    schema_version: V,
+    command_id: "cmd-showcase",
+    session_id: "showcase",
+    kind: "choose_option",
+    payload: { option_id: "o1" },
+    issued_at: null,
+  },
 };
 
 export const GENERATION_RUNNING: GenerationProgress = {

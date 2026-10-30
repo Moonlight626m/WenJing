@@ -61,6 +61,8 @@ class Script:
     characters: list[CharacterSetting]
     scenes: list[Scene]
     stage2_ending_beat_id: int
+    # 教学重点：续写目标据此出题（见 `ScreenwriterAgent.design_stage3_goals`）
+    teaching_focus: list[str] = field(default_factory=list)
 
 
 # ===== 提议与验证 =====

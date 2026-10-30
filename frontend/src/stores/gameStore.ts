@@ -3,6 +3,7 @@
 import { audioSession } from "@/lib/audio-session";
 import { create } from "zustand";
 
+import { ALLOWED_COMMANDS } from "@/lib/contracts/types";
 import type {
   ActiveInteraction,
   AssetRef,
@@ -10,7 +11,9 @@ import type {
   CommandKind,
   CommandPayloadByKind,
   PlayerCommand,
+  Scene,
   ScriptPackage,
+  Stage3Goal,
   StageValue,
 } from "@/lib/contracts/types";
 import { buildCommand } from "@/lib/session-cache";
@@ -151,6 +154,24 @@ function asStage(value: string): StageValue {
   return STAGES.includes(value as StageValue) ? (value as StageValue) : "init";
 }
 
+/**
+ * 消息载荷里的续写目标快照 → 目标列表；不是目标快照（字段缺失或形状不对）返回 null，
+ * 调用方据此保持原值。空数组是合法快照（回溯到续写之前）。
+ */
+export function asGoals(raw: unknown): Stage3Goal[] | null {
+  if (!Array.isArray(raw)) return null;
+  return raw
+    .filter(
+      (g): g is Record<string, unknown> =>
+        typeof g === "object" && g !== null && typeof g.goal_id === "number"
+    )
+    .map((g) => ({
+      goal_id: g.goal_id as number,
+      description: typeof g.description === "string" ? g.description : "",
+      achieved: g.achieved === true,
+    }));
+}
+
 function maxSeq(messages: ChatMessage[]): number {
   return messages.reduce((acc, m) => Math.max(acc, m.seq), 0);
 }
@@ -161,9 +182,15 @@ interface GameStore {
   branchId: string | null;
   playerRole: string | null;
   plotLog: string[];
+  /** 会话引用的剧本（session_init 带来）：刷新后据此补拉剧本包里的角色档案。 */
+  scriptId: number | null;
   scriptTitle: string | null;
   playableRoles: string[];
   characters: CharacterProfile[];
+  /** 剧本的场景与情节点（带原文证据）：剧情回顾的「原文」页据此对照课文。 */
+  scenes: Scene[];
+  /** 续写目标（从事件派生，session_init 与目标/回溯类系统消息都带完整快照）。 */
+  stage3Goals: Stage3Goal[];
   /** 当前场景稳定键（#53）：背景切换/淡入的判定来源。 */
   sceneKey: string | null;
   /** 当前场景标题（#53）：随 plot_advancement 更新。 */
@@ -251,9 +278,12 @@ export const useGameStore = create<GameStore>((set, get) => {
     branchId: null,
     playerRole: null,
     plotLog: [],
+    scriptId: null,
     scriptTitle: null,
     playableRoles: [],
     characters: [],
+    scenes: [],
+    stage3Goals: [],
     sceneKey: null,
     sceneTitle: null,
     currentAsset: null,
@@ -275,6 +305,8 @@ export const useGameStore = create<GameStore>((set, get) => {
         branchId: null,
         playerRole: null,
         plotLog: [],
+        scriptId: null,
+        stage3Goals: [],
         messages: [],
         streams: [],
         interaction: null,
@@ -315,6 +347,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         scriptTitle: pkg.title,
         playableRoles: pkg.playable_roles,
         characters: pkg.characters,
+        scenes: pkg.scenes,
       }),
 
     setStatusInfo: (status) =>
@@ -369,6 +402,9 @@ export const useGameStore = create<GameStore>((set, get) => {
           plotLog: Array.isArray(payload.plot_log)
             ? payload.plot_log.map(String)
             : [],
+          scriptId:
+            typeof payload.script_id === "number" ? payload.script_id : get().scriptId,
+          stage3Goals: asGoals(payload.stage3_goals) ?? [],
           interaction: ix,
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
@@ -427,6 +463,8 @@ export const useGameStore = create<GameStore>((set, get) => {
       let sceneTitle = state.sceneTitle;
       let currentAsset = state.currentAsset;
       let streams = state.streams;
+      // 目标快照随「定下目标 / 达成目标 / 回溯」三类系统消息下发，见到就整份替换
+      const stage3Goals = asGoals(payload.stage3_goals) ?? state.stage3Goals;
 
       // 终局批次可能多条消息共享同一 seq（如"进入阶段：ended"+"已结束"），
       // 去重键需包含文本，否则第二条会被误判重复
@@ -474,7 +512,14 @@ export const useGameStore = create<GameStore>((set, get) => {
         }
         if (msg.type === "system") {
           const stageMatch = /进入阶段：(\S+)/.exec(text);
-          if (stageMatch) stage = asStage(stageMatch[1]);
+          if (stageMatch) {
+            stage = asStage(stageMatch[1]);
+            // 换阶段后上一阶段的交互点作废，允许命令按契约表重算。引擎停在阶段之间
+            // （如还原演完、等学生决定是否续写）时后端不发交互点消息，不重算就会
+            // 一直挂着旧选项、拿不到 enter_stage3。同批若有新交互点，它排在后面会覆盖这里。
+            interaction = null;
+            allowedCommands = [...ALLOWED_COMMANDS[stage]];
+          }
           if (text.includes("已结束")) {
             interaction = null;
             allowedCommands = [];
@@ -491,6 +536,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         sceneKey,
         sceneTitle,
         currentAsset,
+        stage3Goals,
       });
 
       // 确认水位推进：通知服务端修剪本连接 outbox

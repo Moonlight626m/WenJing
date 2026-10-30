@@ -11,22 +11,21 @@
  *    （`GameRow`/`SquareCard`/`ScriptCard` 已导出复用，不另抄一份）。
  * 2. 不用 `PageShell`/`AuthShell`——它们渲染 `<main>`，一个文档里塞十几个 `<main>`
  *    是无障碍上的硬伤。画廊自己只留一个 `<main>`，书封那屏把版式内联出来。
- * 3. 舞台那屏的骨架与 `app/game/page.tsx` 重复。那是**有意**的：把游戏页的版式
- *    抽成共享组件会动到 WS / 状态机的接线，为一个画廊页不值得冒这个险。
- *    改游戏页版式时，记得回来同步这一屏。
+ * 3. 舞台那屏直接渲染 `GameScreen`，与游戏页是同一份版式。`GameScreen` 只读
+ *    gameStore、不碰 WS；接 WS、拉状态都留在 `app/game/page.tsx`，所以这里往 store
+ *    灌假数据（`useStageFixture`）就能原样摆出来，改版式不必回来同步。
  */
 
 import { useEffect, useState, type ReactNode } from "react";
 
-import { AudioControls } from "@/components/audio-controls";
 import { AppHeader } from "@/components/auth/app-header";
+import { EndingPanel } from "@/components/ending-card";
+import { GameHud } from "@/components/game-hud";
+import { GameScreen } from "@/components/game-screen";
+import { GoalTracker } from "@/components/goal-tracker";
+import { RoleCard } from "@/components/role-card";
 import { GameStage } from "@/components/game-stage";
-import { InteractionCard } from "@/components/interaction-card";
-import { MessageStream } from "@/components/message-stream";
-import { RolePanel } from "@/components/role-panel";
-import { RollbackBar } from "@/components/rollback-bar";
 import { Skeleton, SkeletonCard } from "@/components/skeleton";
-import { SubtitleTrack } from "@/components/subtitle-track";
 import { GameRow, SquareCard } from "@/components/student/student-home";
 import { AssetReviewSection } from "@/components/teacher/asset-review";
 import { GenerationProgress } from "@/components/teacher/generation-progress";
@@ -34,13 +33,14 @@ import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
 import { ScriptPreview } from "@/components/teacher/script-preview";
 import { ScriptCard } from "@/components/teacher/teacher-library";
 import { Button } from "@/components/ui/button";
+import { MotionRoot } from "@/components/ui/motion-root";
 import { AuthField } from "@/components/auth/auth-field";
 import { controlClass } from "@/components/ui/field";
 import { Seal } from "@/components/ui/seal";
 import { SectionHeading } from "@/components/ui/section";
 import { Empty, Loading } from "@/components/ui/states";
 import { Tag } from "@/components/ui/tag";
-import { stageLabel, scriptStatusLabel, SCRIPT_STATUS_TONES } from "@/lib/labels";
+import { scriptStatusLabel, SCRIPT_STATUS_TONES } from "@/lib/labels";
 import { useGameStore } from "@/stores/gameStore";
 import {
   GATE_FINAL,
@@ -50,9 +50,11 @@ import {
   INTERACTION,
   MESSAGES,
   MY_SCRIPTS,
+  PENDING,
   SCRIPT_PACKAGE,
   SESSIONS,
   SQUARE_SCRIPTS,
+  STAGE3_GOALS,
   STREAMS,
   USER_ADMIN,
   USER_STUDENT,
@@ -147,7 +149,8 @@ function useStageFixture() {
       scriptTitle: SCRIPT_PACKAGE.title,
       playableRoles: SCRIPT_PACKAGE.playable_roles,
       characters: SCRIPT_PACKAGE.characters,
-      sceneKey: "scene-1",
+      scenes: SCRIPT_PACKAGE.scenes,
+      sceneKey: "scene:1",
       sceneTitle: "月下刺猹",
       messages: MESSAGES,
       streams: STREAMS,
@@ -168,6 +171,7 @@ function useStageFixture() {
         stage: "init",
         playerRole: null,
         characters: [],
+        scenes: [],
         messages: [],
         streams: [],
         interaction: null,
@@ -493,67 +497,18 @@ export function ShowcaseGallery() {
           <Chapter
             index={2}
             title="台（幕布）"
-            note="只有游玩页在这一面，且恒暗——与系统配色无关。朱砂在这里专标「在场」：你演的角色、正在推进、流式光标。"
+            note="游玩页与选角页在这一面，且恒暗——与系统配色无关。朱砂专标「在场」：你演的角色、正在推进、录音中；泥金标其他角色与已走完的进度，青碧标当前与正在写出的字。"
           >
             <Specimen
               title="游玩舞台"
-              note="背景图缺位时降级为幕布渐变 + 暗角，纯文本仍可玩"
+              note="背景图缺位时降级为极光幕布；立绘缺位时降级为竖排名牌，纯文本仍可玩"
             >
-              {/* 给足高度：字幕是贴着底边浮在消息流之上的，框太矮时两者会叠在一起
-                  （真实全屏下不会） */}
+              {/* 与游玩页同一份 GameScreen，数据来自 useStageFixture 灌进 store 的假数据 */}
               <div
                 data-surface="stage"
-                className="flex h-[900px] flex-col bg-canvas"
+                className="relative flex h-[900px] flex-col bg-canvas"
               >
-                <GameStage sceneKey="showcase" sceneTitle={null} backgroundUrl={null}>
-                  <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule bg-panel px-4 py-2.5 backdrop-blur-md">
-                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                      <span className="font-serif text-lg font-semibold tracking-[0.18em]">
-                        文境
-                      </span>
-                      <span className="font-mono text-2xs text-ink-faint">
-                        {SESSION_ID.slice(0, 8)}
-                      </span>
-                      <Tag>{stageLabel("stage2_reenacting")}</Tag>
-                      <span className="text-xs font-medium text-flag">扮演：我</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-ink-soft">
-                      <span className="flex items-center gap-1.5">
-                        <span
-                          aria-hidden
-                          className="size-1.5 shrink-0 rounded-full bg-ok"
-                        />
-                        已连接
-                      </span>
-                      <AudioControls />
-                      <span className="text-accent underline">返回首页</span>
-                    </div>
-                  </header>
-
-                  <div className="flex min-h-0 flex-1 gap-3 p-3 md:gap-4 md:p-4">
-                    <aside className="hidden w-60 shrink-0 overflow-y-auto md:block">
-                      <h5 className="mb-2.5 font-serif text-sm text-ink-soft">在场角色</h5>
-                      <RolePanel
-                        characters={SCRIPT_PACKAGE.characters}
-                        playableRoles={SCRIPT_PACKAGE.playable_roles}
-                        playerRole="我"
-                      />
-                    </aside>
-
-                    <section className="flex min-h-0 flex-1 flex-col gap-3">
-                      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-rule bg-panel backdrop-blur-sm">
-                        <div className="absolute inset-0 overflow-y-auto p-4">
-                          <MessageStream messages={MESSAGES} playerRole="我" />
-                        </div>
-                        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-4 pt-14 pb-4">
-                          <SubtitleTrack messages={MESSAGES} streams={STREAMS} />
-                        </div>
-                      </div>
-                      <InteractionCard />
-                      <RollbackBar />
-                    </section>
-                  </div>
-                </GameStage>
+                <GameScreen />
               </div>
             </Specimen>
 
@@ -562,6 +517,75 @@ export function ShowcaseGallery() {
               note="竖排右起，随场景切换进场；标题超过 8 字改横排"
             >
               <SceneTitleLoop />
+            </Specimen>
+
+            <Specimen
+              title="顶栏 · 推进中"
+              note="续写阶段等待引擎：进度条停在「续写」，右侧三颗墨点依次晕开"
+            >
+              <div data-surface="stage" className="flex h-28 flex-col">
+                <GameStage sceneKey="hud" sceneTitle={null} backgroundUrl={null}>
+                  <GameHud
+                    sessionId={SESSION_ID}
+                    stage="stage3_extending"
+                    scriptTitle={SCRIPT_PACKAGE.title}
+                    playerRole="我"
+                    connection="connected"
+                    pending={PENDING}
+                  />
+                </GameStage>
+              </div>
+            </Specimen>
+
+            <Specimen
+              title="结局卡"
+              note="阶段进入「已结束」时浮到舞台中央，「终」字朱印落下"
+            >
+              <div data-surface="stage" className="grid place-items-center bg-canvas px-4 py-10">
+                <MotionRoot>
+                  <EndingPanel
+                    scriptTitle={SCRIPT_PACKAGE.title}
+                    playerRole="我"
+                    messages={MESSAGES}
+                    goals={STAGE3_GOALS}
+                    onReview={() => {}}
+                  />
+                </MotionRoot>
+              </div>
+            </Specimen>
+
+            <Specimen
+              title="续写目标"
+              note="进入续写时由编剧定下，每轮判定达成；全部达成即收束。点标题可收起"
+            >
+              <div data-surface="stage" className="bg-canvas p-6">
+                <MotionRoot>
+                  <GoalTracker goals={STAGE3_GOALS} />
+                </MotionRoot>
+              </div>
+            </Specimen>
+
+            <Specimen
+              title="选角卡"
+              note="选角页同在台面上：悬停时卡片随指针倾斜、边框亮流光；选定后盖「已选」印"
+            >
+              <div
+                data-surface="stage"
+                className="grid gap-5 bg-canvas p-6 sm:grid-cols-2 lg:grid-cols-3"
+              >
+                <MotionRoot>
+                  {SCRIPT_PACKAGE.characters.map((c) => (
+                    <RoleCard
+                      key={c.name}
+                      profile={c}
+                      playable={SCRIPT_PACKAGE.playable_roles.includes(c.name)}
+                      selected={c.name === "我"}
+                      submitting={false}
+                      onSelect={() => {}}
+                    />
+                  ))}
+                </MotionRoot>
+              </div>
             </Specimen>
           </Chapter>
         </div>
