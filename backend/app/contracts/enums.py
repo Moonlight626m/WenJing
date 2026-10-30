@@ -85,6 +85,10 @@ class EventType(StrEnum):
     STAGE_TRANSITIONED = "stage_transitioned"
     ROLLBACK_EXECUTED = "rollback_executed"
     ASSET_READY = "asset_ready"
+    # 伪分支播放（方案 branch-montage-dm §6）：分支进入/完成，分支内
+    # plot_advancement 带 branch_key（主干为 null）区分两条推进线。
+    BRANCH_TAKEN = "branch_taken"
+    BRANCH_COMPLETED = "branch_completed"
 
 
 class ErrorDomain(StrEnum):
@@ -144,6 +148,9 @@ class UsagePurpose(StrEnum):
     SCRIPT_WRITING = "script_writing"
     # 媒体图片审核 agent（ADR-0005 §6 / issue #45）：便宜模型结构化判定。
     IMAGE_REVIEW = "image_review"
+    # 画师层（方案 branch-montage-dm §5）：SceneDesigner 内 LLM 转写层，
+    # 把节拍/appearance/visual_notes 转写为画面语 prompt。
+    SCENE_PROMPT = "scene_prompt"
 
 
 class MessageCategory(StrEnum):

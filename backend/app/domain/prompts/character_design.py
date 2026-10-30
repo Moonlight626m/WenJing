@@ -1,11 +1,17 @@
-"""人物设定节点 prompt v2（prompt 落库：段落经 PromptBundle 取值）。
+"""人物设定节点 prompt v3（prompt 落库：段落经 PromptBundle 取值）。
 
 段落构成（section）：
 - system：角色定位与忠实性总纲；
 - trait_rules：性格标签"标签 + 原文证据 + 行为化描述"写作法；
 - speech_rules：说话风格五要素 + 示例台词；
 - boundary_rules：知识边界与禁编造约束；
-- playability_rules：is_player_playable 判断准则。
+- playability_rules：is_player_playable 判断准则；
+- appearance_rules：结构化外貌要素（文生图锚定，v3 新增）；
+- checklist：输出前自检。
+
+v3 变更（方案 branch-montage-dm）：新增 appearance 五字段——运行期 persona
+无关但文生图必需；与 character-type 提示词一样执行「原文可推断、未交代
+如实标注」纪律，外貌编造是教学方法性事故（课文插图是共同记忆）。
 
 输出契约文本与 Pydantic 契约同步，留在代码不落库。
 """
@@ -16,7 +22,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "character_design"
 STAGE = "script_gen"
-VERSION = "v2"
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -66,12 +72,24 @@ PLAYABILITY_RULES = """\
 reason 用一句话写明判断依据。
 """
 
+APPEARANCE_RULES = """\
+【外貌五要素（appearance，文生图锚定）】
+- 五字段全部给出：face（脸型/脸色/神情）、hair（发式发型）、\
+clothing（服装，时代典型款式优先原文）、accessories（配饰与道具，\
+只写原文点名的器物）、build（体格体态）；
+- 只允许原文可推断内容：原文明示的外观（如课文点明的毡帽、项圈、圆脸）\
+必须逐字保留；原文未交代处如实写"原文未交代"；
+- 严禁为画面好看补写细节：具体五官、影视化造型、现代服饰一律不得出现；
+- 配饰只写原文点名的器物——它常是人物命运的符号，多画亦错。
+"""
+
 SELF_CHECK = """\
 【输出前自检】
 - 每个性格标签是否都有原文证据与行为化描述？
 - 说话风格五要素是否齐备、示例台词是否符合身份与时代层？
 - 背景是否有编造原文外经历之处？
 - 知识边界是否显式列出了"不知道"的内容？
+- 外貌五要素是否有编造？未交代处是否如实标注？
 """
 
 DEFAULTS: dict[str, str] = {
@@ -80,6 +98,7 @@ DEFAULTS: dict[str, str] = {
     "speech_rules": SPEECH_RULES,
     "boundary_rules": BOUNDARY_RULES,
     "playability_rules": PLAYABILITY_RULES,
+    "appearance_rules": APPEARANCE_RULES,
     "checklist": SELF_CHECK,
 }
 
@@ -102,7 +121,14 @@ _OUTPUT_CONTRACT = """\
     "knows": ["该角色知道的事（字符串数组）"],
     "not_knows": ["该角色不知道的事（字符串数组）"]
   },
-  "is_player_playable": {"value": 布尔值, "reason": "判断理由（字符串）"}
+  "is_player_playable": {"value": 布尔值, "reason": "判断理由（字符串）"},
+  "appearance": {
+    "face": "脸型/脸色/神情（字符串，未交代处写\"原文未交代\"）",
+    "hair": "发式发型（字符串）",
+    "clothing": "服装（字符串，时代典型款式）",
+    "accessories": "配饰/道具（字符串，只写原文点名器物）",
+    "build": "体格体态（字符串）"
+  }
 }
 
 【JSON 纪律】字符串内部引用原文时，一律使用中文引号「」或''，\
@@ -130,6 +156,8 @@ def build_user_message(
             b.text("boundary_rules"),
             "",
             b.text("playability_rules"),
+            "",
+            b.text("appearance_rules"),
             "",
             "【字段类型契约（必须严格遵守，只输出此 JSON）】",
             _OUTPUT_CONTRACT,

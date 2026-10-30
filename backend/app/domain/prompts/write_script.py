@@ -1,13 +1,20 @@
-"""剧本书写节点 prompt v2（stage1 生成链路；段落落库，输出契约与代码同步）。
+"""剧本书写节点 prompt v3（stage1 生成链路；段落落库，输出契约与代码同步）。
 
 段落构成（section）：
 - role：教学场景定位与忠实性总纲；
 - dialogue_rules：对白写作准则（意图/潜台词/show-don't-tell/口吻区分）；
 - scene_rules：场景开场四要素 + 舞台指示写法；
 - beat_rules：beat 留白与戏剧目标（为角色扮演运行时服务）；
+- branch_rules：伪分支补写判据（v3 新增，主干调用不携带）；
 - checklist：输出前自检（收束段）。
 
-输出契约常量（OUTPUT_CONTRACT）必须与 contracts.script 同步，按裁决留在代码。
+v3 变更（方案 branch-montage-dm）：主干剧本一次生成不变；分支由
+BRANCH_OUTPUT_CONTRACT 与 branch_rules 另起第二遍调用按规格补写
+（单场失败降级为无分支，不拖垮主干）。visual_notes / interaction_point
+由节点侧从划分草稿确定性回填，不依赖主干 LLM 抄写。
+
+输出契约常量（OUTPUT_CONTRACT / BRANCH_OUTPUT_CONTRACT）必须与
+contracts.script 同步，按裁决留在代码。
 本节点不给 few-shot 范例（spec 裁决）：以判据与负面清单引导。
 """
 
@@ -15,7 +22,7 @@ from __future__ import annotations
 
 NODE = "write_script"
 STAGE = "script_gen"
-VERSION = "v2"
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 OUTPUT_CONTRACT = """\
@@ -91,6 +98,18 @@ BEAT_RULES = """\
 - 若输入包含事件划分草稿，其场景/节拍结构与介入点必须遵守。
 """
 
+BRANCH_RULES = """\
+【伪分支补写（branches）】
+依据划分草稿给的分支规格（branch_specs）为对应场景补写分支过场：
+- 每个分支按规格展开为 2-4 个 beat，行为骨架以 beat_outline 为准，\
+participant 不得超规格与规格的参与者名单；
+- 分支 beat 一律非关键事件：不带 evidence_refs，beat_id 在分支内从 1 递增；
+- 分支不得改写关键事件、不得引入原文外人物、不得写成不同结局——\
+它是"主干预演"，最后必须自然接回主线下一场；
+- 用 trigger_option 的语义生成玩家看到的选项文案（label），保留 "如果玩家"\
+的选择语义但按中学生的口吻润顺。
+"""
+
 SELF_CHECK = """\
 【输出前自检】
 - 关键 beat 的顺序是否与【关键事件】一致、evidence_refs 是否齐备？
@@ -104,5 +123,26 @@ DEFAULTS: dict[str, str] = {
     "dialogue_rules": DIALOGUE_RULES,
     "scene_rules": SCENE_RULES,
     "beat_rules": BEAT_RULES,
+    "branch_rules": BRANCH_RULES,
     "checklist": SELF_CHECK,
 }
+
+BRANCH_OUTPUT_CONTRACT = """\
+【分支补写输出契约（必须严格遵守，只输出此 JSON）】
+{
+  "branch_id": "与规格一致的分支号（字符串，b1/b2）",
+  "label": "玩家看到的选项文案（字符串，一句话）",
+  "title": "分支过场标题（字符串）",
+  "participants": ["分支中出现的人物名"],
+  "beats": [
+    {"beat_id": 整数（分支内从 1 递增）, "description": "字符串",
+     "is_key_event": false, "evidence_refs": []}
+  ],
+  "visual_notes": {
+    "era": "字符串或空串", "location": "字符串", "time_of_day": "字符串",
+    "weather": "字符串", "mood": "字符串"
+  } 或 null
+}
+
+【JSON 纪律】同主干：字符串内部用中文引号，输出必须是合法 JSON。
+"""

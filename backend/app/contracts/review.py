@@ -17,7 +17,12 @@ from pydantic import Field
 
 from app.contracts.base import ContractModel, VersionedContract
 from app.contracts.material import ClaimRef, SourceConflict, WebEvidence
-from app.contracts.script import CharacterProfile, ScriptPackage
+from app.contracts.script import (
+    CharacterProfile,
+    InteractionPoint,  # noqa: F401 - re-export（Scene 亦引用）
+    ScriptPackage,
+    VisualNotes,
+)
 
 # 闸门位置：materials=素材收集后；pre_write=人物+场景划分后（write_script 前）；
 # final=final_audit 总审通过后（终审，可打回重写）。
@@ -48,16 +53,23 @@ class MaterialDossier(ContractModel):
     conflicts: list[SourceConflict] = Field(default_factory=list)
 
 
-class InteractionPoint(ContractModel):
-    """场景末尾的玩家介入点（drama manager 心智，spec 裁决）。
+# InteractionPoint 定义在 contracts.script（Scene 也引用它）；这里经 import
+# re-export 保持既有导入路径（`from app.contracts.review import InteractionPoint`）。
+# Scene 引用 InteractionPoint 后它必须随剧本包一起被提升（伪分支挂接的前提）。
 
-    为角色扮演运行时预留玩家介入空间：关键事件不可被介入改变，
-    介入只发生在 must_not_change 之外的节拍间隙。
+class BranchSpec(ContractModel):
+    """划分草稿的分支规格（divide_events v3 产出，write_script 补写成 BranchScene）。
+
+    只给规格不给成文：trigger_option 是该介入点的「典型玩家选择」一句话，
+    不预设玩家必须这么说；value_turn 是分支内的 A→B 微转折（不得是主线
+    关键转折，主线转折受 must_not_change 保护）。
     """
 
-    player_role_hint: str = ""
-    what_player_can_do: str = Field(min_length=1)
-    must_not_change: list[int] = Field(default_factory=list)
+    branch_id: str = Field(pattern=r"^b[1-9][0-9]*$")
+    trigger_option: str = Field(min_length=1)
+    value_turn: str = Field(min_length=1)
+    participants: list[str] = Field(default_factory=list)
+    beat_outline: list[str] = Field(min_length=1)
 
 
 class BeatDraft(ContractModel):
@@ -75,6 +87,10 @@ class SceneDraft(ContractModel):
     participants: list[str] = Field(default_factory=list)
     beats: list[BeatDraft] = Field(min_length=1)
     interaction_point: InteractionPoint | None = None
+    # 场景视觉锚点（文生图槽位：时代/地点/时段/天气/氛围，只写原文可推断）。
+    visual_notes: VisualNotes | None = None
+    # 伪分支规格（divide_events v3）：只在 interaction_point 非空的场景产出。
+    branches: list[BranchSpec] = Field(default_factory=list)
 
 
 class EventDivisionDraft(ContractModel):
@@ -115,7 +131,7 @@ class AssetOp(VersionedContract):
 
     op: Literal["remove", "regenerate", "search_replace", "bind_upload"]
     subject_key: str = Field(min_length=1)
-    kind: Literal["background", "avatar", "fullbody"]
+    kind: Literal["background", "avatar", "fullbody", "scene_montage"]
     asset_id: uuid.UUID | None = None
 
 
@@ -124,11 +140,22 @@ def validate_subject_key(subject_key: str) -> str:
 
     契约层没有对 AssetOp.subject_key 加 pattern——workflow 内部键是可信的，
     校验只需卡在系统边界（multipart 表单进不了 Pydantic 模型）。
+    分支场景键 `scene:{int}::branch:{branch_id}`（伪分支的独立配图槽位，
+    方案 branch-montage-dm §3）与主干键一样合法。
     """
     if subject_key.startswith("scene:"):
         rest = subject_key.split(":", 1)[1]
         if rest.isdigit() and int(rest) >= 1:
             return subject_key
+        if "::" in rest:
+            scene_part, _, branch_part = rest.partition("::")
+            if (
+                scene_part.isdigit()
+                and int(scene_part) >= 1
+                and branch_part.startswith("branch:")
+                and len(branch_part) > len("branch:")
+            ):
+                return subject_key
     elif subject_key.startswith("character:") and len(subject_key) > len("character:"):
         return subject_key
     raise ValueError(f"bad subject_key: {subject_key!r}")
@@ -157,6 +184,7 @@ __all__ = [
     "CharacterNote",
     "MaterialDossier",
     "InteractionPoint",
+    "BranchSpec",
     "BeatDraft",
     "SceneDraft",
     "EventDivisionDraft",

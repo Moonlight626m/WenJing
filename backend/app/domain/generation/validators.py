@@ -16,6 +16,7 @@ VALIDATORS: tuple[str, ...] = (
     "characters",
     "event_order",
     "teaching",
+    "branches",
 )
 
 
@@ -110,12 +111,45 @@ def validate_teaching(pkg: ScriptPackage) -> list[str]:
     return issues
 
 
+def validate_branches(pkg: ScriptPackage, analysis: TextAnalysis) -> list[str]:
+    """伪分支校验（branch-montage-dm §4）：分支不得触碰关键事件大纲。
+
+    只查结构：branch_id 唯一、分支 beat 非关键事件、参与者/分支人物取自
+    原文人物、分支场景必须有介入点。value_turn 与结局忠实性属于语义层，
+    由 doubter v3 的 branch_audit_rules 承担，此处不做文本判断。
+    """
+    issues: list[str] = []
+    source_names = {c.name for c in analysis.characters}
+    ending_beat = pkg.stage2_ending_beat_id
+    for scene in pkg.scenes:
+        branch_ids = [b.branch_id for b in scene.branches]
+        if len(set(branch_ids)) != len(branch_ids):
+            issues.append(f"scene {scene.scene_id} duplicate branch ids")
+        if scene.branches and scene.interaction_point is None:
+            issues.append(f"scene {scene.scene_id} has branches without interaction_point")
+        for branch in scene.branches:
+            for p in branch.participants:
+                if p not in source_names:
+                    issues.append(f"branch {branch.branch_id} participant not in source: {p}")
+            if not branch.beats:
+                issues.append(f"branch {branch.branch_id} has no beats")
+            for beat in branch.beats:
+                if beat.is_key_event:
+                    issues.append(f"branch {branch.branch_id} beat is_key_event not allowed")
+                if beat.evidence_refs:
+                    issues.append(f"branch {branch.branch_id} beat carries evidence_refs")
+                if beat.beat_id == ending_beat:
+                    issues.append(f"branch {branch.branch_id} beat_id collides with ending")
+    return issues
+
+
 def validate_all(pkg: ScriptPackage, analysis: TextAnalysis) -> dict[str, list[str]]:
-    """运行全部五类校验，返回 {validator_name: issues}（空 issues = 通过）。"""
+    """运行全部六类校验，返回 {validator_name: issues}（空 issues = 通过）。"""
     return {
         "structure": validate_structure(pkg),
         "evidence": validate_evidence(pkg),
         "characters": validate_characters(pkg, analysis),
         "event_order": validate_event_order(pkg, analysis),
         "teaching": validate_teaching(pkg),
+        "branches": validate_branches(pkg, analysis),
     }

@@ -1,11 +1,17 @@
-"""事件/情景划分节点 prompt v2（prompt 落库：段落经 PromptBundle 取值）。
+"""事件/情景划分节点 prompt v3（prompt 落库：段落经 PromptBundle 取值）。
 
 段落构成（section）：
 - system：角色定位与忠实性总纲；
 - scene_rules：场景划分判据（价值转折 / 切换点）；
 - beat_rules：节拍粒度判据（行为/反应交换）；
 - interaction_rules：介入点写法（drama manager 心智，为运行时留白）；
+- visual_rules：场景视觉锚点（visual_notes，文生图槽位，只写原文可推断）；
+- branch_rules：伪分支规格（branch_specs，挂在介入点上的替代过场）；
 - checklist：输出前自检。
+
+v3 变更（方案 branch-montage-dm）：新增 visual_notes 与 branches 两个产出维度；
+分支只在 interaction_point 非空的场景规格化，write_script 负责补写成文。
+改判据必须升 VERSION：DB 覆盖行按 version 匹配，旧行不会回退到新默认。
 
 输出契约文本与 Pydantic 契约同步，留在代码不落库。
 """
@@ -17,7 +23,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "divide_events"
 STAGE = "script_gen"
-VERSION = "v2"
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -61,12 +67,37 @@ INTERACTION_RULES = """\
 - 介入点不是表演指令：只描述参与空间，不预设玩家台词。
 """
 
+VISUAL_RULES = """\
+【场景视觉锚点（visual_notes）】
+- 每个场景给出 visual_notes：era（时代与服饰/器物基调）、location（地点）、\
+time_of_day（时段）、weather（天气，可空）、mood（画面氛围）；
+- 只写原文可推断的环境信息；未交代处如实写"原文未交代"或留空字符串，\
+严禁为画面丰富补编原文外的细节；
+- visual_notes 只描画布不含人物行为——人物动作留在 beat 描述里。
+"""
+
+BRANCH_RULES = """\
+【伪分支规格（branches）——挂在介入点上的替代过场】
+本剧本支持珊瑚形伪分支：玩家在场景末尾的介入点选择后，播放一段预设的\
+替代过场并回归主线下一场，结局固定不变。
+- 只在 interaction_point 非空的场景给出 1-2 个分支规格；其余场景 branches 置为空数组；
+- branch_id 场景内稳定递增（"b1"、"b2"）；
+- trigger_option：该介入点的典型玩家选择，写成一句话（"如果玩家……"），\
+不预设玩家必须原话这么说；玩家在运行时的其他输入由运行时裁决，分支只是主干预演；
+- value_turn：分支内的人物处境/认知 A→B 微转折；不得是主线关键转折的换皮——\
+must_not_change 列出的关键事件与课文结局在分支里同样不可改变；
+- participants 只能取自该场景参与者；
+- beat_outline 2-4 条：分支过场的行为骨架，最后一条要能自然接回主线下一场；
+- 分支不是第二结局：不得引入原文不存在的人物、不得写成不同结局。
+"""
+
 SELF_CHECK = """\
 【输出前自检】
 - 每个场景是否都有一次价值转折？每个 beat 是否都是完整的行为/反应交换？
 - 关键事件是否全覆盖、顺序与原文一致、key_event_order 是否为合法整数？
 - 参与人物名是否全部取自【人物列表】？
 - 有玩家可参与的场景是否已给出介入点？
+- 有介入点的场景是否给了分支规格？分支是否避开了关键事件与结局？
 """
 
 DEFAULTS: dict[str, str] = {
@@ -74,6 +105,8 @@ DEFAULTS: dict[str, str] = {
     "scene_rules": SCENE_RULES,
     "beat_rules": BEAT_RULES,
     "interaction_rules": INTERACTION_RULES,
+    "visual_rules": VISUAL_RULES,
+    "branch_rules": BRANCH_RULES,
     "checklist": SELF_CHECK,
 }
 
@@ -94,7 +127,23 @@ _OUTPUT_CONTRACT = """\
         "player_role_hint": "适合玩家扮演的人物名（字符串，可为空）",
         "what_player_can_do": "玩家在此刻可做的事（字符串）",
         "must_not_change": [介入不得影响的关键事件序号（整数数组，可为空）]
-      } 或 null
+      } 或 null,
+      "visual_notes": {
+        "era": "时代与服饰/器物基调（字符串，未交代处写\"原文未交代\"或空串）",
+        "location": "地点（字符串）",
+        "time_of_day": "时段（字符串）",
+        "weather": "天气（字符串，可空）",
+        "mood": "画面氛围（字符串）"
+      } 或 null,
+      "branches": [
+        {
+          "branch_id": "场景内唯一，格式 b1/b2（字符串）",
+          "trigger_option": "典型玩家选择的一句话（字符串）",
+          "value_turn": "分支内 A→B 微转折（字符串）",
+          "participants": ["分支中出现的人物名（取自该场景参与者）"],
+          "beat_outline": ["分支过场的行为骨架（字符串数组，2-4 条，末条接回主线）"]
+        }
+      ]（无介入点的场景为空数组）
     }
   ]
 }"""
@@ -118,6 +167,10 @@ def build_user_message(
         "",
         b.text("interaction_rules"),
         "",
+        b.text("visual_rules"),
+        "",
+        b.text("branch_rules"),
+        "",
         "【字段类型契约（必须严格遵守，只输出此 JSON）】",
         _OUTPUT_CONTRACT,
         "【硬性约束】",
@@ -126,6 +179,9 @@ def build_user_message(
         "- 关键 beat 的先后顺序必须与【关键事件】顺序一致；",
         "- interaction_point 是对象或 null，严禁写成字符串；",
         "- 参与人物名只能取自【人物列表】。",
+        "- branches 只出现在 interaction_point 非空的场景，branch_id 用 "
+        "b1/b2 补齐编号，严禁留空字符串；",
+        "- 分支规格不得包含 must_not_change 列出的关键事件，不得改写课文结局。",
         "",
         b.text("checklist"),
         "",

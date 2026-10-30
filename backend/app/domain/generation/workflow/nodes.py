@@ -23,8 +23,15 @@ from pydantic import ValidationError
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
 from app.contracts.generation import DoubterIssue, DoubterVerdict
-from app.contracts.review import AssetOp, GateEdits
-from app.contracts.script import AssetCredit, AssetRef, CharacterProfile, ScriptPackage
+from app.contracts.review import AssetOp, BranchSpec, GateEdits
+from app.contracts.script import (
+    AssetCredit,
+    AssetRef,
+    BranchScene,
+    CharacterProfile,
+    Scene,
+    ScriptPackage,
+)
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.game.media import (
     AssetKind,
@@ -46,8 +53,14 @@ from app.domain.generation.workflow.types import (
     MaterialDossier,
 )
 from app.domain.llm import LLMService
-from app.domain.prompts import character_design, collect_materials, divide_events, doubter
-from app.domain.prompts.bundle import PromptBundle
+from app.domain.prompts import (
+    character_design,
+    collect_materials,
+    divide_events,
+    doubter,
+    write_script,
+)
+from app.domain.prompts.bundle import PromptBundle, default_bundle
 from app.domain.prompts.defaults import STAGE as SCRIPT_GEN_STAGE
 from app.domain.prompts.manager import PromptManager
 from app.infrastructure.errx import codes, new
@@ -87,6 +100,70 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
     )
     lines = [f"- {_format_issue(i)}" for i in ordered]
     return "以下问题必须逐条修正：\n" + "\n".join(lines)
+
+
+def _backfill_scenes(
+    package: ScriptPackage, division: EventDivisionDraft
+) -> ScriptPackage:
+    """从划分草稿确定性回填 visual_notes / interaction_point（branch-montage-dm §4）。
+
+    主干 write_script 的输出契约不含这两个生成字段——它们随介入点/分支语义
+    由 divide_events 集中设计；write_script 只负责场景叙事。回填按草稿序号
+    对齐 package.scenes；LLM 若自己产出了 non-None 字段则不覆盖（尊重上游）。
+    """
+    new_scenes: list[Scene] = []
+    for i, scene in enumerate(package.scenes, start=1):
+        draft = division.scenes[i - 1] if i - 1 < len(division.scenes) else None
+        if draft is None:
+            new_scenes.append(scene)
+            continue
+        updates: dict[str, Any] = {}
+        if scene.visual_notes is None and draft.visual_notes is not None:
+            updates["visual_notes"] = draft.visual_notes
+        if scene.interaction_point is None and draft.interaction_point is not None:
+            updates["interaction_point"] = draft.interaction_point
+        new_scenes.append(scene.model_copy(update=updates) if updates else scene)
+    return package.model_copy(update={"scenes": new_scenes})
+
+
+def _branch_prompt(
+    scene: Scene,
+    spec: BranchSpec,
+    characters: list[CharacterProfile],
+    bundle: PromptBundle | None = None,
+) -> str:
+    """分支补写 prompt（write_script v3 第二遍调用）：单分支规格 → BranchScene。"""
+    b = bundle if bundle is not None else default_bundle(
+        SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION, write_script.DEFAULTS
+    )
+    lines = [
+        f"[prompt_version={write_script.PROMPT_VERSION}]",
+        b.text("role"),
+        "",
+        b.text("dialogue_rules"),
+        "",
+        b.text("branch_rules"),
+        "",
+        write_script.BRANCH_OUTPUT_CONTRACT,
+        "【硬性约束】",
+        "- branch_id 只输出规格给定值；beat 的 is_key_event 一律 false、evidence_refs 空数组；",
+        "- 分支不得包含关键事件、不得改变课文结局；末拍要能自然接回主线下一场；",
+        "- 人物名只能取自下方【登场人物】与规格的参与者名单。",
+        "",
+        b.text("checklist"),
+        "",
+        "【所在主场景】",
+        f"scene_id={scene.scene_id}：{scene.title}",
+        "主场景节拍：" + "；".join(beat.description for beat in scene.beats),
+        "",
+        "【分支规格】",
+        spec.model_dump_json(exclude={"schema_version"}, by_alias=True),
+        "",
+        "【登场人物】",
+    ]
+    for c in characters:
+        lines.append(f"- {c.name}：{c.public_background}")
+    return "\n".join(lines)
 
 
 def _asset_ref_of(asset_id: uuid.UUID, kind: AssetKind) -> AssetRef:
@@ -972,6 +1049,43 @@ class WorkflowNodes:
                             ),
                         },
                     )
+            # 伪分支规格校验（branch-montage-dm §4）：branch_id 场景内唯一、
+            # 参与者不越人物表、只有介入点场景可挂分支。
+            branch_ids: list[str] = [b.branch_id for b in scene.branches]
+            if len(set(branch_ids)) != len(branch_ids):
+                raise new(
+                    codes.LLM_OUTPUT_PARSE_FAILED,
+                    extra={
+                        "target": "EventDivisionDraft",
+                        "reason": f"场景「{scene.title}」branch_id 重复 {branch_ids}",
+                    },
+                )
+            if scene.branches and ip is None:
+                raise new(
+                    codes.LLM_OUTPUT_PARSE_FAILED,
+                    extra={
+                        "target": "EventDivisionDraft",
+                        "reason": f"场景「{scene.title}」无介入点却挂了分支规格",
+                    },
+                )
+            for spec in scene.branches:
+                ghosts = [p for p in spec.participants if p not in known_names]
+                if ghosts:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": f"分支 {spec.branch_id} 引用未知人物 {ghosts}",
+                        },
+                    )
+                if not spec.beat_outline:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": f"分支 {spec.branch_id} beat_outline 为空",
+                        },
+                    )
 
     # ===== 人物设定（Send 并行）=====
 
@@ -1100,6 +1214,14 @@ class WorkflowNodes:
             on_step=lambda text: self._report("write_script", text),
         )
         package = outcome.script_package
+        # 视觉锚点与介入点确定性回填（branch-montage-dm §4）：主干 LLM 只按
+        # 场景结构写作，visual_notes / interaction_point 以划分草稿为准——
+        # 不依赖模型记得抄写。回填只在该场景没有产出时补；教师编辑过的
+        # package 走 final_gate 闸门不经过这里。
+        if division is not None:
+            package = _backfill_scenes(package, division)
+            # 伪分支第二遍补写：单分支失败降级为无分支，不拖垮已通过校验的主干。
+            package = await self._write_branches(package, division, state)
         logger.info(
             "[script-gen][write_script] 剧本完成 scenes=%d beats=%d characters=%d",
             len(package.scenes),
@@ -1119,6 +1241,86 @@ class WorkflowNodes:
             "audit_feedback": None,
         }
 
+    async def _write_branches(
+        self,
+        package: ScriptPackage,
+        division: EventDivisionDraft,
+        state: WorkflowState,
+    ) -> ScriptPackage:
+        """分支第二遍补写（branch-montage-dm §4）。
+
+        每个规格一次 LLM 调用（UsagePurpose.SCRIPT_WRITING）：输出契约是
+        单个 BranchScene 形状（write_script.BRANCH_OUTPUT_CONTRACT），按
+        branch_id 合并进对应 Scene.branches；解析失败/校验不过只记
+        branch_write_failed，主干剧本照常产出——分支是附加内容，不是必要条件。
+        """
+        scene_by_id = {s.scene_id: s for s in package.scenes}
+        work: list[tuple[int, BranchSpec]] = []
+        # 划分草稿场景按序号对齐 package.scenes（write_script 遵守其结构）。
+        for i, draft in enumerate(division.scenes, start=1):
+            scene = scene_by_id.get(i)
+            if scene is None:
+                continue
+            for spec in draft.branches:
+                work.append((i, spec))
+        if not work:
+            return package
+        written: dict[tuple[int, str], BranchScene] = {}
+        for scene_no, spec in work:
+            try:
+                branch = await self._write_one_branch(
+                    scene_by_id[scene_no], spec, state
+                )
+                if branch.branch_id == spec.branch_id:
+                    written[(scene_no, spec.branch_id)] = branch
+                else:
+                    logger.warning(
+                        "[script-gen][write_branches] branch_id mismatch spec=%s"
+                        " got=%s, skipped",
+                        spec.branch_id,
+                        branch.branch_id,
+                    )
+            except Exception as exc:  # noqa: BLE001 - 单分支失败降级为无分支
+                logger.warning(
+                    "[script-gen][write_branches] branch_write_failed scene=%s"
+                    " spec=%s reason=%s",
+                    scene_no,
+                    spec.branch_id,
+                    str(exc).replace("\n", " ")[:200],
+                )
+        if not written:
+            return package
+        new_scenes = []
+        for scene in package.scenes:
+            added = [b for (sid, _), b in written.items() if sid == scene.scene_id]
+            if added:
+                new_scenes.append(
+                    scene.model_copy(update={"branches": list(scene.branches) + added})
+                )
+            else:
+                new_scenes.append(scene)
+        return package.model_copy(update={"scenes": new_scenes})
+
+    async def _write_one_branch(
+        self, scene: Scene, spec: BranchSpec, state: WorkflowState
+    ) -> BranchScene:
+        """单个分支规格 → BranchScene；解析重试沿用 _chat_parsed 机制。"""
+        characters = state.get("merged_profiles") or []
+        prompt = _branch_prompt(scene, spec, characters, await self._bundle(write_script))
+
+        def _parse(raw: str) -> BranchScene:
+            data = json.loads(extract_json(raw))
+            data["branch_id"] = spec.branch_id
+            return BranchScene.model_validate(data)
+
+        return await self._chat_parsed(
+            prompt,
+            state.get("session_id", ""),
+            UsagePurpose.SCRIPT_WRITING,
+            parse=_parse,
+            target="BranchScene",
+        )
+
     # ===== doubter 总审 =====
 
     async def final_audit(self, state: WorkflowState) -> dict[str, Any]:
@@ -1128,7 +1330,8 @@ class WorkflowNodes:
         logger.info("[script-gen][final_audit] auditing script...")
         prompt = doubter.build_user_message(
             node_name="write_script",
-            artifact_schema_hint="ScriptPackage{title, characters, scenes+beats, teaching_focus,"
+            artifact_schema_hint="ScriptPackage{title, characters(appearance), scenes+beats"
+            "(visual_notes, interaction_point, branches), teaching_focus,"
             " playable_roles, stage2_ending_beat_id}",
             artifact_json=package.model_dump_json(),
             source_digest=self._source_digest(state),

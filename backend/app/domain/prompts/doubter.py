@@ -1,11 +1,17 @@
-"""doubter 节点 prompt v2（prompt 落库；素材质检 / 终审两处复用）。
+"""doubter 节点 prompt v3（prompt 落库；素材质检 / 终审两处复用）。
 
 段落构成（section）：
 - system：角色定位（严苛但只对事实负责的质疑者）；
 - procedure：四步审核流程（拆解 → 取证 → 判定 → 汇总）；
 - baseline：事实基准唯一性条款（防幻觉式审核）；
 - negative_list：负面清单（禁风格意见、禁笼统评价）；
+- branch_audit_rules：伪分支的忠实性审核（v3 新增，终审时生效）；
 - checklist：输出前自检。
+
+v3 变更（方案 branch-montage-dm）：剧本出现 branches/visual_notes/appearance
+后，终审把这批新产物的忠实性纳入审核面——分支不得破坏关键事件与结局、
+不得引入原文外人物；visual_notes/appearance 的「原文未交代」如实标注也
+按「事实以原文为准」审查。
 
 裁决保留标准（spec 裁决）：只挑事实性错误；教育红线/年龄适宜性不在本节点。
 输出契约文本（DoubterVerdict 结构）与 Pydantic 契约同步，留在代码不落库。
@@ -17,7 +23,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "doubter"
 STAGE = "script_gen"
-VERSION = "v2"
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -54,11 +60,23 @@ NEGATIVE_LIST = """\
 没有发现事实错误时，直接输出 pass，不要为了"显得尽责"而勉强凑 issue。
 """
 
+BRANCH_AUDIT_RULES = """\
+【伪分支与视觉锚点的忠实性审核（产物含 branches 时适用）】
+- 逐个分支核对：是否包含 must_not_change 保护的关键事件？是否改写课文\
+结局（分支写成第二结局即 reject）？是否引入原文依据摘要之外的人物或\
+时代错位器物/服饰？
+- 分支的 value_turn 是否只是主线关键转折的换皮（换个说法复述主线事件）？\
+是则要求改为介入点之外的独立微转折；
+- visual_notes / appearance 的「原文未交代」标注是否符合：原文依据摘要\
+没有的细节被写成确定描述时，属于编造情节类 issue。
+"""
+
 SELF_CHECK = """\
 【输出前自检】
 - 每条 issue 是否都能指出产物与原文依据摘要的具体冲突？
 - 是否混入了风格类意见或"无依据=有罪"的错杀？
 - reject 时是否至少有一条 must_fix？
+- 产物含 branches 时是否逐个按分支忠实性规则核对？
 """
 
 DEFAULTS: dict[str, str] = {
@@ -66,6 +84,7 @@ DEFAULTS: dict[str, str] = {
     "procedure": PROCEDURE,
     "baseline": BASELINE,
     "negative_list": NEGATIVE_LIST,
+    "branch_audit_rules": BRANCH_AUDIT_RULES,
     "checklist": SELF_CHECK,
 }
 
@@ -114,6 +133,8 @@ def build_user_message(
             _OUTPUT_CONTRACT,
             "",
             b.text("negative_list"),
+            "",
+            b.text("branch_audit_rules"),
             "",
             b.text("checklist"),
             "",

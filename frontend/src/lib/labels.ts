@@ -87,6 +87,7 @@ export const USAGE_PURPOSE_LABELS: Record<UsagePurpose, string> = {
   character_design: "人物设定",
   script_writing: "剧本书写",
   image_review: "配图审核",
+  scene_prompt: "画师转写",
 };
 
 export function usagePurposeLabel(purpose: UsagePurpose): string {

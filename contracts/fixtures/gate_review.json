@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.7.0",
+  "schema_version": "2.8.0",
   "gate": "pre_write",
   "dossier": null,
   "evidence": [],
@@ -42,15 +42,44 @@
           "must_not_change": [
             3
           ]
-        }
+        },
+        "visual_notes": {
+          "era": "当代，县城民居巷口",
+          "location": "家门口的巷子",
+          "time_of_day": "黄昏",
+          "weather": "",
+          "mood": "不舍与愧疚交织"
+        },
+        "branches": [
+          {
+            "branch_id": "b1",
+            "trigger_option": "如果玩家追出几步，在巷口向母亲喊一声\"我走了\"",
+            "value_turn": "愧疚 → 强作轻松",
+            "participants": [
+              "我",
+              "母亲"
+            ],
+            "beat_outline": [
+              "我追到巷口回头喊话，母亲倚门应声",
+              "母亲叮嘱最后一句，我转身抹了下眼睛"
+            ]
+          }
+        ]
       }
     ]
   },
   "profiles": [
     {
-      "schema_version": "2.7.0",
+      "schema_version": "2.8.0",
       "name": "我",
       "public_background": "离家买药的青年",
+      "appearance": {
+        "face": "圆润的青年面庞",
+        "hair": "短发",
+        "clothing": "旧棉袄",
+        "accessories": "挎一个蓝布包袱",
+        "build": "瘦高"
+      },
       "personality_traits": [
         {
           "label": "重情",
@@ -73,7 +102,7 @@
       }
     },
     {
-      "schema_version": "2.7.0",
+      "schema_version": "2.8.0",
       "name": "母亲",
       "public_background": "病中的母亲",
       "personality_traits": [
@@ -109,11 +138,11 @@
     }
   ],
   "package": {
-    "schema_version": "2.7.0",
+    "schema_version": "2.8.0",
     "title": "冬日买药",
     "characters": [
       {
-        "schema_version": "2.7.0",
+        "schema_version": "2.8.0",
         "name": "我",
         "public_background": "离家买药的青年",
         "personality_traits": [

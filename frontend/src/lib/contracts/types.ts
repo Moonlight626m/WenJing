@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.7.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.8.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -61,7 +61,9 @@ export type EventType =
   | "agent_reactions_done"
   | "stage_transitioned"
   | "rollback_executed"
-  | "asset_ready";
+  | "asset_ready"
+  | "branch_taken"
+  | "branch_completed";
 
 export type ErrorDomain =
   | "input"
@@ -251,7 +253,8 @@ export type UsagePurpose =
   | "divide_events"
   | "character_design"
   | "script_writing"
-  | "image_review";
+  | "image_review"
+  | "scene_prompt";
 
 export interface UsageAggregateRow {
   schema_version: string;
@@ -405,7 +408,7 @@ export interface Playability {
 /** 稳定资产引用（ADR-0005 §3）：URL-free，访问经鉴权端点签发预签名 URL。 */
 export interface AssetRef {
   asset_id: string;
-  kind: "background" | "avatar" | "fullbody";
+  kind: "background" | "avatar" | "fullbody" | "scene_montage";
   status: "pending" | "ready" | "failed";
 }
 
@@ -439,9 +442,19 @@ export interface TranscribeResponse {
   duration_ms: number;
 }
 
+/** 结构化外貌要素（文生图锚定）：只写原文可推断内容，未交代处如实标注。 */
+export interface Appearance {
+  face: string;
+  hair: string;
+  clothing: string;
+  accessories: string;
+  build: string;
+}
+
 export interface CharacterProfile {
   name: string;
   public_background: string;
+  appearance?: Appearance | null;
   personality_traits: CharacterTrait[];
   speech_style?: SpeechStyle | null;
   knowledge_boundary: KnowledgeBoundary;
@@ -459,11 +472,43 @@ export interface Beat {
   evidence_refs: EvidenceRef[];
 }
 
+/** 场景视觉锚点（文生图槽位：时代/地点/时段/天气/氛围）。 */
+export interface VisualNotes {
+  era: string;
+  location: string;
+  time_of_day: string;
+  weather: string;
+  mood: string;
+}
+
+/** 场景末尾的玩家介入点（真相源 contracts.script.Scene；此前生成后被丢弃）。 */
+export interface InteractionPoint {
+  player_role_hint: string;
+  what_player_can_do: string;
+  must_not_change: number[];
+}
+
+/** 伪分支场景：挂主干场景介入点的替代过场，播完并回主干，结局固定。 */
+export interface BranchScene {
+  branch_id: string;
+  label: string;
+  title: string;
+  participants: string[];
+  beats: Beat[];
+  visual_notes?: VisualNotes | null;
+  anchor_beat_id?: number | null;
+  background_asset?: AssetRef | null;
+  background_credit?: AssetCredit | null;
+}
+
 export interface Scene {
   scene_id: number;
   title: string;
   participants: string[];
   beats: Beat[];
+  visual_notes?: VisualNotes | null;
+  interaction_point?: InteractionPoint | null;
+  branches?: BranchScene[];
   background_asset?: AssetRef | null;
   background_credit?: AssetCredit | null;
 }
@@ -524,11 +569,22 @@ export interface BeatDraft {
   key_event_order: number | null;
 }
 
+/** 分支规格（divide_events v3 产出，write_script 补写成 BranchScene）。 */
+export interface BranchSpec {
+  branch_id: string;
+  trigger_option: string;
+  value_turn: string;
+  participants: string[];
+  beat_outline: string[];
+}
+
 export interface SceneDraft {
   title: string;
   participants: string[];
   beats: BeatDraft[];
   interaction_point?: InteractionPoint | null;
+  visual_notes?: VisualNotes | null;
+  branches?: BranchSpec[];
 }
 
 export interface EventDivisionDraft {
@@ -550,7 +606,7 @@ export interface AssetOp {
   schema_version: string;
   op: "remove" | "regenerate" | "search_replace" | "bind_upload";
   subject_key: string;
-  kind: "background" | "avatar" | "fullbody";
+  kind: "background" | "avatar" | "fullbody" | "scene_montage";
   asset_id?: string | null;
 }
 

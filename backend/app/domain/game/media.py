@@ -41,11 +41,17 @@ logger = logging.getLogger(__name__)
 
 
 class AssetKind(StrEnum):
-    """资产类别：场景背景 / 角色头像 / 立绘（游玩内只用背景，其余详情页）。"""
+    """资产类别：场景配图 / 角色头像 / 立绘 / 完整场面图。
+
+    `SCENE_MONTAGE`（方案 branch-montage-dm）：背景+在场人物+行为一图的
+    完整场面插画——游玩内的主视觉（推翻 ADR-0005 §1「不显示人物」随 ADR
+    修订走）；BACKGROUND 保留给旧脚本与纯空镜背景。尾巴段见 `_KIND_TAILS`。
+    """
 
     BACKGROUND = "background"
     AVATAR = "avatar"
     FULLBODY = "fullbody"
+    SCENE_MONTAGE = "scene_montage"
 
 
 class AssetStatus(StrEnum):
@@ -62,6 +68,7 @@ ASSET_SIZES: dict[AssetKind, tuple[int, int]] = {
     AssetKind.BACKGROUND: (1280, 720),
     AssetKind.AVATAR: (512, 512),
     AssetKind.FULLBODY: (768, 1024),
+    AssetKind.SCENE_MONTAGE: (1280, 720),
 }
 
 
@@ -418,11 +425,13 @@ DEFAULT_STYLE = "写实"
 #: 失败原因入库前的长度上限（`assets.reason` / `asset_jobs.reason` 同宽）。
 _REASON_MAX_CHARS = 200
 # 每个 kind 的构图尾巴。FULLBODY **不能**套背景那条——否则立绘会被要求
-# 「画面中不出现任何人物」，永远生成不出角色（#47 评审发现）。
+# 「画面中不出现任何人物」，永远生成不出角色（#47 评审发现）；
+# SCENE_MONTAGE 同理必须**含**人在场（完整场面图的语义核心）。
 _KIND_TAILS: dict[AssetKind, str] = {
     AssetKind.BACKGROUND: "环境插画，画面中不出现任何人物，无文字无 logo",
     AssetKind.AVATAR: "角色头像，半身正面，纯色简洁背景，无文字无 logo",
     AssetKind.FULLBODY: "角色全身立绘，直立全身，简洁背景，无文字无 logo",
+    AssetKind.SCENE_MONTAGE: "完整场面插画，包含在场人物及其动作，无文字无 logo",
 }
 _DEFAULT_SEARCH_LIMIT = 4
 

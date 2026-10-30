@@ -1,11 +1,49 @@
 {
   "$defs": {
+    "Appearance": {
+      "additionalProperties": false,
+      "description": "结构化外貌要素（文生图锚定）：只写原文可推断内容。\n\n未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——\n严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.8.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "face": {
+          "default": "",
+          "title": "Face",
+          "type": "string"
+        },
+        "hair": {
+          "default": "",
+          "title": "Hair",
+          "type": "string"
+        },
+        "clothing": {
+          "default": "",
+          "title": "Clothing",
+          "type": "string"
+        },
+        "accessories": {
+          "default": "",
+          "title": "Accessories",
+          "type": "string"
+        },
+        "build": {
+          "default": "",
+          "title": "Build",
+          "type": "string"
+        }
+      },
+      "title": "Appearance",
+      "type": "object"
+    },
     "AssetCredit": {
       "additionalProperties": false,
       "description": "素材署名/许可元数据（ADR-0005 §6）：供教师端展示与学生端折叠署名。\n\n默认仅采用免署名许可（CC0/PD）；采用需署名许可时向最终用户展示。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -38,7 +76,7 @@
       "description": "教师对单个配图槽位的操作（#49）：随 resume 经 final_gate 生效。\n\n- `subject_key`：配图主体键（#48 命名）——`scene:{scene_id}` /\n  `character:{name}`，与 AssetRef 所在槽位一一对应；\n- `asset_id`：仅 `bind_upload` 用（上传端点先落库、resume 再绑定）；\n  其余操作按 subject_key 定位槽位，忽略该字段。\n\n生效语义（节点侧实现）：\n- `remove`：清空槽位 AssetRef（资产行留存；ADR-0005 明确删除/回收暂不立项）；\n- `regenerate`：重新配图（绕开该主体的既有资产缓存与同字节检索候选）；\n- `search_replace`：仅开放版权检索替换（不走付费生成；失败保留旧图）；\n- `bind_upload`：绑定教师上传的资产（upload 端点产出）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -61,7 +99,8 @@
           "enum": [
             "background",
             "avatar",
-            "fullbody"
+            "fullbody",
+            "scene_montage"
           ],
           "title": "Kind",
           "type": "string"
@@ -90,10 +129,10 @@
     },
     "AssetRef": {
       "additionalProperties": false,
-      "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。",
+      "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。\n\n`scene_montage`（方案 branch-montage-dm）是**完整场面图**：背景+在场人物+\n行为一图的插画（推翻 ADR-0005 §1「游玩内不显示人物」需随 ADR 修订走）；\n`background` 保留给旧脚本与纯空镜背景。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -106,7 +145,8 @@
           "enum": [
             "background",
             "avatar",
-            "fullbody"
+            "fullbody",
+            "scene_montage"
           ],
           "title": "Kind",
           "type": "string"
@@ -134,7 +174,7 @@
       "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -214,6 +254,144 @@
       "title": "BeatDraft",
       "type": "object"
     },
+    "BranchScene": {
+      "additionalProperties": false,
+      "description": "伪分支场景（珊瑚形结构）：挂在主干场景介入点上的替代过场。\n\n分支播放完并回主干下一场，结局固定；分支 beat 一律非关键事件\n（不进 total_beats、不动主 beat_cursor），不得包含 must_not_change\n关键事件、不得改变课文结局。",
+      "properties": {
+        "schema_version": {
+          "default": "2.8.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "branch_id": {
+          "pattern": "^b[1-9][0-9]*$",
+          "title": "Branch Id",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/Beat"
+          },
+          "minItems": 1,
+          "title": "Beats",
+          "type": "array"
+        },
+        "visual_notes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisualNotes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "anchor_beat_id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anchor Beat Id"
+        },
+        "background_asset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "background_credit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssetCredit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "branch_id",
+        "label",
+        "title",
+        "beats"
+      ],
+      "title": "BranchScene",
+      "type": "object"
+    },
+    "BranchSpec": {
+      "additionalProperties": false,
+      "description": "划分草稿的分支规格（divide_events v3 产出，write_script 补写成 BranchScene）。\n\n只给规格不给成文：trigger_option 是该介入点的「典型玩家选择」一句话，\n不预设玩家必须这么说；value_turn 是分支内的 A→B 微转折（不得是主线\n关键转折，主线转折受 must_not_change 保护）。",
+      "properties": {
+        "branch_id": {
+          "pattern": "^b[1-9][0-9]*$",
+          "title": "Branch Id",
+          "type": "string"
+        },
+        "trigger_option": {
+          "minLength": 1,
+          "title": "Trigger Option",
+          "type": "string"
+        },
+        "value_turn": {
+          "minLength": 1,
+          "title": "Value Turn",
+          "type": "string"
+        },
+        "participants": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "beat_outline": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Beat Outline",
+          "type": "array"
+        }
+      },
+      "required": [
+        "branch_id",
+        "trigger_option",
+        "value_turn",
+        "beat_outline"
+      ],
+      "title": "BranchSpec",
+      "type": "object"
+    },
     "CharacterNote": {
       "additionalProperties": false,
       "description": "素材集里对单个人物的结论。",
@@ -241,7 +419,7 @@
       "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -252,6 +430,17 @@
         "public_background": {
           "title": "Public Background",
           "type": "string"
+        },
+        "appearance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Appearance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "personality_traits": {
           "items": {
@@ -334,7 +523,7 @@
       "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -459,7 +648,7 @@
       "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。\n\n`asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一\nsubject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -524,7 +713,7 @@
     },
     "InteractionPoint": {
       "additionalProperties": false,
-      "description": "场景末尾的玩家介入点（drama manager 心智，spec 裁决）。\n\n为角色扮演运行时预留玩家介入空间：关键事件不可被介入改变，\n介入只发生在 must_not_change 之外的节拍间隙。",
+      "description": "场景末尾的玩家介入点（drama manager 心智，spec 裁决）。\n\n为角色扮演运行时预留玩家介入空间：关键事件不可被介入改变，\n介入只发生在 must_not_change 之外的节拍间隙。\n\n定义在 script.py（Scene.interaction_point 引用它；review.py 的 SceneDraft\n也引用）——此前它只存在于 review.py，划分草稿产出后被写入剧本的环节\n丢弃；提升进剧本包是伪分支挂接介入点的前提。",
       "properties": {
         "player_role_hint": {
           "default": "",
@@ -555,7 +744,7 @@
       "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -638,7 +827,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -704,7 +893,7 @@
       "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -727,7 +916,7 @@
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -751,6 +940,35 @@
             "$ref": "#/$defs/Beat"
           },
           "title": "Beats",
+          "type": "array"
+        },
+        "visual_notes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisualNotes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "interaction_point": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InteractionPoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchScene"
+          },
+          "title": "Branches",
           "type": "array"
         },
         "background_asset": {
@@ -817,6 +1035,24 @@
             }
           ],
           "default": null
+        },
+        "visual_notes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisualNotes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "branches": {
+          "items": {
+            "$ref": "#/$defs/BranchSpec"
+          },
+          "title": "Branches",
+          "type": "array"
         }
       },
       "required": [
@@ -831,7 +1067,7 @@
       "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -924,7 +1160,7 @@
       "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -964,12 +1200,50 @@
       "title": "SpeechStyle",
       "type": "object"
     },
+    "VisualNotes": {
+      "additionalProperties": false,
+      "description": "场景视觉锚点（文生图槽位）：只写原文可推断的环境信息。\n\n未交代处写「原文未交代」或留空；动作留在 beats，此处不含人物行为。",
+      "properties": {
+        "schema_version": {
+          "default": "2.8.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "era": {
+          "default": "",
+          "title": "Era",
+          "type": "string"
+        },
+        "location": {
+          "default": "",
+          "title": "Location",
+          "type": "string"
+        },
+        "time_of_day": {
+          "default": "",
+          "title": "Time Of Day",
+          "type": "string"
+        },
+        "weather": {
+          "default": "",
+          "title": "Weather",
+          "type": "string"
+        },
+        "mood": {
+          "default": "",
+          "title": "Mood",
+          "type": "string"
+        }
+      },
+      "title": "VisualNotes",
+      "type": "object"
+    },
     "WebEvidence": {
       "additionalProperties": false,
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
       "properties": {
         "schema_version": {
-          "default": "2.7.0",
+          "default": "2.8.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1019,7 +1293,7 @@
   "description": "教师闸门恢复（#34）：指导指令 + 结构化编辑随恢复注入 workflow。\n\n- directives：自然语言指导，原样透传下游 agent（教学判断优先）。\n- edits：教师直接编辑后的中间产物（覆盖对应 state 通道，不重新考证）。\n- action：仅终审闸门有意义——approve=通过落库；reject=打回剧本书写重做。",
   "properties": {
     "schema_version": {
-      "default": "2.7.0",
+      "default": "2.8.0",
       "title": "Schema Version",
       "type": "string"
     },

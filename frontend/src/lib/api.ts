@@ -403,7 +403,11 @@ export function fetchAssetUrl(assetId: string): Promise<AssetUrlResponse> {
 /** 教师自有素材上传（#49）：multipart；成功返回 READY 的稳定引用。 */
 export function uploadScriptAsset(
   scriptId: number,
-  input: { subjectKey: string; kind: "background" | "avatar" | "fullbody"; file: File }
+  input: {
+    subjectKey: string;
+    kind: "background" | "avatar" | "fullbody" | "scene_montage";
+    file: File;
+  }
 ): Promise<AssetRef> {
   const form = new FormData();
   form.set("subject_key", input.subjectKey);
