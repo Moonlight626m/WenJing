@@ -118,8 +118,8 @@ export function GameScreen() {
                   speaking={speaking}
                 />
                 {showGoals && (
-                  <div className="absolute top-16 left-3 z-20">
-                    <GoalTracker goals={stage3Goals} />
+                  <div className="absolute top-16 left-3 z-20 max-h-[calc(100%-4.5rem)] max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-2xl">
+                    <GoalTracker goals={stage3Goals} defaultCollapsed={!wide} />
                   </div>
                 )}
                 {sceneHasOriginal(currentScene) && (

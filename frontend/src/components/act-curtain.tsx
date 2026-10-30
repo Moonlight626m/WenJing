@@ -86,7 +86,7 @@ export function ActCurtain() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.5 }}
-          className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/45"
+          className="pointer-events-none absolute inset-0 z-50 flex flex-col items-center justify-center bg-black/75 backdrop-blur-[2px]"
         >
           {/* 宽银幕黑边 */}
           <m.span

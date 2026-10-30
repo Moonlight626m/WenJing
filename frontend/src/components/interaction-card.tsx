@@ -12,6 +12,7 @@ import type {
   ActiveInteraction,
   CommandKind,
   OptionItem,
+  StageValue,
 } from "@/lib/contracts/types";
 import { useGameStore } from "@/stores/gameStore";
 import { Thinking } from "@/components/thinking";
@@ -55,22 +56,114 @@ function isTypingTarget(target: EventTarget | null): boolean {
  */
 export function InteractionCard() {
   const interaction = useGameStore((s) => s.interaction);
+  const stage = useGameStore((s) => s.stage);
+  const allowedCommands = useGameStore((s) => s.allowedCommands);
   // 自由输入的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
   const [freeText, setFreeText] = useState("");
+  const extras = allowedCommands.filter(isExtraCommand);
 
   return (
     <MotionRoot>
       <AnimatePresence mode="wait">
-        {interaction && (
+        {interaction ? (
           <InteractionBody
             key={interaction.interaction_id}
             interaction={interaction}
             freeText={freeText}
             setFreeText={setFreeText}
           />
-        )}
+        ) : extras.length > 0 ? (
+          <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
+        ) : null}
       </AnimatePresence>
     </MotionRoot>
+  );
+}
+
+type ExtraCommand = Extract<CommandKind, "enter_stage3" | "confirm_ending" | "exit_game">;
+
+function isExtraCommand(k: CommandKind): k is ExtraCommand {
+  return k === "enter_stage3" || k === "confirm_ending" || k === "exit_game";
+}
+
+/** 阶段卡的引导语：没有交互点、只剩阶段命令时（如还原演完）告诉学生下一步是什么。 */
+const PHASE_PROMPTS: Partial<Record<StageValue, { prompt: string; hint: string }>> = {
+  stage2_complete: {
+    prompt: "课文演完了。",
+    hint: "可以接着续写，看看故事还能怎么走；也可以到此为止。",
+  },
+};
+
+/** 阶段命令按钮：进入续写、确认结局用主按钮，退出游戏用文字链。 */
+function ExtraCommands({ commands, busy }: { commands: ExtraCommand[]; busy: boolean }) {
+  const submit = useGameStore((s) => s.submitCommand);
+  return (
+    <>
+      {commands.map((k) =>
+        k === "exit_game" ? (
+          <button
+            key={k}
+            type="button"
+            disabled={busy}
+            onClick={() => submit(k, {}, EXTRA_LABELS[k])}
+            className={buttonClass("quiet", "xs")}
+          >
+            {EXTRA_LABELS[k]}
+          </button>
+        ) : (
+          <Button
+            key={k}
+            tone="glow"
+            size="sm"
+            disabled={busy}
+            onClick={() => submit(k, {}, EXTRA_LABELS[k])}
+          >
+            {EXTRA_LABELS[k]}
+          </Button>
+        )
+      )}
+    </>
+  );
+}
+
+/**
+ * 阶段卡：引擎停在阶段之间（还原演完、等学生决定是否续写）时没有交互点，
+ * 只有 `enter_stage3` / `exit_game` 这类阶段命令。此前这里整张卡不渲染，
+ * 学生找不到进入续写的入口。
+ */
+function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraCommand[] }) {
+  const pending = useGameStore((s) => s.pending);
+  const connection = useGameStore((s) => s.connection);
+  const busy = pending !== null || connection !== "connected";
+  const copy = PHASE_PROMPTS[stage];
+
+  return (
+    <m.div
+      initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+      transition={{ duration: 0.4, ease: EASE }}
+      className="glass glow-border relative rounded-3xl px-4 py-3.5 md:px-5"
+      style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
+    >
+      {copy && (
+        <>
+          <p className="font-serif text-lg text-ink">{copy.prompt}</p>
+          <p className="mt-0.5 text-xs text-ink-faint">{copy.hint}</p>
+        </>
+      )}
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${copy ? "mt-3" : ""}`}>
+        <ExtraCommands commands={commands} busy={busy} />
+      </div>
+      {pending && (
+        <Thinking
+          label={`正在推进 ${pending.label}`}
+          since={pending.sentAt}
+          announce={false}
+          className="mt-3 text-xs"
+        />
+      )}
+    </m.div>
   );
 }
 
@@ -96,10 +189,7 @@ function InteractionBody({
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
 
-  const extraCommands = allowedCommands.filter(
-    (k): k is Extract<CommandKind, "enter_stage3" | "confirm_ending" | "exit_game"> =>
-      k === "enter_stage3" || k === "confirm_ending" || k === "exit_game"
-  );
+  const extraCommands = allowedCommands.filter(isExtraCommand);
 
   // 数字键直选：焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项
   useEffect(() => {
@@ -270,29 +360,7 @@ function InteractionBody({
 
       {extraCommands.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-glass-edge pt-3">
-          {extraCommands.map((k) =>
-            k === "exit_game" ? (
-              <button
-                key={k}
-                type="button"
-                disabled={busy}
-                onClick={() => submit(k, {}, EXTRA_LABELS[k])}
-                className={buttonClass("quiet", "xs")}
-              >
-                {EXTRA_LABELS[k]}
-              </button>
-            ) : (
-              <Button
-                key={k}
-                tone="glow"
-                size="sm"
-                disabled={busy}
-                onClick={() => submit(k, {}, EXTRA_LABELS[k])}
-              >
-                {EXTRA_LABELS[k]}
-              </Button>
-            )
-          )}
+          <ExtraCommands commands={extraCommands} busy={busy} />
         </div>
       )}
 

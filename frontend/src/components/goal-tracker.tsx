@@ -14,8 +14,15 @@ const EASE = [0.2, 0.7, 0.2, 1] as const;
  *
  * 可以收成一枚「续写目标 1/3」的小签，免得挡住立绘。
  */
-export function GoalTracker({ goals }: { goals: Stage3Goal[] }) {
-  const [collapsed, setCollapsed] = useState(false);
+export function GoalTracker({
+  goals,
+  defaultCollapsed = false,
+}: {
+  goals: Stage3Goal[];
+  /** 窄屏上舞台视口很矮，默认收成小签，点开再看 */
+  defaultCollapsed?: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   if (goals.length === 0) return null;
 
   const done = goals.filter((g) => g.achieved).length;
@@ -24,7 +31,7 @@ export function GoalTracker({ goals }: { goals: Stage3Goal[] }) {
   return (
     <section
       aria-label="续写目标"
-      className="glass w-[min(17rem,calc(100%-1.5rem))] overflow-hidden rounded-2xl"
+      className="glass w-68 max-w-full overflow-hidden rounded-2xl"
     >
       <button
         type="button"
@@ -32,7 +39,7 @@ export function GoalTracker({ goals }: { goals: Stage3Goal[] }) {
         aria-expanded={!collapsed}
         className="flex w-full items-center gap-2 px-3 py-2 text-left"
       >
-        <span className="font-serif text-sm text-ink">续写目标</span>
+        <span className="font-serif text-sm whitespace-nowrap text-ink">续写目标</span>
         <span aria-live="polite" className="text-xs text-glow-gold tabular-nums">
           {progress}
         </span>

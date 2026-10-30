@@ -3,6 +3,7 @@
 import { audioSession } from "@/lib/audio-session";
 import { create } from "zustand";
 
+import { ALLOWED_COMMANDS } from "@/lib/contracts/types";
 import type {
   ActiveInteraction,
   AssetRef,
@@ -511,7 +512,14 @@ export const useGameStore = create<GameStore>((set, get) => {
         }
         if (msg.type === "system") {
           const stageMatch = /进入阶段：(\S+)/.exec(text);
-          if (stageMatch) stage = asStage(stageMatch[1]);
+          if (stageMatch) {
+            stage = asStage(stageMatch[1]);
+            // 换阶段后上一阶段的交互点作废，允许命令按契约表重算。引擎停在阶段之间
+            // （如还原演完、等学生决定是否续写）时后端不发交互点消息，不重算就会
+            // 一直挂着旧选项、拿不到 enter_stage3。同批若有新交互点，它排在后面会覆盖这里。
+            interaction = null;
+            allowedCommands = [...ALLOWED_COMMANDS[stage]];
+          }
           if (text.includes("已结束")) {
             interaction = null;
             allowedCommands = [];

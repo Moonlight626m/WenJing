@@ -72,7 +72,9 @@ export function GameStage({
   return (
     <div
       ref={rootRef}
-      className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-canvas"
+      // clip 而不是 hidden：视差层、极光层都比舞台大一圈，hidden 的容器仍可被程序滚动，
+      // 焦点一变（如换交互卡）浏览器就把整块舞台往上滚，顶栏被挤出视野
+      className="relative flex min-h-0 flex-1 flex-col overflow-clip bg-canvas"
     >
       {/* 视差层比舞台外扩一圈，挪动时四边不露底 */}
       <div

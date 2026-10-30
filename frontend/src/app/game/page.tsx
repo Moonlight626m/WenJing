@@ -102,7 +102,7 @@ function GameContent() {
   return (
     <main
       data-surface="stage"
-      className="flex h-screen w-full flex-col overflow-hidden bg-canvas"
+      className="flex h-screen w-full flex-col overflow-clip bg-canvas"
     >
       <GameScreen />
       <ToastHost />
