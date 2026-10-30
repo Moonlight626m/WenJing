@@ -393,3 +393,95 @@ async def test_real_provider_smoke():
     image = await gen.generate(prompt="中国江南水乡黄昏，无人，写实风格", kind=AssetKind.BACKGROUND)
     assert sniff_image_mime(image.image_bytes) is not None
     assert image.width > 0 and image.height > 0
+
+
+# ===== 火山方舟 ArkImageGen（branch-montage-dm 增补）=====
+
+
+def _ark(handler, **kwargs) -> OpenAIImageGen:
+    from app.infrastructure.media.image_gen_ark import ArkImageGen
+
+    kwargs.setdefault("client", _mock_client(handler))
+    kwargs.setdefault("validator", _allow_all)
+    return ArkImageGen(api_key="ark-key", **kwargs)
+
+
+async def test_ark_payload_has_no_n_and_keeps_watermark_default():
+    """Ark 请求体：无 `n` 字段（官方 SDK 无此参数）、水印默认开（合规标识）。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(_PNG).decode()}]})
+
+    adapter = _ark(handler)
+    await adapter.generate(prompt="黄昏", kind=AssetKind.BACKGROUND)
+    payload = captured["payload"]
+    assert "n" not in payload
+    assert payload["watermark"] is True
+    assert payload["sequential_image_generation"] == "disabled"
+
+
+async def test_ark_exacts_below_min_pixels_lift_by_kind():
+    """低于 seedream 5.0 像素下限的 kind 按比例抬档（直发会 400）。"""
+    async def _noop(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="x")
+
+    adapter = _ark(httpx.MockTransport(_noop))
+    assert adapter._provider_size(512, 512, kind=AssetKind.AVATAR) == "1024x1024"
+    assert adapter._provider_size(768, 1024, kind=AssetKind.FULLBODY) == "864x1152"
+    assert adapter._provider_size(1280, 720, kind=AssetKind.SCENE_MONTAGE) == "1280x720"
+
+
+async def test_ark_review_rejection_maps_to_blocked():
+    """Ark 400 审核拒绝（error.code=*RiskDetection）→ MEDIA_IMAGE_GEN_BLOCKED。"""
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "InputTextRiskDetection",
+                    "message": "input text includes sensitive content",
+                }
+            },
+        )
+
+    with pytest.raises(Error) as excinfo:
+        await _ark(handler).generate(prompt="黄昏", kind=AssetKind.BACKGROUND)
+    assert match_code(excinfo.value, codes.MEDIA_IMAGE_GEN_BLOCKED)
+
+
+async def test_ark_4xx_config_error_maps_to_failed():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404, json={"error": {"code": "ModelNotOpen", "message": "model not open"}}
+        )
+
+    with pytest.raises(Error) as excinfo:
+        await _ark(handler).generate(prompt="黄昏", kind=AssetKind.BACKGROUND)
+    assert match_code(excinfo.value, codes.MEDIA_IMAGE_GEN_FAILED)
+
+
+async def test_ark_retries_5xx_then_recovers():
+    """5xx 退避重试（≤2 次），后续成功不再报错。"""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) > 1:
+            b64 = base64.b64encode(_PNG).decode()
+            return httpx.Response(200, json={"data": [{"b64_json": b64}]})
+        return httpx.Response(500, json={"error": {"code": "InternalServiceError"}})
+
+    image = await _ark(handler).generate(prompt="黄昏", kind=AssetKind.BACKGROUND)
+    assert len(calls) == 2
+    assert image.content_type == "image/png"
+
+
+async def test_ark_settings_build_via_factory():
+    settings = Settings(
+        media_image_gen_provider="ark",
+        media_image_gen_api_key="k",
+    )
+    gen = build_image_gen(settings)
+    assert type(gen).__name__ == "ArkImageGen"

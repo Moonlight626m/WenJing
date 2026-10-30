@@ -176,7 +176,7 @@ class OpenAIImageGen:
             return max(1, round(height * base_w / base_h)), height
         return base_w, base_h
 
-    def _provider_size(self, width: int, height: int) -> str:
+    def _provider_size(self, width: int, height: int, *, kind: AssetKind | None = None) -> str:
         """把理想尺寸映射成 provider 认的 size 字符串。"""
         if self._size_mode == SIZE_MODE_EXACT:
             return f"{width}x{height}"
@@ -186,6 +186,26 @@ class OpenAIImageGen:
         if ratio < _PORTRAIT_MAX_RATIO:
             return self._preset_sizes["portrait"]
         return self._preset_sizes["square"]
+
+    def _build_payload(self, prompt: str, size: str) -> dict[str, object]:
+        """请求体（OpenAI 形状）：子类可覆盖以适配 provider 差异（如 Ark 无 `n`）。"""
+        payload: dict[str, object] = {
+            "model": self._model,
+            "prompt": prompt,
+            "size": size,
+            "n": 1,
+        }
+        if self._response_format:
+            payload["response_format"] = self._response_format
+        return payload
+
+    async def _post(self, payload: dict[str, object]) -> httpx.Response:
+        """单次 POST（gateway/错误形状见 generate），子类可加重试。"""
+        return await self._client.post(
+            f"{self._base_url}{OPENAI_IMAGES_PATH}",
+            json=payload,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+        )
 
     async def generate(
         self,
@@ -198,32 +218,25 @@ class OpenAIImageGen:
         # 生成前：本地确定性过滤（命中即拒，绝不发往 provider——付费调用前的闸门）。
         screen_generation_prompt(prompt, max_chars=self._max_prompt_chars)
         w, h = self._resolve_size(kind, width, height)
-
-        payload: dict[str, object] = {
-            "model": self._model,
-            "prompt": prompt,
-            "size": self._provider_size(w, h),
-            "n": 1,
-        }
-        if self._response_format:
-            payload["response_format"] = self._response_format
+        payload = self._build_payload(prompt, self._provider_size(w, h, kind=kind))
 
         try:
-            resp = await self._client.post(
-                f"{self._base_url}{OPENAI_IMAGES_PATH}",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-            )
+            resp = await self._post(payload)
             resp.raise_for_status()
         except httpx.TimeoutException as exc:
             raise new(
                 codes.MEDIA_IMAGE_GEN_TIMEOUT, extra={"reason": f"timeout ({self._model})"}
             ) from exc
         except httpx.HTTPStatusError as exc:
-            raise new(
-                codes.MEDIA_IMAGE_GEN_FAILED,
-                extra={"reason": f"http {exc.response.status_code}"},
-            ) from exc
+            # 兼容网关经常在 4xx/5xx 里带 error 对象（OpenAI 400 审核拒绝、
+            # Ark 的 *RiskDetection……）——解析不出时再退回纯 HTTP 码。
+            reason = _status_reason(exc.response) or f"http {exc.response.status_code}"
+            code = (
+                codes.MEDIA_IMAGE_GEN_BLOCKED
+                if _looks_like_policy(_status_error_body(exc.response))
+                else codes.MEDIA_IMAGE_GEN_FAILED
+            )
+            raise new(code, extra={"reason": reason}) from exc
         except httpx.HTTPError as exc:
             raise wrap(exc, codes.MEDIA_IMAGE_GEN_FAILED, extra={"reason": str(exc)}) from exc
 
@@ -304,6 +317,33 @@ class OpenAIImageGen:
         return data
 
 
+def _status_error_body(resp: httpx.Response) -> object:
+    """4xx/5xx 响应体里的 error 对象（解析失败返回 None，不二次抛）。"""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if isinstance(body, dict):
+        return body.get("error")
+    return None
+
+
+def _status_reason(resp: httpx.Response) -> str | None:
+    """4xx/5xx 响应的 error 摘要（code + message：策略族判定与归因都要看 code）。
+
+    空串视为无语义（防 message 为空的 400 只剩一个占位）。
+    """
+    error = _status_error_body(resp)
+    if not error:
+        return None
+    if isinstance(error, dict):
+        code = error.get("code") or ""
+        message = error.get("message") or ""
+        text = f"{code}:{message}" if code else message
+        return text.replace("\n", " ")[:200] or None
+    return str(error).replace("\n", " ")[:200] or None
+
+
 def _err_text(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("message") or value.get("code") or value)
@@ -311,9 +351,27 @@ def _err_text(value: object) -> str:
 
 
 def _looks_like_policy(value: object) -> bool:
-    """粗判 provider 侧是否为内容策略拒绝（决定降级语义：BLOCKED vs FAILED）。"""
+    """粗判 provider 侧是否为内容策略拒绝（决定降级语义：BLOCKED vs FAILED）。
+
+    关键词含 Ark 的错误码族（`*SensitiveContentDetected` / `InputTextRiskDetection`
+    / `*PolicyViolation` 等，2026-10 官方内容安全护栏文档）——审核拒绝语义
+    不再丢给通用 FAILED。
+    """
     text = _err_text(value).casefold()
-    return any(k in text for k in ("policy", "safety", "moderation", "content filter", "blocked"))
+    return any(
+        k in text
+        for k in (
+            "policy",
+            "safety",
+            "moderation",
+            "content filter",
+            "blocked",
+            "sensitivecontentdetected",
+            "riskdetection",
+            "policyviolation",
+            "contentsecuritydetection",
+        )
+    )
 
 
 __all__ = [
