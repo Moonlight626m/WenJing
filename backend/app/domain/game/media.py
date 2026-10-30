@@ -295,6 +295,12 @@ class SceneAssetRequest:
     org_id: uuid.UUID
     script_id: int | None = None
     user_id: uuid.UUID | None = None
+    #: 配图种类（branch-montage-dm §5）：默认向后兼容；运行期 DM 场景发
+    #: scene_montage（完整场面图）。
+    kind: AssetKind = AssetKind.BACKGROUND
+    #: 画师层转写上下文（dict 形态：节拍/visual_notes/appearance 锚点）。
+    #: 随票据落 asset_jobs.prompt_context——崩溃恢复重排时不再丢失。
+    prompt_context: dict = field(default_factory=dict)
 
 
 class AssetJobStatus(StrEnum):
@@ -541,6 +547,7 @@ class SceneDesigner:
         transcode: TranscodeFn,
         meter: MediaMeterPort | None = None,
         quota: MediaQuotaPort | None = None,
+        prompt_writer: object | None = None,
         style: str = DEFAULT_STYLE,
         provider_version: str = "",
         generation_model: str = "",
@@ -554,6 +561,10 @@ class SceneDesigner:
         self.transcode = transcode
         self.meter = meter
         self.quota = quota
+        # 画师层（branch-montage-dm §5）：ScenePromptWriterPort | None。
+        # 用 object 而非 runtime_checkable 协议避免 cycle import——media 定义
+        # prompt_writer 要用的 build_generation_prompt，类型注解放调用侧。
+        self.prompt_writer = prompt_writer
         self.style = style
         self.generation_model = generation_model
         # 参与去重键：换 provider **或** model 等于换了产出，缓存必须失效。
@@ -579,6 +590,7 @@ class SceneDesigner:
         exclude_asset_ids: Sequence[uuid.UUID] = (),
         exclude_content_hashes: Sequence[str] = (),
         search_only: bool = False,
+        prompt_context: object | None = None,
     ) -> AssetRecord:
         """为某个场景/角色产出资产记录（`READY` 可签发 URL；`FAILED` 由上层降级）。
 
@@ -656,6 +668,8 @@ class SceneDesigner:
                 kind=kind,
                 style=resolved_style,
                 exclude_content_hashes=hash_exclusions,
+                prompt_context=prompt_context,
+                provider_version=provider_version or self.provider_version,
             )
         )
         picked = outcome.picked
@@ -674,6 +688,44 @@ class SceneDesigner:
             return await self._publish(record, picked, org_id=org_id, user_id=user_id)
         except _UnusableCandidate as exc:
             return await self._fail(record, reason=f"generated image unusable: {exc}")
+
+    async def _writer_subject(
+        self,
+        description: str,
+        kind: AssetKind,
+        prompt_context: object | None,
+    ) -> str:
+        """付费路径的画面主体：画师层转写，任何失败回退原 description。
+
+        预算联动：转写输入的 max_chars 按 `MAX_PROMPT_CHARS` 扣除画风段/尾巴的
+        余量由 build_generation_prompt 最终把关，这里只给一个保守上限；转写
+        结果再过 build_generation_prompt 的截断，超长也不会破预算。
+        画师层输出被本地安全过滤命中时**不清洗不重试**——直接回退确定性
+        description（行为可预测优先于画面质量）。
+        """
+        writer = self.prompt_writer
+        if writer is None or prompt_context is None:
+            return description
+        try:
+            from app.domain.game.media_safety import inspect_prompt
+
+            subject = await writer.write(
+                prompt_context,  # type: ignore[arg-type] - duck-typed ScenePromptContext
+                max_chars=MAX_PROMPT_CHARS - 160,
+            )
+            if not subject:
+                return description
+            probe = build_generation_prompt(
+                description=subject, kind=kind, style=self.style
+            )
+            inspect_prompt(probe)
+            return subject
+        except Exception as exc:  # noqa: BLE001 - 画师层失败一律回退
+            logger.warning(
+                "scene_prompt_writer_fallback reason=%s",
+                str(exc).replace("\n", " ")[:200],
+            )
+            return description
 
     # ===== 免费侧：检索 → 审核 =====
 
@@ -739,6 +791,8 @@ class SceneDesigner:
         kind: AssetKind,
         style: str,
         exclude_content_hashes: Sequence[str] = (),
+        prompt_context: object | None = None,
+        provider_version: str = "",
     ) -> _GenOutcome:
         """付费回退生成。
 
@@ -746,8 +800,16 @@ class SceneDesigner:
         prompt 同模型完全可能产出相近图。这里的防线是**生成后比对**：命中排除集
         视为本次编排失败（返回 None → 上层记 FAILED），由教师再次重试；不悄悄
         放行旧字节，也不为换图无限重烧配额。
+
+        画师层（branch-montage-dm §5）：prompt_writer 可用时在付费路径把确定性
+        description 升级为画面语转写（外貌锚点/时代/氛围进 prompt）——但**去重键
+        仍以 description 计算**（调用方已按其落键）：转写只在 provider 调用前
+        替换 prompt 主体，任何失败（LLM 异常/空输出/转写被安全过滤命中）都回退
+        原描述拼装；`provider_version` 由调用方并入 scene_prompt 版本，改转写
+        提示词时 bump 让缓存失效。
         """
-        prompt = build_generation_prompt(description=description, kind=kind, style=style)
+        subject = await self._writer_subject(description, kind, prompt_context)
+        prompt = build_generation_prompt(description=subject, kind=kind, style=style)
         try:
             # 本地安全过滤（#46 的确定性闸）必须在**预扣配额之前**：被拦下的 prompt
             # 根本没送去 provider，白吃一次 org 预算的话，预算是拿真实付费喂出来的，

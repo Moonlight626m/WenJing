@@ -21,6 +21,7 @@ from app.domain.game.media import (
     _REASON_MAX_CHARS,
     AssetJob,
     AssetJobStatus,
+    AssetKind,
     SceneAssetRequest,
 )
 from app.infrastructure.models.asset_job import AssetJob as AssetJobRow
@@ -38,6 +39,8 @@ def _to_job(row: AssetJobRow) -> AssetJob:
             org_id=row.org_id,
             script_id=row.script_id,
             user_id=row.user_id,
+            kind=AssetKind(row.kind or "background"),
+            prompt_context=row.prompt_context or {},
         ),
         status=AssetJobStatus(row.status),
         asset_id=row.asset_id,
@@ -121,6 +124,8 @@ class SqlAssetJobStore:
                     org_id=request.org_id,
                     script_id=request.script_id,
                     user_id=request.user_id,
+                    kind=request.kind.value,
+                    prompt_context=request.prompt_context or None,
                     status=AssetJobStatus.PENDING.value,
                 )
                 session.add(row)

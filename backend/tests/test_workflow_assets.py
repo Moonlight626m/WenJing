@@ -97,15 +97,17 @@ async def test_end_to_end_package_carries_asset_refs() -> None:
     assert all(s.background_asset is not None for s in package.scenes)
     assert all(c.avatar_asset is not None for c in package.characters)
     for ref in [s.background_asset for s in package.scenes]:
-        assert ref.kind == "background" and ref.status == "ready"
+        assert ref.kind == "scene_montage" and ref.status == "ready"
     for ref in [c.avatar_asset for c in package.characters]:
         assert ref.kind == "avatar" and ref.status == "ready"
     summary = final["asset_summary"]
     assert summary["scenes_ready"] == summary["scenes_total"] == len(package.scenes)
     assert summary["avatars_ready"] == summary["avatars_total"] == len(package.characters)
     # 计量归属：发起教师（user_id）透传给编排（这里仅断言调用形状）
-    assert all(k == AssetKind.BACKGROUND.value or k == AssetKind.AVATAR.value
-               for _, k in designer.calls)
+    assert all(
+        k in (AssetKind.SCENE_MONTAGE.value, AssetKind.AVATAR.value)
+        for _, k in designer.calls
+    )
 
 
 async def test_design_assets_idempotent_rerun_no_double_generation() -> None:

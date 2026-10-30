@@ -31,7 +31,6 @@ from app.domain.game.media import (
     AssetJob,
     AssetJobPort,
     AssetJobStatus,
-    AssetKind,
     AssetRecord,
     AssetStatus,
     SceneAssetRequest,
@@ -177,10 +176,11 @@ class SceneAssetScheduler:
                 subject_key=request.scene_key,
                 scene_key=request.scene_key,
                 description=request.description,
-                kind=AssetKind.BACKGROUND,
+                kind=request.kind,
                 script_id=request.script_id,
                 session_id=request.session_id,
                 user_id=request.user_id,
+                prompt_context=request.prompt_context or None,
             )
         except asyncio.CancelledError:
             # 任务留在 pending：停机时由 `drain()` 先等它跑完，真被硬取消则留给

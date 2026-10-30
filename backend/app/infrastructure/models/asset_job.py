@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.infrastructure.db.session import Base
@@ -45,6 +45,14 @@ class AssetJob(Base):
     branch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     scene_key: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # 配图种类（branch-montage-dm §5）：崩溃恢复重排时保 kind——
+    # 旧列只有 description，恢复路径会把 scene_montage 退化成默认值。
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="background")
+    # 画师层转写的结构化上下文（节拍/appearance/visual_notes）联动 JSON；
+    # 可空：background 类任务没有该信息，行为不变。
+    prompt_context: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, default=None
+    )
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orgs.id"), nullable=False, index=True

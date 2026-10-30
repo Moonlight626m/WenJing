@@ -17,6 +17,7 @@ from typing import Any
 from app.domain.game.asr import AsrTranscriber
 from app.domain.game.image_review import ImageReviewAgent
 from app.domain.game.media import MediaKind, SceneDesigner
+from app.domain.game.prompt_writer import SCENE_PROMPT_VERSION, LLMPromptWriter
 from app.domain.game.tts import VoiceMap
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.db.session import SessionLocal, engine
@@ -388,6 +389,10 @@ class Container:
         不会打断编排。配额为 0 表示不限额（`MediaQuotaService` 语义）。
         """
         if self._scene_designer is None:
+            # 画师层（branch-montage-dm §5）：与审核 agent 同挂 agent 侧 LLM；
+            # 无 key 时 _build_agent_llm 降级安全实现，画师层写出的画面语质量
+            # 有限但管线安全（转写失败回退确定性 description 拼装）。
+            prompt_writer = LLMPromptWriter(llm=self._build_agent_llm())
             self._scene_designer = SceneDesigner(
                 storage=self.object_storage,
                 image_gen=self.image_gen,
@@ -395,7 +400,10 @@ class Container:
                 assets=self.asset_repo,
                 reviewer=ImageReviewAgent(llm=self._build_agent_llm()),
                 transcode=ImageProcessor().process,
-                # 参与去重键：换 model 等于换画风，历史资产不能继续命中缓存。
+                prompt_writer=prompt_writer,
+                # 参与去重键：换 model 等于换画风，历史资产不能继续命中缓存；
+                # 画师层提示词升级时把 SCENE_PROMPT_VERSION 并进来让缓存失效。
+                provider_version=SCENE_PROMPT_VERSION,
                 generation_model=self.settings.media_image_gen_model,
                 meter=MediaUsageRecorder(session_factory=self.session_factory),
                 quota=MediaQuotaService(

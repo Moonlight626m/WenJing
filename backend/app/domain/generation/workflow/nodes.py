@@ -175,36 +175,125 @@ def _asset_ref_of(asset_id: uuid.UUID, kind: AssetKind) -> AssetRef:
     return AssetRef(asset_id=asset_id, kind=kind.value, status="ready")
 
 
+def _era_hint(state: WorkflowState) -> str:
+    """素材集 era_setting → 画师层时代兜底（visual_notes.era 缺失时才用）。"""
+    dossier = state_dossier(state)
+    if dossier is None:
+        return ""
+    return dossier.era_setting or ""
+
+
+def _scene_of_branch_key(
+    scenes_by_id: dict[int, Scene], subject_key: str
+) -> Scene | None:
+    """`scene:{id}::branch:{branch_id}` → 场景（不存在/格式不符返回 None）。"""
+    try:
+        scene_part, _, _ = subject_key.partition("::branch:")
+        scene_id = int(scene_part.removeprefix("scene:"))
+        return scenes_by_id.get(scene_id)
+    except ValueError:
+        return None
+
+
+def _scene_prompt_context(
+    scene: Scene,
+    participants: list[str],
+    profiles_by_name: dict[str, CharacterProfile],
+    *,
+    era_hint: str = "",
+) -> dict:
+    """画师层转写上下文（branch-montage-dm §5）：确定性 description 之外的画面信息。
+
+    dict 形态随请求/票据走（asset_jobs.prompt_context JSON 可序列化）；
+    appearance 缺失的人物只给名字——画师层 prompt 的锚点纪律对留白字段
+    按时代中性词处理（prompt_writer 段落 ANCHOR_RULES）。
+    era 兜底用素材集 era_setting（dossier 非结构化字符串整句携带）。
+    """
+    beats = [b.description for b in scene.beats if b.description]
+    visual: dict[str, str] = {}
+    if scene.visual_notes is not None:
+        visual = {
+            k: getattr(scene.visual_notes, k, "")
+            for k in ("era", "location", "time_of_day", "weather", "mood")
+        }
+    if not visual.get("era") and era_hint:
+        visual["era"] = era_hint
+    appearance: list[dict] = []
+    for name in participants:
+        profile = profiles_by_name.get(name)
+        if profile is None or profile.appearance is None:
+            appearance.append({"name": name})
+        else:
+            appearance.append(
+                {
+                    "name": name,
+                    **{
+                        f: getattr(profile.appearance, f, "")
+                        for f in (
+                            "face",
+                            "hair",
+                            "clothing",
+                            "accessories",
+                            "build",
+                        )
+                    },
+                }
+            )
+    return {
+        "title": scene.title,
+        "beats": beats,
+        "visual_notes": visual,
+        "participants": appearance,
+    }
+
+
 def _apply_assets(
     package: ScriptPackage,
     scenes: dict[int, AssetRef],
     profiles: dict[str, AssetRef],
     scene_credits: dict[int, AssetCredit | None] | None = None,
     profile_credits: dict[str, AssetCredit | None] | None = None,
+    branch_assets: dict[tuple[int, str], AssetRef] | None = None,
+    branch_credits: dict[tuple[int, str], AssetCredit | None] | None = None,
 ) -> ScriptPackage:
     """把 AssetRef/AssetCredit 写回剧本包（不可变契约：model_copy 重建受影响条目）。
 
     打回重写后 write_script 产出全新场景集，此函数只在 design_assets 的
     返回 delta 上生效，不存在「旧轮 AssetRef 粘到新场景」的通道污染。
     credit 只对检索件非 None（#51：教师端完整展示署名；学生端过滤在展示侧）。
+    分支槽位（branch-montage-dm）：按 (scene_id, branch_id) 写入
+    BranchScene.background_asset/credit。
     """
-    if not scenes and not profiles:
+    branch_assets = branch_assets or {}
+    branch_credits = branch_credits or {}
+    if not scenes and not profiles and not branch_assets:
         return package
     scene_credits = scene_credits or {}
     profile_credits = profile_credits or {}
-    new_scenes = [
-        (
-            scene.model_copy(
-                update={
-                    "background_asset": scenes[scene.scene_id],
-                    "background_credit": scene_credits.get(scene.scene_id),
-                }
+    new_scenes = []
+    for scene in package.scenes:
+        updates: dict[str, Any] = {}
+        if scene.scene_id in scenes:
+            updates["background_asset"] = scenes[scene.scene_id]
+            updates["background_credit"] = scene_credits.get(scene.scene_id)
+        branch_updates = [
+            (
+                branch.model_copy(
+                    update={
+                        "background_asset": branch_assets[(scene.scene_id, branch.branch_id)],
+                        "background_credit": branch_credits.get(
+                            (scene.scene_id, branch.branch_id)
+                        ),
+                    }
+                )
+                if (scene.scene_id, branch.branch_id) in branch_assets
+                else branch
             )
-            if scene.scene_id in scenes
-            else scene
-        )
-        for scene in package.scenes
-    ]
+            for branch in scene.branches
+        ]
+        if branch_updates:
+            updates["branches"] = branch_updates
+        new_scenes.append(scene.model_copy(update=updates) if updates else scene)
     new_characters = [
         (
             c.model_copy(
@@ -665,7 +754,15 @@ class WorkflowNodes:
         updated_profiles: dict[str, AssetRef] = {}
         scene_credits: dict[int, AssetCredit | None] = {}
         profile_credits: dict[str, AssetCredit | None] = {}
-        total = len(package.scenes) + len(package.characters)
+        updated_branches: dict[tuple[int, str], AssetRef] = {}
+        branch_credits: dict[tuple[int, str], AssetCredit | None] = {}
+        profiles_by_name = {c.name: c for c in package.characters}
+        # 画风（branch-montage-dm §5）：场面图统一走 scene_montage 尾巴与默认画风；
+        # prompt_context 由生成侧的结构化字段组装（节拍/visual_notes/appearance 锚点）。
+        generation_kind = AssetKind.SCENE_MONTAGE
+        total = len(package.scenes) + len(package.characters) + sum(
+            len(s.branches) for s in package.scenes
+        )
         done = 0
         for scene in package.scenes:
             done += 1
@@ -677,17 +774,50 @@ class WorkflowNodes:
                 subject_key=f"scene:{scene.scene_id}",
                 scene_key=f"script:{script_id}:scene:{scene.scene_id}",
                 description=scene_visual_description(scene),
-                kind=AssetKind.BACKGROUND,
+                kind=generation_kind,
                 org_id=org_id,
                 script_id=script_id,
                 user_id=user_id,
                 label=f"场景「{scene.title}」",
+                prompt_context=_scene_prompt_context(
+                    scene,
+                    scene.participants,
+                    profiles_by_name,
+                    era_hint=_era_hint(state),
+                ),
             )
             if picked is not None:
                 # 降级：失败主体不进剧本包，该场景以纯文本游玩
                 ref, credit = picked
                 updated_scenes[scene.scene_id] = ref
                 scene_credits[scene.scene_id] = credit
+            for branch in scene.branches:
+                done += 1
+                await self._report(
+                    "design_assets", f"配图 {done}/{total}：分支「{branch.title}」"
+                )
+                picked = await self._design_one(
+                    designer,
+                    subject_key=f"scene:{scene.scene_id}::branch:{branch.branch_id}",
+                    scene_key=f"script:{script_id}:scene:{scene.scene_id}"
+                    f"::branch:{branch.branch_id}",
+                    description=scene_visual_description(branch),
+                    kind=generation_kind,
+                    org_id=org_id,
+                    script_id=script_id,
+                    user_id=user_id,
+                    label=f"分支「{branch.title}」",
+                    prompt_context=_scene_prompt_context(
+                        branch,
+                        branch.participants or scene.participants,
+                        profiles_by_name,
+                        era_hint=_era_hint(state),
+                    ),
+                )
+                if picked is not None:
+                    ref, credit = picked
+                    updated_branches[(scene.scene_id, branch.branch_id)] = ref
+                    branch_credits[(scene.scene_id, branch.branch_id)] = credit
         for profile in package.characters:
             done += 1
             await self._report("design_assets", f"配图 {done}/{total}：人物「{profile.name}」")
@@ -709,19 +839,29 @@ class WorkflowNodes:
 
         out: dict[str, Any] = {
             "package": _apply_assets(
-                package, updated_scenes, updated_profiles, scene_credits, profile_credits
+                package,
+                updated_scenes,
+                updated_profiles,
+                scene_credits,
+                profile_credits,
+                branch_assets=updated_branches,
+                branch_credits=branch_credits,
             ),
             "asset_summary": {
                 "scenes_ready": len(updated_scenes),
                 "scenes_total": len(package.scenes),
+                "branches_ready": len(updated_branches),
+                "branches_total": sum(len(s.branches) for s in package.scenes),
                 "avatars_ready": len(updated_profiles),
                 "avatars_total": len(package.characters),
             },
         }
         logger.info(
-            "[script-gen][design_assets] 配图完成 scenes=%d/%d avatars=%d/%d",
+            "[script-gen][design_assets] 配图完成 scenes=%d/%d branches=%d/%d avatars=%d/%d",
             len(updated_scenes),
             len(package.scenes),
+            len(updated_branches),
+            sum(len(s.branches) for s in package.scenes),
             len(updated_profiles),
             len(package.characters),
         )
@@ -739,12 +879,15 @@ class WorkflowNodes:
         script_id: int,
         user_id: uuid.UUID | None,
         label: str,
+        prompt_context: dict | None = None,
     ) -> tuple[AssetRef, AssetCredit | None] | None:
         """单个主体的配图：READY → (AssetRef, 契约署名)；FAILED/异常 → None。
 
         场景循环与人物循环的差异只在键与回填目标，此处收拢「调用 → 判状态 →
         异常兜底」这一共享形状；失败主体记 warning 后返回 None，剧本照常可用。
         署名只对检索件非 None（#51，生成/上传件无许可语义）。
+        `prompt_context` 随请求传给画师层（转写结构化外貌/锚点）；检索路径
+        与头像不携带。
         """
         try:
             record = await designer.design_scene(
@@ -755,6 +898,7 @@ class WorkflowNodes:
                 kind=kind,
                 script_id=script_id,
                 user_id=user_id,
+                prompt_context=prompt_context,
             )
         except Exception as exc:  # noqa: BLE001 - 单主体失败不拖垮整单剧本
             logger.warning(
@@ -803,15 +947,18 @@ class WorkflowNodes:
         profile_ops: dict[str, AssetRef | None] = {}
         scene_credit_ops: dict[int, AssetCredit | None] = {}
         profile_credit_ops: dict[str, AssetCredit | None] = {}
+        branch_ops: dict[tuple[int, str], AssetRef | None] = {}
+        branch_credit_ops: dict[tuple[int, str], AssetCredit | None] = {}
         scenes_by_id = {s.scene_id: s for s in package.scenes}
         profiles_by_name = {c.name: c for c in package.characters}
         for (subject_key, kind_raw), op in last_by_subject.items():
             kind = AssetKind(kind_raw)
-            # kind↔槽位校验：本阶段只产出 background（场景）与 avatar（人物），
-            # fullbody 通道未接线；错位操作（如对头像槽发 background）忽略，
-            # 否则 fullbody 引用会被写进 avatar 槽、其失败回退也会串 kind。
-            if subject_key.startswith("scene:"):
-                if kind is not AssetKind.BACKGROUND:
+            # kind↔槽位校验：场景槽接受 background（旧脚本兼容）与
+            # scene_montage（branch-montage-dm）；fullbody 通道未接线；错位
+            # 操作（如对头像槽发 background）忽略，否则 fullbody 引用会被
+            # 写进 avatar 槽、其失败回退也会串 kind。
+            if subject_key.startswith("scene:") and "::branch:" not in subject_key:
+                if kind not in (AssetKind.BACKGROUND, AssetKind.SCENE_MONTAGE):
                     logger.warning(
                         "asset_op kind=%s on scene subject ignored", kind.value
                     )
@@ -838,6 +985,41 @@ class WorkflowNodes:
                 )
                 scene_ops[scene.scene_id] = ref
                 scene_credit_ops[scene.scene_id] = credit
+            elif "::branch:" in subject_key and subject_key.startswith("scene:"):
+                if kind is not AssetKind.SCENE_MONTAGE:
+                    logger.warning(
+                        "asset_op kind=%s on branch subject ignored", kind.value
+                    )
+                    continue
+                scene = _scene_of_branch_key(scenes_by_id, subject_key)
+                if scene is None:
+                    logger.warning("asset_op unknown subject=%r ignored", subject_key)
+                    continue
+                _, _, branch_id = subject_key.partition("::branch:")
+                target = next(
+                    (b for b in scene.branches if b.branch_id == branch_id), None
+                )
+                if target is None:
+                    logger.warning("asset_op unknown subject=%r ignored", subject_key)
+                    continue
+                ref, credit = await self._resolve_op(
+                    op,
+                    kind,
+                    designer=self._scene_designer,
+                    org_id=org_id,
+                    user_id=user_id,
+                    script_id=script_id,
+                    description=scene_visual_description(target),
+                    current_asset_id=(
+                        target.background_asset.asset_id
+                        if target.background_asset
+                        else None
+                    ),
+                    current_credit=target.background_credit,
+                )
+                key = (scene.scene_id, target.branch_id)
+                branch_ops[key] = ref
+                branch_credit_ops[key] = credit
             elif subject_key.startswith("character:"):
                 if kind is not AssetKind.AVATAR:
                     logger.warning(
@@ -867,19 +1049,38 @@ class WorkflowNodes:
             else:
                 logger.warning("asset_op unknown subject=%r ignored", subject_key)
 
-        new_scenes = [
-            (
-                scene.model_copy(
-                    update={
-                        "background_asset": scene_ops[scene.scene_id],
-                        "background_credit": scene_credit_ops[scene.scene_id],
-                    }
-                )
+        new_scenes = []
+        for scene in package.scenes:
+            updates = (
+                {
+                    "background_asset": scene_ops[scene.scene_id],
+                    "background_credit": scene_credit_ops[scene.scene_id],
+                }
                 if scene.scene_id in scene_ops
+                else None
+            )
+            scene_branch_updates = [
+                (
+                    branch.model_copy(
+                        update={
+                            "background_asset": branch_ops[(scene.scene_id, branch.branch_id)],
+                            "background_credit": branch_credit_ops.get(
+                                (scene.scene_id, branch.branch_id)
+                            ),
+                        }
+                    )
+                    if (scene.scene_id, branch.branch_id) in branch_ops
+                    else branch
+                )
+                for branch in scene.branches
+            ]
+            if scene_branch_updates != list(scene.branches):
+                updates = {**(updates or {}), "branches": scene_branch_updates}
+            new_scenes.append(
+                scene.model_copy(update=updates)
+                if updates is not None
                 else scene
             )
-            for scene in package.scenes
-        ]
         new_characters = [
             (
                 c.model_copy(
