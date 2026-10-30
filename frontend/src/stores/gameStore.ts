@@ -161,6 +161,8 @@ interface GameStore {
   branchId: string | null;
   playerRole: string | null;
   plotLog: string[];
+  /** 会话引用的剧本（session_init 带来）：刷新后据此补拉剧本包里的角色档案。 */
+  scriptId: number | null;
   scriptTitle: string | null;
   playableRoles: string[];
   characters: CharacterProfile[];
@@ -251,6 +253,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     branchId: null,
     playerRole: null,
     plotLog: [],
+    scriptId: null,
     scriptTitle: null,
     playableRoles: [],
     characters: [],
@@ -275,6 +278,7 @@ export const useGameStore = create<GameStore>((set, get) => {
         branchId: null,
         playerRole: null,
         plotLog: [],
+        scriptId: null,
         messages: [],
         streams: [],
         interaction: null,
@@ -369,6 +373,8 @@ export const useGameStore = create<GameStore>((set, get) => {
           plotLog: Array.isArray(payload.plot_log)
             ? payload.plot_log.map(String)
             : [],
+          scriptId:
+            typeof payload.script_id === "number" ? payload.script_id : get().scriptId,
           interaction: ix,
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
