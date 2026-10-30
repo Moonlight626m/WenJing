@@ -234,57 +234,89 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
   return visible;
 }
 
-/** 底部字幕层：角色行 `角色:台词`（无气泡框，居中），旁白居中斜体（ADR-0005 §1）。 */
+/** 流式行末尾带辉光的字数：这几个字像墨还没干，随文字增长往后挪。 */
+const FRESH_CHARS = 4;
+
+/** 按字（而非 UTF-16 码元）切出末尾 n 个字，免得把代理对劈成两半。 */
+function splitTail(text: string, n: number): [string, string] {
+  const chars = Array.from(text);
+  const cut = Math.max(0, chars.length - n);
+  return [chars.slice(0, cut).join(""), chars.slice(cut).join("")];
+}
+
+/**
+ * 底部字幕层：角色行 `角色:台词`（无气泡框，居中），旁白居中斜体（ADR-0005 §1）。
+ *
+ * 舞台上它是一条对白带：自下而上的暗场托底，顶端一道泥金细线。每行进场时由虚到实，
+ * 你演的角色名用朱砂、其他角色用泥金；还在流式生成的行，最后几个字带青碧辉光，
+ * 行尾一支发光的笔尖。
+ */
 export function SubtitleTrack({
   messages,
   streams,
+  playerRole = null,
 }: {
   messages: ChatMessage[];
   streams: LiveStream[];
+  playerRole?: string | null;
 }) {
   const lines = useSubtitleQueue(messages, streams);
   if (lines.length === 0) return null;
 
   return (
     <div
-      className="flex w-full flex-col items-center gap-1.5"
+      className="flex w-full flex-col items-center gap-1.5 bg-linear-to-t from-black/90 via-black/60 to-transparent px-4 pt-14 pb-5"
       data-testid="subtitle-track"
     >
-      {lines.map((line) =>
-        line.kind === "character_speech" ? (
+      <span
+        aria-hidden
+        className="mb-2 block h-px w-2/3 max-w-xl bg-linear-to-r from-transparent via-glow-gold/70 to-transparent"
+      />
+      {lines.map((line) => {
+        const fade = line.fading ? "opacity-0" : "opacity-100";
+        if (line.kind !== "character_speech") {
+          return (
+            <p
+              key={line.key}
+              data-testid="subtitle-line"
+              className={`animate-rise-in max-w-[92%] font-serif text-base leading-[1.7] break-words whitespace-pre-wrap text-center italic text-ink-soft transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-lg ${fade}`}
+            >
+              {line.text}
+            </p>
+          );
+        }
+
+        const own = playerRole !== null && line.speaker === playerRole;
+        const [settled, fresh] = line.live
+          ? splitTail(line.text, FRESH_CHARS)
+          : [line.text, ""];
+        return (
           <p
             key={line.key}
             data-testid="subtitle-line"
-            className={`max-w-[92%] font-serif text-lg leading-[1.75] break-words whitespace-pre-wrap text-center text-ink transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl ${
-              line.fading ? "opacity-0" : "opacity-100"
-            }`}
+            className={`animate-rise-in max-w-[92%] font-serif text-lg leading-[1.75] break-words whitespace-pre-wrap text-center text-ink transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl ${fade}`}
           >
-            <span className="font-semibold text-flag">
+            <span
+              className={`font-semibold ${
+                own
+                  ? "text-flag [text-shadow:0_0_14px_var(--wj-flag)]"
+                  : "text-glow-gold [text-shadow:0_0_14px_var(--wj-glow-gold)]"
+              }`}
+            >
               {line.speaker ?? "角色"}：
             </span>
-            {line.text}
+            {settled}
+            {fresh && <span className="ink-fresh">{fresh}</span>}
             {line.live ? (
               <span
                 aria-hidden
                 data-testid="subtitle-caret"
-                className="ml-0.5 inline-block animate-pulse text-flag"
-              >
-                ▍
-              </span>
+                className="animate-caret-glow ml-1 inline-block h-[1.05em] w-[3px] translate-y-[0.18em] rounded-full bg-glow-jade"
+              />
             ) : null}
           </p>
-        ) : (
-          <p
-            key={line.key}
-            data-testid="subtitle-line"
-            className={`max-w-[92%] font-serif text-base leading-[1.7] break-words whitespace-pre-wrap text-center italic text-ink-soft transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-lg ${
-              line.fading ? "opacity-0" : "opacity-100"
-            }`}
-          >
-            {line.text}
-          </p>
-        )
-      )}
+        );
+      })}
     </div>
   );
 }

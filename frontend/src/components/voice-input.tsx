@@ -12,13 +12,17 @@
  * 键盘输入始终可用。
  */
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { formatApiError, transcribeSpeech } from "@/lib/api";
 import { isRecordingSupported, useRecorder } from "@/lib/use-recorder";
-import { Button, buttonClass } from "@/components/ui/button";
+import { buttonClass } from "@/components/ui/button";
+import { MicIcon } from "@/components/ui/icons";
 
 const subscribeToNothing = () => () => {};
+
+/** 识别结果的提示气泡停留多久后收起。 */
+const NOTE_MS = 4000;
 
 export function VoiceInput({
   sessionId,
@@ -41,6 +45,13 @@ export function VoiceInput({
     isRecordingSupported,
     () => false
   );
+
+  // 提示是浮在按钮上方的气泡，停一会儿自己收起，不长期压在输入栏上
+  useEffect(() => {
+    if (!note) return;
+    const timer = setTimeout(() => setNote(null), NOTE_MS);
+    return () => clearTimeout(timer);
+  }, [note]);
 
   if (!supported) return null;
 
@@ -72,29 +83,52 @@ export function VoiceInput({
   }
 
   return (
-    <div className="flex flex-col gap-1">
-      <Button
-        tone={recording ? "danger" : "outline"}
-        size="sm"
+    <div className="relative flex items-center gap-1.5">
+      {recording && (
+        <button
+          type="button"
+          onClick={cancel}
+          aria-label="取消这次录音"
+          className={buttonClass("quiet", "xs")}
+        >
+          取消
+        </button>
+      )}
+
+      {/* 录音中用朱砂（「在场」）并向外扩水波，一眼能看出麦克风开着 */}
+      <button
+        type="button"
         disabled={blocked || busy}
         onClick={() => (recording ? void finish() : void start())}
         aria-pressed={recording}
-        aria-label={recording ? "结束录音并识别" : "按下开始录音"}
+        aria-busy={busy}
+        aria-label={busy ? "识别中" : recording ? "结束录音并识别" : "按下开始录音"}
         title={recording ? "结束录音并识别" : "语音输入（会请求麦克风权限）"}
+        className={[
+          "relative inline-grid size-9 shrink-0 place-items-center rounded-full text-lg",
+          "transition-[color,background-color,box-shadow] duration-150",
+          "disabled:pointer-events-none disabled:opacity-45",
+          recording
+            ? "bg-flag text-canvas shadow-[0_0_18px_-2px_var(--wj-flag)]"
+            : "text-ink-soft hover:bg-surface/60 hover:text-ink",
+        ].join(" ")}
       >
-        {busy ? "识别中…" : recording ? "结束并识别" : "语音输入"}
-      </Button>
+        {recording && (
+          <span
+            aria-hidden
+            className="animate-ripple absolute inset-0 rounded-full border border-flag"
+          />
+        )}
+        <MicIcon className={busy ? "animate-pulse" : undefined} />
+      </button>
 
       {(note || error) && (
-        <p className="text-2xs text-ink-faint" role="status">
+        <p
+          role="status"
+          className="glass absolute right-0 bottom-full mb-2 w-max max-w-[16rem] rounded-xl px-2.5 py-1 text-2xs text-ink-soft"
+        >
           {error ?? note}
         </p>
-      )}
-
-      {recording && (
-        <button type="button" onClick={cancel} className={buttonClass("quiet", "xs")}>
-          取消这次录音
-        </button>
       )}
     </div>
   );

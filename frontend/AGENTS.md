@@ -27,7 +27,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 | 面 | 谁在用 | 底色 |
 |----|--------|------|
 | 册（纸面） | 登录/注册、学生空间、教师工作台、运营后台 | 亮色，随系统配色切到"夜读"暗色 |
-| 台（幕布） | 仅游玩页 `/game` | **恒暗**，与系统配色无关（`<main data-surface="stage">`） |
+| 台（幕布） | 游玩页 `/game`、选角页 `/roles` | **恒暗**，与系统配色无关（`<main data-surface="stage">`） |
 
 四条容易踩的：
 
@@ -38,8 +38,54 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **没有 twMerge。** `className` 是纯字符串拼接，两个同类工具类（`w-full` 与 `w-52`、
   `py-2` 与 `py-1`）会同时生效，胜负取决于生成顺序。所以原语**不许把可覆盖的属性写进基类**
   ——宽度、内边距一律由调用方给或走 prop（见 `ui/field.tsx` 的 `controlSize`）。
-- **朱砂（`flag`）只标"在场"**：你演的角色、正在推进、流式光标、录音中。它是语义色不是装饰色，
+- **朱砂（`flag`）只标"在场"**：你演的角色、正在推进、录音中。它是语义色不是装饰色，
   别拿去标"错误"（用 `danger`）或"成功"（用 `ok`）。
+
+### 舞台的「水墨霓虹」层
+
+台面在宋体与朱砂之外多一层现代效果，**只在 `data-surface="stage"` 下用**，册面保持克制：
+
+| 令牌 / 工具类 | 用途 |
+|---|---|
+| `glow-jade` 青碧 | 当前、正在发生：进度条当前节点、流式文字的笔尖与末尾辉光 |
+| `glow-gold` 泥金 | 其他角色的名牌、已走完的进度、对白带顶端的细线 |
+| `glass` / `glass-edge` | 毛玻璃浮层（顶栏、剧情回顾、抉择卡、结局卡）；圆角用 `rounded-3xl`（14px），只给这些浮层 |
+| `glow-border` | 一段流光沿边框绕行，表示「轮到你了」；宿主要 `relative`，转速读 `--wj-glow-speed` |
+| `choice-glow` | 抉择卡悬停 / 聚焦 / 选中时亮流光并扫一道光；宿主要 `relative overflow-hidden` |
+| Button `tone="glow"` | 舞台上的主操作（发送、进入续写） |
+
+几条约束：
+
+- **毛玻璃不透明度别再往下调。** 背景图可能很亮，`--wj-glass` 的 0.62 是正文仍过 AA 的下限附近。
+- **入场动画只填 `backwards`**（见 `.animate-rise-in`）。填 `both` 会让结束帧的 `opacity: 1`
+  一直压住元素自己的样式，字幕的淡出过渡就失效了。
+- **组件动效用 `motion`**（`motion/react` 的 `m.*`），子树要包在 `ui/motion-root.tsx` 的
+  `MotionRoot` 里——没有它 `m.*` 会停在 `initial` 那一帧。简单的循环效果用 `globals.css`
+  里的关键帧。「减少动态效果」下 CSS 循环会被压成静帧，`motion` 的位移会被关掉。
+
+### 游玩页版式（视觉小说式）
+
+`components/game-screen.tsx` 是整块舞台：顶栏 `GameHud` → 左列是舞台视口（`StageFigures`
+立绘层 + `CastDock` 头像组 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel`
+剧情回顾（「剧情」页 = 消息流 + 回溯栏，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
+结局卡 `EndingCard` 浮在最上层。
+
+- **立绘按「全身立绘 → 头像 → 竖排名牌」降级**；台上最多三人，取最近开口的
+  （`lib/stage-cast.ts`，纯函数）。说话人取在途流，否则看最后一条非系统消息。
+- **剧情回顾在 ≥1024px 默认展开、窄屏是抽屉**。E2E 的默认视口是 1280×720，`core-flow`
+  依赖消息行与回溯下拉框在首屏可见——改默认展开的断点前先看它。
+- **页面上只能有一个 `<select>`**（回溯栏）：`core-flow` 用 `page.locator("select")` 定位，
+  多一个就撞 strict mode。消息行里的回溯按钮可读名是「回溯到这一句」，故意避开
+  `/回到 #\d+/`。
+- **幕间过场全程 `pointer-events-none`**，不挡点击；每会话每幕在一个标签页里只演一次
+  （sessionStorage）。
+- **配音中的说话人**来自 `AudioTrackPlayer`（收到 `<audio>` 的 `playing` 才算，静音时为空），
+  用 `useSpeakingSpeakers()` 订阅；只用来点亮光环，不是音量电平。
+- **特效档位**：`uiStore.effects`（本机 localStorage 记住），`useEffectsLevel()` 取实际档位，
+  系统「减少动态效果」时强制简洁。简洁档下粒子、视差、墨晕不渲染，CSS 循环停住，毛玻璃
+  换成不模糊的实底（`[data-effects="lite"]`）。档位写在 `GameScreen` 与选角页的根节点上。
+- **续写目标还没有数据**：契约里有 `stage3_goals`，但后端投影写死为空、`session_init`
+  也不下发，前端暂不展示。
 
 ### 字体
 
@@ -64,8 +110,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   ready 就会去签预签名 URL，画廊不登录、后端也不该被它碰到（那会是一串 401）。
 - 画廊**不渲染真正的页面组件**（`app/student/page.tsx` 等），因为那些页面自己拉接口。
   它只搭内容层，并复用已导出的 `GameRow` / `SquareCard` / `ScriptCard`，不另抄一份。
-- 舞台那一屏的骨架与 `app/game/page.tsx` **有意重复**（把游戏页版式抽成共享组件会动到
-  WS / 状态机接线，为一个画廊页不值得）。**改游戏页版式时记得同步这一屏。**
+- 舞台那一屏直接渲染 `GameScreen`，与游戏页同一份版式：`GameScreen` 只读 gameStore，
+  接 WS、拉状态都在 `app/game/page.tsx`，画廊往 store 灌假数据即可。结局卡、选角卡另有单独样例。
 
 ### 端到端测试（Playwright）
 

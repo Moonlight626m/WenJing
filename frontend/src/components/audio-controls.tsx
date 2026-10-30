@@ -1,7 +1,8 @@
 "use client";
 
 import { useGameStore } from "@/stores/gameStore";
-import { Button } from "@/components/ui/button";
+import { iconButtonClass } from "@/components/ui/button";
+import { SpeakerIcon, SpeakerOffIcon, StopIcon } from "@/components/ui/icons";
 
 /**
  * 音频控制（#63 / ADR-0005 §11）：静音开关 + 打断。
@@ -19,26 +20,26 @@ export function AudioControls() {
   const bargeIn = useGameStore((s) => s.bargeIn);
 
   return (
-    <div className="flex items-center gap-2">
-      <Button
-        tone="outline"
-        size="xs"
+    <div className="flex items-center gap-1.5">
+      <button
+        type="button"
         onClick={() => setMuted(!muted)}
         aria-pressed={muted}
         aria-label={muted ? "取消静音" : "静音"}
         title={muted ? "取消静音" : "静音"}
+        className={iconButtonClass(muted)}
       >
-        {muted ? "静音中" : "有声"}
-      </Button>
-      <Button
-        tone="outline"
-        size="xs"
+        {muted ? <SpeakerOffIcon /> : <SpeakerIcon />}
+      </button>
+      <button
+        type="button"
         onClick={() => bargeIn()}
         aria-label="打断当前配音"
         title="停掉正在播放的配音"
+        className={iconButtonClass()}
       >
-        打断配音
-      </Button>
+        <StopIcon />
+      </button>
     </div>
   );
 }
