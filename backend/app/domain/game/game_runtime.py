@@ -30,6 +30,7 @@ from app.domain.game import event as evt
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
+from app.domain.game.goals import GoalState, derive_goals
 from app.domain.game.media import scene_visual_description
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.streaming import SpeechStreamSink
@@ -225,7 +226,12 @@ class GameRuntime:
             "current_asset": (
                 current_asset.model_dump(mode="json") if current_asset is not None else None
             ),
+            # 续写目标从活动分支事件派生（见 goals.py），restore 不读它
+            "stage3_goals": [g.to_dict() for g in self._stage3_goals()],
         }
+
+    def _stage3_goals(self) -> list[GoalState]:
+        return derive_goals(self.event_store.active_events())
 
     def restore(self, state_dump: dict) -> None:
         """从显式状态快照重建运行时（快照 + 重放基线；分支重放语义在 #8 完善）。"""
@@ -428,7 +434,50 @@ class GameRuntime:
     async def _on_enter_stage3(self) -> StepResult:
         self._transition_to(StageValue.STAGE3_EXTENDING.value)
         self._log.info("stage3_start")
+        await self._set_stage3_goals()
         return await self._drive_until_interaction()
+
+    async def _set_stage3_goals(self) -> None:
+        """进入续写时定下小目标并写成事件。本分支已有目标（不应发生）就不重定。"""
+        if self._stage3_goals():
+            return
+        descriptions = await self.screenwriter.design_stage3_goals(
+            self.script,
+            player_role=self.state.player_role,
+            plot_log=self.state.plot_log,
+        )
+        self._append(
+            evt.EVENT_STAGE3_GOALS_SET,
+            {
+                "goals": [
+                    {"goal_id": i, "description": d}
+                    for i, d in enumerate(descriptions, start=1)
+                ]
+            },
+        )
+
+    async def _judge_stage3_goals(
+        self, action_text: str, reactions: list[tuple[str, str]]
+    ) -> list[GoalState]:
+        """这一轮之后判定目标达成，每个新达成的目标写一条事件；返回判定后的目标。"""
+        goals = self._stage3_goals()
+        if not goals or all(g.achieved for g in goals):
+            return goals
+        achieved, reason = await self.verifier.judge_stage3_goals(
+            goals,
+            player_role=self.state.player_role,
+            action=action_text,
+            reactions=reactions,
+        )
+        by_id = {g.goal_id: g for g in goals}
+        for gid in achieved:
+            self._append(
+                evt.EVENT_STAGE3_GOAL_ACHIEVED,
+                {"goal_id": gid, "description": by_id[gid].description, "reason": reason},
+            )
+        if achieved:
+            self._log.info("stage3_goal_achieved", extra={"goal_ids": achieved})
+        return self._stage3_goals()
 
     async def _on_input(self, cid: str, *, action_type: str, payload: dict) -> StepResult:
         if self.active_interaction is None:
@@ -445,6 +494,15 @@ class GameRuntime:
             type=action_type,
             option_id=option_val,
             text=payload.get("text"),
+        )
+        # 续写目标判定要知道学生做了什么：选项只带编号，先趁交互点还在把文字取出来
+        action_text = action.text or next(
+            (
+                str(o.get("text", ""))
+                for o in self.active_interaction.options
+                if o.get("id") == option_val
+            ),
+            "",
         )
         self._append(
             evt.EVENT_PLAYER_ACTION,
@@ -467,12 +525,19 @@ class GameRuntime:
             self._transition_to(StageValue.STAGE2_COMPLETE.value)
             return await self._result_at_point(new_events=[])
 
-        await self._collect_reactions(action, current_stage)
+        reactions = await self._collect_reactions(action, current_stage)
         await self._flush_events()
 
         if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+            goals = await self._judge_stage3_goals(action_text, reactions)
             self.state.stage3_round_taken += 1
-            if self.state.stage3_round_taken >= self.config.stage3_rounds:
+            # 目标导向收敛：目标全部达成即收束；轮次上限兜底（目标判不出来时也能结束）
+            converged = bool(goals) and all(g.achieved for g in goals)
+            if converged or self.state.stage3_round_taken >= self.config.stage3_rounds:
+                self._log.info(
+                    "stage3_end",
+                    extra={"converged": converged, "rounds": self.state.stage3_round_taken},
+                )
                 self._transition_to(GameStage.ENDED.value)
                 self.state.ended = True
                 return await self._result_at_point(new_events=[], terminal=True)
@@ -641,12 +706,16 @@ class GameRuntime:
             attempts_left -= 1
         return valid
 
-    async def _collect_reactions(self, action: PlayerAction, stage: str) -> None:
+    async def _collect_reactions(
+        self, action: PlayerAction, stage: str
+    ) -> list[tuple[str, str]]:
+        """各角色并发回应；返回成功的 (角色名, 回应) 供续写目标判定。"""
         names = self.characters.active_names()
         results = await asyncio.gather(
             *[self._react(name, action, stage) for name in names],
             return_exceptions=True,
         )
+        reactions: list[tuple[str, str]] = []
         for name, res in zip(names, results):
             if isinstance(res, BaseException):
                 self._log.error(
@@ -658,6 +727,8 @@ class GameRuntime:
             # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
             self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
             self.state.speech_log.append((name, self.state.scene_key, res))
+            reactions.append((name, res))
+        return reactions
 
     async def _react(self, name: str, action: PlayerAction, stage: str) -> str:
         """单角色反应；配了流出口就开一条流，逐段推给客户端。

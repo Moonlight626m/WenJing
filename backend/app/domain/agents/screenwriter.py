@@ -5,6 +5,7 @@
 - `advance_plot`：推进到下一 beat，产出 PlotAdvancement
 - `confirm_direction`：D5 两段式第一步，产出当前矛盾
 - `design_interaction`：决定模式（A/B/C）并生成交互点
+- `design_stage3_goals`：进入续写时按教学重点定 2–3 个小目标
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from app.contracts.enums import UsagePurpose
+from app.domain.game.goals import MAX_GOALS, fallback_goals, parse_goal_list
 from app.domain.game.types import (
     Beat,
     Direction,
@@ -109,6 +112,54 @@ class ScreenwriterAgent:
             ],
             hint="可自定义输入",
         )
+
+
+    async def design_stage3_goals(
+        self,
+        script: Script,
+        *,
+        player_role: str | None,
+        plot_log: list[str],
+    ) -> list[str]:
+        """为续写定 2–3 个小目标：学生能靠自己角色的言行达成、并落在教学重点上。
+
+        LLM 失败或输出解析不出目标时退回 `fallback_goals`（直接从教学重点出题），
+        续写不因出题失败而卡住。
+        """
+        focus = "；".join(script.teaching_focus) or "（未标注）"
+        recent = "\n".join(plot_log[-6:]) or "（无）"
+        names = "、".join(c.name for c in script.characters)
+        try:
+            raw = await self.llm.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": "你是编剧 Agent，为语文课文的剧情续写设定小目标。",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"课文：《{script.title}》\n"
+                            f"教学重点：{focus}\n"
+                            f"学生扮演：{player_role or '（未选）'}；在场角色：{names}\n"
+                            f"课文演到这里为止的剧情：\n{recent}\n\n"
+                            f"请为接下来的续写定 2 到 {MAX_GOALS} 个小目标。要求：每个一句话、"
+                            "不超过 30 字；学生通过自己角色的言行就能达成；尽量落在教学重点上；"
+                            "不要剧透课文后文。只输出 JSON：{\"goals\": [\"目标一\", \"目标二\"]}"
+                        ),
+                    },
+                ],
+                purpose=UsagePurpose.AGENT,
+            )
+        except Exception:
+            logger.warning("stage3_goals_degraded", extra={"reason": "llm_failed"})
+            return fallback_goals(script.teaching_focus, player_role)
+
+        goals = parse_goal_list(raw)
+        if len(goals) < 2:
+            logger.info("stage3_goals_fallback", extra={"parsed": len(goals)})
+            return fallback_goals(script.teaching_focus, player_role)
+        return goals
 
 
 def total_beats(script: Script) -> int:

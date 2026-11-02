@@ -45,6 +45,8 @@
 
 事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）。生产侧的调用点只有一处：`GameRuntime._current_background`（#56），解析顺序是**事件索引优先、剧本槽位兜底**——槽位是 Stage2 离线预生成的图（那时还没有 `asset_ready` 事件），运行期配图必须压过它，否则续写阶段的实时图永远显示不出来。
 
+续写目标（Stage3）同样**只存在于事件里**：进入续写时写 `stage3_goals_set`，每轮判定达成写 `stage3_goal_achieved`，`domain/game/goals.py::derive_goals` 从活动分支事件折叠出当前状态，不进 `_RState`——回溯换分支后达成状态自动回退。全部达成即收束，`stage3_rounds` 降为兜底上限；出题/判定的 LLM 输出解析不了时分别退回「按教学重点出题」与「本轮未达成」，所以确定性 LLM 下行为与改动前一致。
+
 运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
 
 ### 运行期流式与音频（ADR-0005 §10/§11）

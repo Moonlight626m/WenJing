@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, m } from "motion/react";
 
+import type { Stage3Goal } from "@/lib/contracts/types";
 import type { ChatMessage } from "@/stores/gameStore";
 import { useGameStore } from "@/stores/gameStore";
 import { Button, buttonClass } from "@/components/ui/button";
@@ -34,16 +35,20 @@ export function EndingPanel({
   scriptTitle,
   playerRole,
   messages,
+  goals = [],
   onReview,
   onClose,
 }: {
   scriptTitle: string | null;
   playerRole: string | null;
   messages: ChatMessage[];
+  /** 续写目标；没进续写就结束时为空，不显示那一块 */
+  goals?: Stage3Goal[];
   onReview: () => void;
   onClose?: () => void;
 }) {
   const { yours, lines, rollbacks } = endingStats(messages, playerRole);
+  const achieved = goals.filter((g) => g.achieved);
 
   return (
     <div className="glass glow-border relative flex w-[min(30rem,calc(100vw-2rem))] flex-col items-center rounded-3xl px-8 pt-10 pb-7 text-center">
@@ -74,6 +79,32 @@ export function EndingPanel({
         ) : null}
         。
       </p>
+      {goals.length > 0 && (
+        <div className="mt-5 w-full rounded-2xl border border-glass-edge px-4 py-3 text-left">
+          <p className="text-xs text-ink-faint">
+            续写目标达成{" "}
+            <span className="text-glow-gold tabular-nums">
+              {achieved.length}/{goals.length}
+            </span>
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {goals.map((g) => (
+              <li
+                key={g.goal_id}
+                className={`flex gap-1.5 text-xs leading-relaxed ${
+                  g.achieved ? "text-ink-soft" : "text-ink-faint"
+                }`}
+              >
+                <span aria-hidden className={g.achieved ? "text-glow-gold" : ""}>
+                  {g.achieved ? "✓" : "·"}
+                </span>
+                {g.description}
+                <span className="sr-only">{g.achieved ? "（已达成）" : "（未达成）"}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
         <Button tone="glow" size="sm" onClick={onReview}>
           回看全剧
@@ -100,6 +131,7 @@ export function EndingCard({ onReview }: { onReview: () => void }) {
   const scriptTitle = useGameStore((s) => s.scriptTitle);
   const playerRole = useGameStore((s) => s.playerRole);
   const messages = useGameStore((s) => s.messages);
+  const goals = useGameStore((s) => s.stage3Goals);
   const [dismissed, setDismissed] = useState(false);
   const open = stage === "ended" && !dismissed;
 
@@ -125,6 +157,7 @@ export function EndingCard({ onReview }: { onReview: () => void }) {
               scriptTitle={scriptTitle}
               playerRole={playerRole}
               messages={messages}
+              goals={goals}
               onReview={() => {
                 setDismissed(true);
                 onReview();

@@ -18,9 +18,16 @@ from app.contracts.runtime import (
     OptionItem,
     RuntimeState,
     RuntimeUpdate,
+    Stage3Goal,
 )
 from app.contracts.script import AssetRef
+from app.domain.game.event import (
+    EVENT_ROLLBACK,
+    EVENT_STAGE3_GOAL_ACHIEVED,
+    EVENT_STAGE3_GOALS_SET,
+)
 from app.domain.game.game_runtime import StepResult
+from app.domain.game.goals import GoalState, apply_goal_event
 from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
 
@@ -35,6 +42,8 @@ _EVENT_TYPE_MAP: dict[str, EventType] = {
     "character_speech": EventType.AGENT_REACTIONS_DONE,
     "rollback": EventType.ROLLBACK_EXECUTED,
     "asset_ready": EventType.ASSET_READY,
+    "stage3_goals_set": EventType.STAGE3_GOALS_SET,
+    "stage3_goal_achieved": EventType.STAGE3_GOAL_ACHIEVED,
 }
 
 
@@ -66,7 +75,11 @@ def project_interaction(
         mode=InteractionMode(ix["mode"]),
         prompt=str(ix.get("context", "")),
         options=[
-            OptionItem(option_id=str(o.get("id")), label=str(o.get("text", "")))
+            OptionItem(
+                option_id=str(o.get("id")),
+                label=str(o.get("text", "")),
+                proposed_by=_proposer(o.get("proposed_by")),
+            )
             for o in ix.get("options", [])
         ],
         hint=str(ix.get("hint", "") or ""),
@@ -114,7 +127,7 @@ def project_state(
             export.get("active_interaction"),
             latest_event_id=int(export.get("latest_event_id", 0)),
         ),
-        stage3_goals=[],
+        stage3_goals=project_goals(export.get("stage3_goals") or []),
     )
 
 
@@ -125,6 +138,28 @@ def _scene_id_from_key(scene_key: str | None) -> int | None:
         if rest.isdigit():
             return int(rest)
     return None
+
+
+def _proposer(raw: Any) -> str | None:
+    """引擎选项的 proposed_by → 契约字段：系统选项（"system"）与缺省都投成 None。"""
+    if not isinstance(raw, str) or not raw or raw == "system":
+        return None
+    return raw
+
+
+def project_goals(goals: list[dict[str, Any]] | list[GoalState]) -> list[Stage3Goal]:
+    """引擎导出的续写目标（dict 或 GoalState）→ 契约 Stage3Goal。"""
+    out: list[Stage3Goal] = []
+    for g in goals:
+        data = g.to_dict() if isinstance(g, GoalState) else g
+        out.append(
+            Stage3Goal(
+                goal_id=int(data["goal_id"]),
+                description=str(data.get("description", "")),
+                achieved=bool(data.get("achieved", False)),
+            )
+        )
+    return out
 
 
 def project_update(
@@ -170,6 +205,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     "rollback": "system",
     "proposal": "system",
     "direction": "system",
+    # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
+    "stage3_goals_set": "system",
+    "stage3_goal_achieved": "system",
     # 运行期配图就绪（#56）：命令外事件路径的唯一对外出口——不列这里，
     # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
     "asset_ready": "asset_ready",
@@ -188,6 +226,11 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return f"{p.get('proposed_by')} 提议：{p.get('description', '')}"
     if event_type == "direction":
         return str(p.get("conflict", ""))
+    if event_type == EVENT_STAGE3_GOALS_SET:
+        descs = [str(g.get("description", "")) for g in p.get("goals", []) if isinstance(g, dict)]
+        return "续写目标：" + "；".join(descs)
+    if event_type == EVENT_STAGE3_GOAL_ACHIEVED:
+        return f"达成续写目标：{p.get('description', '')}"
     return event_type
 
 
@@ -204,7 +247,10 @@ def project_messages(
     `after_seq` 之后的消息用于断线重连补发；`interaction` 追加为最后一条。
     """
     msgs: list[dict[str, Any]] = []
+    # 续写目标随事件顺序折叠：补发从中间开始时，快照也是那一刻的真实状态
+    goals: list[GoalState] = []
     for seq, ev in enumerate(store.active_events()):
+        goals = apply_goal_event(goals, ev.event_type, ev.payload or {})
         if seq <= after_seq or ev.event_type in _SILENT_EVENTS:
             continue
         category = _MESSAGE_CATEGORY_MAP.get(ev.event_type)
@@ -238,6 +284,9 @@ def project_messages(
                 payload["current_asset"] = p["current_asset"]
         else:
             payload["text"] = _system_text(ev.event_type, p)
+        # 目标变化与回溯都带一份完整目标快照：前端直接替换，回溯到续写之前也会清空
+        if ev.event_type in (EVENT_STAGE3_GOALS_SET, EVENT_STAGE3_GOAL_ACHIEVED, EVENT_ROLLBACK):
+            payload["stage3_goals"] = [g.model_dump(mode="json") for g in project_goals(goals)]
         msgs.append({"type": category, "seq": seq, "payload": payload})
     if interaction is not None:
         msgs.append(
