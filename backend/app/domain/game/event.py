@@ -35,6 +35,10 @@ EVENT_SYSTEM = "system"
 EVENT_ROLLBACK = "rollback"
 # 场景资产就绪（ADR-0005 §9，issue #55）：命令外事件路径写入，重放派生资产索引。
 EVENT_ASSET_READY = "asset_ready"
+# 续写目标（Stage3）：进入续写时定下目标、每轮判定达成；目标状态由 `goals.derive_goals`
+# 从活动分支事件派生，不进 `_RState`。
+EVENT_STAGE3_GOALS_SET = "stage3_goals_set"
+EVENT_STAGE3_GOAL_ACHIEVED = "stage3_goal_achieved"
 
 MAIN_BRANCH_ID = 1
 

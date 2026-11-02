@@ -62,6 +62,8 @@ export type EventType =
   | "stage_transitioned"
   | "rollback_executed"
   | "asset_ready"
+  | "stage3_goals_set"
+  | "stage3_goal_achieved"
   | "branch_taken"
   | "branch_completed";
 
@@ -690,6 +692,8 @@ export interface DomainEvent {
 export interface OptionItem {
   option_id: string;
   label: string;
+  /** 提议这一项的角色名；系统给的选项（进入续写 / 到此结束）为 null。2.8.0 起 */
+  proposed_by?: string | null;
 }
 
 export interface ActiveInteraction {

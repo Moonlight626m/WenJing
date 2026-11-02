@@ -16,6 +16,8 @@
         "stage_transitioned",
         "rollback_executed",
         "asset_ready",
+        "stage3_goals_set",
+        "stage3_goal_achieved",
         "branch_taken",
         "branch_completed"
       ],

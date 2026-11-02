@@ -85,6 +85,9 @@ class EventType(StrEnum):
     STAGE_TRANSITIONED = "stage_transitioned"
     ROLLBACK_EXECUTED = "rollback_executed"
     ASSET_READY = "asset_ready"
+    # 续写目标（Stage3）：定下目标 / 某个目标达成
+    STAGE3_GOALS_SET = "stage3_goals_set"
+    STAGE3_GOAL_ACHIEVED = "stage3_goal_achieved"
     # 伪分支播放（方案 branch-montage-dm §6）：分支进入/完成，分支内
     # plot_advancement 带 branch_key（主干为 null）区分两条推进线。
     BRANCH_TAKEN = "branch_taken"

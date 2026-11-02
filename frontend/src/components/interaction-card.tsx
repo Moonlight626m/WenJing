@@ -1,125 +1,378 @@
 "use client";
 
-import { useState } from "react";
+import {
+  useEffect,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react";
+import { AnimatePresence, m, type Variants } from "motion/react";
 
-import type { CommandKind } from "@/lib/contracts/types";
+import type {
+  ActiveInteraction,
+  CommandKind,
+  OptionItem,
+  StageValue,
+} from "@/lib/contracts/types";
 import { useGameStore } from "@/stores/gameStore";
+import { Thinking } from "@/components/thinking";
 import { VoiceInput } from "@/components/voice-input";
 import { Button, buttonClass } from "@/components/ui/button";
-import { TextArea } from "@/components/ui/field";
+import { SendIcon } from "@/components/ui/icons";
+import { MotionRoot } from "@/components/ui/motion-root";
 
-/** 三种输入模式：options / free_input / options_with_fallback。 */
+/** 出场缓动：先快后慢，落定时不回弹。 */
+const EASE = [0.2, 0.7, 0.2, 1] as const;
+
+/** 选项依次从左滑入，间隔 70ms。 */
+const OPTION_LIST: Variants = {
+  hidden: {},
+  show: { transition: { staggerChildren: 0.07, delayChildren: 0.12 } },
+};
+const OPTION_ITEM: Variants = {
+  hidden: { opacity: 0, x: -14 },
+  show: { opacity: 1, x: 0, transition: { duration: 0.35, ease: EASE } },
+};
+
+/** 数字键直选只认 1–9。 */
+const MAX_HOTKEYS = 9;
+
+/** 焦点在可输入元素里时，数字键是在打字，不是在选。 */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
+/**
+ * 三种输入模式：options / free_input / options_with_fallback。
+ *
+ * 每个 interaction 是一张独立的卡：换了 `interaction_id` 旧卡先退场、新卡再进场，
+ * 选项依次滑入。轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
+ */
 export function InteractionCard() {
   const interaction = useGameStore((s) => s.interaction);
+  const stage = useGameStore((s) => s.stage);
+  const allowedCommands = useGameStore((s) => s.allowedCommands);
+  // 自由输入的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
+  const [freeText, setFreeText] = useState("");
+  const extras = allowedCommands.filter(isExtraCommand);
+
+  return (
+    <MotionRoot>
+      <AnimatePresence mode="wait">
+        {interaction ? (
+          <InteractionBody
+            key={interaction.interaction_id}
+            interaction={interaction}
+            freeText={freeText}
+            setFreeText={setFreeText}
+          />
+        ) : extras.length > 0 ? (
+          <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
+        ) : null}
+      </AnimatePresence>
+    </MotionRoot>
+  );
+}
+
+type ExtraCommand = Extract<CommandKind, "enter_stage3" | "confirm_ending" | "exit_game">;
+
+function isExtraCommand(k: CommandKind): k is ExtraCommand {
+  return k === "enter_stage3" || k === "confirm_ending" || k === "exit_game";
+}
+
+/** 阶段卡的引导语：没有交互点、只剩阶段命令时（如还原演完）告诉学生下一步是什么。 */
+const PHASE_PROMPTS: Partial<Record<StageValue, { prompt: string; hint: string }>> = {
+  stage2_complete: {
+    prompt: "课文演完了。",
+    hint: "可以接着续写，看看故事还能怎么走；也可以到此为止。",
+  },
+};
+
+/** 阶段命令按钮：进入续写、确认结局用主按钮，退出游戏用文字链。 */
+function ExtraCommands({ commands, busy }: { commands: ExtraCommand[]; busy: boolean }) {
+  const submit = useGameStore((s) => s.submitCommand);
+  return (
+    <>
+      {commands.map((k) =>
+        k === "exit_game" ? (
+          <button
+            key={k}
+            type="button"
+            disabled={busy}
+            onClick={() => submit(k, {}, EXTRA_LABELS[k])}
+            className={buttonClass("quiet", "xs")}
+          >
+            {EXTRA_LABELS[k]}
+          </button>
+        ) : (
+          <Button
+            key={k}
+            tone="glow"
+            size="sm"
+            disabled={busy}
+            onClick={() => submit(k, {}, EXTRA_LABELS[k])}
+          >
+            {EXTRA_LABELS[k]}
+          </Button>
+        )
+      )}
+    </>
+  );
+}
+
+/**
+ * 阶段卡：引擎停在阶段之间（还原演完、等学生决定是否续写）时没有交互点，
+ * 只有 `enter_stage3` / `exit_game` 这类阶段命令。此前这里整张卡不渲染，
+ * 学生找不到进入续写的入口。
+ */
+function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraCommand[] }) {
+  const pending = useGameStore((s) => s.pending);
+  const connection = useGameStore((s) => s.connection);
+  const busy = pending !== null || connection !== "connected";
+  const copy = PHASE_PROMPTS[stage];
+
+  return (
+    <m.div
+      initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+      transition={{ duration: 0.4, ease: EASE }}
+      className="glass glow-border relative rounded-3xl px-4 py-3.5 md:px-5"
+      style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
+    >
+      {copy && (
+        <>
+          <p className="font-serif text-lg text-ink">{copy.prompt}</p>
+          <p className="mt-0.5 text-xs text-ink-faint">{copy.hint}</p>
+        </>
+      )}
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${copy ? "mt-3" : ""}`}>
+        <ExtraCommands commands={commands} busy={busy} />
+      </div>
+      {pending && (
+        <Thinking
+          label={`正在推进 ${pending.label}`}
+          since={pending.sentAt}
+          announce={false}
+          className="mt-3 text-xs"
+        />
+      )}
+    </m.div>
+  );
+}
+
+function InteractionBody({
+  interaction,
+  freeText,
+  setFreeText,
+}: {
+  interaction: ActiveInteraction;
+  freeText: string;
+  setFreeText: (update: (prev: string) => string) => void;
+}) {
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const pending = useGameStore((s) => s.pending);
   const connection = useGameStore((s) => s.connection);
   const submit = useGameStore((s) => s.submitCommand);
   const sessionId = useGameStore((s) => s.sessionId);
-  const [freeText, setFreeText] = useState("");
-
-  if (!interaction) return null;
+  const [chosenId, setChosenId] = useState<string | null>(null);
 
   const busy = pending !== null || connection !== "connected";
   const canChoose = allowedCommands.includes("choose_option");
   const canFree = allowedCommands.includes("free_input");
+  const yourTurn = canChoose || canFree;
+  const options = interaction.options;
 
-  const extraCommands = allowedCommands.filter(
-    (k): k is Extract<CommandKind, "enter_stage3" | "confirm_ending" | "exit_game"> =>
-      k === "enter_stage3" || k === "confirm_ending" || k === "exit_game"
-  );
+  const extraCommands = allowedCommands.filter(isExtraCommand);
+
+  // 数字键直选：焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项
+  useEffect(() => {
+    if (!canChoose || busy) return;
+    function onKeyDown(e: globalThis.KeyboardEvent) {
+      if (e.defaultPrevented || e.isComposing) return;
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      if (isTypingTarget(e.target)) return;
+      const n = Number(e.key);
+      if (!Number.isInteger(n) || n < 1 || n > Math.min(MAX_HOTKEYS, options.length)) {
+        return;
+      }
+      e.preventDefault();
+      const opt = options[n - 1];
+      setChosenId(opt.option_id);
+      submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canChoose, busy, options, submit]);
+
+  function choose(opt: OptionItem) {
+    if (busy) return;
+    setChosenId(opt.option_id);
+    submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+  }
 
   function sendFreeInput() {
     const text = freeText.trim();
     if (!text || busy || !canFree) return;
     submit("free_input", { text }, "自由输入");
-    setFreeText("");
+    setFreeText(() => "");
   }
 
+  function onComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    // 输入法选词时的回车是「上屏」不是发送。Safari 在 keydown 时 isComposing 已复位，
+    // 只能再看一眼 keyCode 229。
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    sendFreeInput();
+  }
+
+  // 选中态只在等待引擎时成立；命令失败、pending 清空后选项全部恢复可点
+  const activeChoice = pending ? chosenId : null;
+
   return (
-    <div className="rounded-lg border border-rule bg-panel px-4 py-3.5 backdrop-blur-sm">
-      <p className="font-serif text-base text-ink">
-        {interaction.prompt || "请选择你的行动"}
-      </p>
-      {interaction.hint && (
-        <p className="mt-1 text-xs text-ink-faint">{interaction.hint}</p>
-      )}
+    <m.div
+      initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+      transition={{ duration: 0.4, ease: EASE }}
+      className={`glass relative rounded-3xl px-4 py-3.5 md:px-5 ${
+        yourTurn || pending ? "glow-border" : ""
+      }`}
+      style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
+    >
+      <div className="flex items-start gap-2.5">
+        {yourTurn && (
+          <span
+            aria-hidden
+            className="mt-2.5 size-1.5 shrink-0 rounded-full bg-flag shadow-[0_0_8px_var(--wj-flag)]"
+          />
+        )}
+        <div className="min-w-0">
+          <p className="font-serif text-lg text-ink">
+            {interaction.prompt || "请选择你的行动"}
+          </p>
+          {interaction.hint && (
+            <p className="mt-0.5 text-xs text-ink-faint">{interaction.hint}</p>
+          )}
+        </div>
+      </div>
 
       {/* 抉择按整行排：选项往往是整句中文，左对齐的条目比一排药丸好读 */}
-      {canChoose && (
-        <div className="mt-3 flex flex-col gap-1.5">
-          {interaction.options.map((opt) => (
-            <button
-              key={opt.option_id}
-              disabled={busy}
-              onClick={() =>
-                submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`)
-              }
-              className="w-full rounded-md border border-rule-strong bg-surface px-3.5 py-2.5 text-left font-serif text-base text-ink transition-colors hover:border-accent hover:bg-accent-wash disabled:pointer-events-none disabled:opacity-45"
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+      {canChoose && options.length > 0 && (
+        <m.ol
+          variants={OPTION_LIST}
+          initial="hidden"
+          animate="show"
+          className="mt-3 flex flex-col gap-2"
+        >
+          {options.map((opt, i) => {
+            const chosen = activeChoice === opt.option_id;
+            return (
+              <m.li key={opt.option_id} variants={OPTION_ITEM}>
+                <m.button
+                  type="button"
+                  disabled={busy}
+                  data-chosen={chosen}
+                  whileTap={{ scale: 0.985 }}
+                  onClick={() => choose(opt)}
+                  aria-keyshortcuts={i < MAX_HOTKEYS ? String(i + 1) : undefined}
+                  className={[
+                    "choice-glow group relative flex w-full items-center gap-3 overflow-hidden",
+                    "rounded-2xl border border-glass-edge px-3.5 py-2.5 text-left font-serif text-base text-ink",
+                    "transition-[opacity,background-color] duration-300 disabled:pointer-events-none",
+                    chosen ? "bg-surface/80" : "bg-surface/35 hover:bg-surface/65",
+                    busy && !chosen ? "opacity-40" : "opacity-100",
+                  ].join(" ")}
+                >
+                  {i < MAX_HOTKEYS && (
+                    <kbd
+                      aria-hidden
+                      className={`grid size-6 shrink-0 place-items-center rounded-md border font-sans text-xs transition-colors ${
+                        chosen
+                          ? "border-glow-jade/70 text-glow-jade"
+                          : "border-glass-edge text-ink-faint group-hover:border-glow-jade/60 group-hover:text-glow-jade"
+                      }`}
+                    >
+                      {i + 1}
+                    </kbd>
+                  )}
+                  <span className="min-w-0 flex-1">{opt.label}</span>
+                  {/* 还原阶段的选项是各角色的提议：标出是谁的主意，学生会去想他为什么这么做 */}
+                  {opt.proposed_by && (
+                    <span className="shrink-0 self-start rounded-full border border-glow-gold/30 px-2 py-0.5 font-sans text-2xs text-glow-gold">
+                      {opt.proposed_by}的主意
+                    </span>
+                  )}
+                </m.button>
+              </m.li>
+            );
+          })}
+        </m.ol>
       )}
 
       {canFree && (
-        <div className="mt-3 flex items-start gap-2">
-          <TextArea
-            value={freeText}
-            onChange={(e) => setFreeText(e.target.value)}
-            placeholder={
-              interaction.options.length > 0 ? "或写下你的行动…" : "写下你的行动…"
-            }
-            rows={2}
-            maxLength={2000}
-            disabled={busy}
-            className="w-full min-w-0 flex-1 resize-none"
-          />
-          <div className="flex flex-col items-stretch gap-2">
-            <Button
-              tone="accent"
-              size="sm"
-              onClick={sendFreeInput}
-              disabled={busy || !freeText.trim()}
-            >
-              发送
-            </Button>
+        <div className="mt-3">
+          <div className="flex items-end gap-1.5 rounded-2xl border border-glass-edge bg-sunken/55 p-1.5 pl-3.5 transition-[border-color,box-shadow] duration-200 focus-within:border-glow-jade/50 focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--wj-glow-jade)_16%,transparent)]">
+            <textarea
+              value={freeText}
+              onChange={(e) => setFreeText(() => e.target.value)}
+              onKeyDown={onComposerKeyDown}
+              placeholder={options.length > 0 ? "或写下你的行动…" : "写下你的行动…"}
+              aria-label="写下你的行动"
+              rows={2}
+              maxLength={2000}
+              disabled={busy}
+              className="min-w-0 flex-1 resize-none bg-transparent py-1.5 font-serif text-base text-ink placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+            />
             {/* 语音是增强输入通道：识别结果填进输入框，键盘路径不受影响（#64） */}
             <VoiceInput
               sessionId={sessionId}
               disabled={busy}
               onText={(text) => setFreeText((prev) => (prev ? `${prev}${text}` : text))}
             />
+            <Button
+              tone="glow"
+              size="sm"
+              onClick={sendFreeInput}
+              disabled={busy || !freeText.trim()}
+            >
+              <SendIcon />
+              发送
+            </Button>
           </div>
+          <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
+            Enter 发送，Shift + Enter 换行
+            {canChoose && options.length > 0 ? "；也可以直接按数字键选上面的选项" : ""}
+          </p>
         </div>
       )}
 
-      {!canChoose && !canFree && (
+      {!yourTurn && !pending && (
         <p className="mt-3 text-xs text-ink-faint">等待剧情推进…</p>
       )}
 
       {extraCommands.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-rule pt-3">
-          {extraCommands.map((k) => (
-            <button
-              key={k}
-              disabled={busy}
-              onClick={() => submit(k, {}, EXTRA_LABELS[k])}
-              className={buttonClass("quiet", "xs")}
-            >
-              {EXTRA_LABELS[k]}
-            </button>
-          ))}
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-glass-edge pt-3">
+          <ExtraCommands commands={extraCommands} busy={busy} />
         </div>
       )}
 
       {pending && (
-        <p className="mt-3 animate-pulse text-xs text-flag">
-          正在推进 {pending.label}（真实 LLM 模式下可能需要数十秒）
-        </p>
+        <Thinking
+          label={`正在推进 ${pending.label}`}
+          since={pending.sentAt}
+          announce={false}
+          className="mt-3 text-xs"
+        />
       )}
-    </div>
+    </m.div>
   );
 }
 

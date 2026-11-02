@@ -28,7 +28,8 @@
     "options": [
       {
         "option_id": "opt_stop_him",
-        "label": "拦住他说：爸爸，我自己去买"
+        "label": "拦住他说：爸爸，我自己去买",
+        "proposed_by": "儿子"
       },
       {
         "option_id": "opt_watch_silently",

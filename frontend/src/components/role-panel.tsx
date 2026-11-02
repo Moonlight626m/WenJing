@@ -1,11 +1,12 @@
 "use client";
 
 import type { CharacterProfile } from "@/lib/contracts/types";
+import { initialOf, listedCharacters } from "@/lib/stage-cast";
 import { Tag } from "@/components/ui/tag";
 
 /**
- * 在场角色（侧栏）。朱砂标"你"——与舞台上其他角色名同一个语义：
- * 朱砂只表示"在场"，不作装饰色。
+ * 在场角色（剧情回顾面板的「角色」页）。朱砂标"你"，与消息流、字幕里你的名牌同色；其他角色用泥金，
+ * 和他们在台词里的名牌对得上。朱砂只表示"在场"，不作装饰色。
  */
 export function RolePanel({
   characters,
@@ -16,17 +17,7 @@ export function RolePanel({
   playableRoles: string[];
   playerRole: string | null;
 }) {
-  const listed =
-    characters.length > 0
-      ? characters
-      : playableRoles.map((name) => ({
-          name,
-          public_background: "",
-          personality_traits: [],
-          speech_style: null,
-          knowledge_boundary: { knows: [], not_knows: [] },
-          is_player_playable: { value: true, reason: "" },
-        }));
+  const listed = listedCharacters(characters, playableRoles);
   const playableSet = new Set(
     characters.filter((c) => c.is_player_playable.value).map((c) => c.name)
   );
@@ -43,14 +34,27 @@ export function RolePanel({
         return (
           <div
             key={c.name}
-            className={`rounded-md border px-3 py-2.5 ${
+            className={`rounded-2xl border px-3 py-2.5 backdrop-blur-md ${
               isPlayer
-                ? "border-flag/50 bg-flag-wash"
-                : "border-rule bg-panel"
+                ? "border-flag/50 bg-flag-wash shadow-[0_0_22px_-8px_var(--wj-flag)]"
+                : "border-glass-edge bg-glass"
             }`}
           >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-serif text-base text-ink">{c.name}</span>
+            <div className="flex items-center gap-2.5">
+              {/* 名字首字作印：头像资产接入前的占位，也让角色在侧栏里一眼可辨 */}
+              <span
+                aria-hidden
+                className={`grid size-8 shrink-0 place-items-center rounded-full border font-serif text-sm ${
+                  isPlayer
+                    ? "border-flag/60 bg-flag text-canvas"
+                    : "border-glow-gold/45 bg-sunken/60 text-glow-gold"
+                }`}
+              >
+                {initialOf(c.name)}
+              </span>
+              <span className="min-w-0 flex-1 truncate font-serif text-base text-ink">
+                {c.name}
+              </span>
               {isPlayer ? (
                 <Tag tone="flag">你</Tag>
               ) : playableSet.has(c.name) ? (

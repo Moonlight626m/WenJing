@@ -5,7 +5,9 @@
  * ---------------------------------
  * 产品有两个"面"，共用一套语义令牌：
  *   册（纸面）——编（教师）、读（学生书库）：亮底、克制，像一页排好的书。
- *   台（幕布）——演（游玩页）：暗底、沉浸，是文本活过来的那个世界。
+ *   台（幕布）——演（选角页与游玩页）：暗底、沉浸，是文本活过来的那个世界。
+ *     舞台走「水墨霓虹」：宋体与朱砂照旧，外加毛玻璃浮层、青碧/泥金的流光描边、
+ *     极光底色与入场动效。这些只在台上用，册面保持克制。
  * 组件只写语义类（bg-surface / text-ink / border-rule），不再逐处写 dark: 变体；
  * 面由祖先的 data-surface 决定，与操作系统配色无关。
  */
@@ -49,12 +51,14 @@
   --text-4xl: 2.5rem;
   --text-4xl--line-height: 1.15;
 
-  /* 圆角：印刷品是方角，收在 2–6px 之间，不让任何元素鼓成气泡 */
+  /* 圆角：印刷品是方角，册面收在 2–6px 之间，不让任何元素鼓成气泡。
+     3xl 只给舞台上的毛玻璃浮层（对白框、抉择卡、HUD），它们是悬在画面上的"玻璃"，不是纸。 */
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
   --radius-xl: 6px;
   --radius-2xl: 8px;
+  --radius-3xl: 14px;
 
   /* 阴影：发丝边框承担分隔，阴影只用来托住浮层 */
   --shadow-card: 0 1px 2px rgb(23 32 42 / 0.05);
@@ -73,7 +77,7 @@
   --color-accent: var(--wj-accent);
   --color-accent-ink: var(--wj-accent-ink);
   --color-accent-wash: var(--wj-accent-wash);
-  /* 朱砂：只标"在场"——你演的角色、正在生成、流式光标 */
+  /* 朱砂：只标"在场"——你演的角色、正在生成、录音中（流式光标已改用青碧） */
   --color-flag: var(--wj-flag);
   --color-flag-wash: var(--wj-flag-wash);
   --color-ok: var(--wj-ok);
@@ -83,6 +87,12 @@
   --color-danger: var(--wj-danger);
   --color-danger-wash: var(--wj-danger-wash);
   --color-panel: var(--wj-panel);
+  /* 流光两色：青碧（当前、正在发生）与泥金（已完成、他人的名字）。
+     只做光与名牌，不做大面积底色；朱砂的「在场」语义不变。 */
+  --color-glow-jade: var(--wj-glow-jade);
+  --color-glow-gold: var(--wj-glow-gold);
+  --color-glass: var(--wj-glass);
+  --color-glass-edge: var(--wj-glass-edge);
 }
 
 /* ── 册 · 纸面（亮） ───────────────────────────────── */
@@ -115,6 +125,11 @@
   --wj-danger-wash: #f7e7e4;
 
   --wj-panel: rgb(251 251 248 / 0.92);
+
+  --wj-glow-jade: #1d7468;
+  --wj-glow-gold: #85621c;
+  --wj-glass: rgb(251 251 248 / 0.78);
+  --wj-glass-edge: rgb(23 32 42 / 0.12);
 }
 
 /* ── 册 · 夜读（深）──────────────────────────────── */
@@ -148,6 +163,11 @@
     --wj-danger-wash: #2c1a18;
 
     --wj-panel: rgb(26 31 37 / 0.92);
+
+    --wj-glow-jade: #79cbbd;
+    --wj-glow-gold: #dcbd7c;
+    --wj-glass: rgb(26 31 37 / 0.78);
+    --wj-glass-edge: rgb(227 231 234 / 0.12);
   }
 }
 
@@ -189,6 +209,12 @@
   --wj-danger-wash: rgb(238 148 132 / 0.14);
 
   --wj-panel: rgb(9 13 18 / 0.66);
+
+  /* 毛玻璃的不透明度不能再低：背景图可能很亮，0.62 是正文仍过 AA 的下限附近 */
+  --wj-glow-jade: #7fd3c4;
+  --wj-glow-gold: #e6c47f;
+  --wj-glass: rgb(12 17 24 / 0.62);
+  --wj-glass-edge: rgb(242 240 233 / 0.14);
 }
 
 @layer base {
@@ -228,6 +254,12 @@
   [data-surface="stage"] ::selection {
     background-color: rgb(238 154 133 / 0.28);
   }
+
+  /* 舞台上的滚动条收细、半透明，别让一根系统亮灰条横在毛玻璃里 */
+  [data-surface="stage"] {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(242 240 233 / 0.22) transparent;
+  }
 }
 
 /* 正文行宽：中文 1em 即一个汉字，34em ≈ 34 字/行 */
@@ -252,6 +284,26 @@
   );
 }
 
+/* 幕布极光：无背景图时铺在渐变之上，青碧、泥金、朱砂三团柔光（配合 animate-aurora 漂移） */
+@utility stage-aurora {
+  background:
+    radial-gradient(
+      38% 34% at 24% 30%,
+      color-mix(in srgb, var(--wj-glow-jade) 24%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      34% 30% at 76% 24%,
+      color-mix(in srgb, var(--wj-glow-gold) 18%, transparent),
+      transparent 72%
+    ),
+    radial-gradient(
+      44% 38% at 58% 82%,
+      color-mix(in srgb, var(--wj-flag) 14%, transparent),
+      transparent 72%
+    );
+}
+
 /* 场景背景淡入（ADR-0005 §1） */
 @keyframes stage-fade {
   from {
@@ -262,33 +314,372 @@
   }
 }
 
-.animate-stage-fade {
-  animation: stage-fade 700ms ease-out both;
+/* ── 台 · 水墨霓虹 ───────────────────────────────────
+   下面这些只给舞台用。所有循环动效在「减少动态效果」下会被文末的规则压成静帧，
+   流光描边停在一段静止的弧上，不会消失。 */
+
+/* 毛玻璃浮层：模糊 + 提饱和让背景色透上来，顶部一道内高光表现玻璃的厚度 */
+@utility glass {
+  background-color: var(--wj-glass);
+  border: 1px solid var(--wj-glass-edge);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.07),
+    0 18px 48px -12px rgb(0 0 0 / 0.55);
+  -webkit-backdrop-filter: blur(16px) saturate(1.45);
+  backdrop-filter: blur(16px) saturate(1.45);
 }
 
-/* 题签进场：自上而下展开，停住，再收起 */
-@keyframes slip-in {
-  0% {
+/* 流光描边要转角度，得先把角度注册成可插值的属性 */
+@property --wj-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes glow-orbit {
+  to {
+    --wj-angle: 360deg;
+  }
+}
+
+/* 流光描边：一段 青碧 → 泥金 → 朱砂 的弧光沿边框绕行，表示「轮到你了」。
+   宿主须自带定位（relative / absolute）；转速读 --wj-glow-speed，等待生成时调快。 */
+@utility glow-border {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: -1px;
+    padding: 1px;
+    border-radius: inherit;
+    background: conic-gradient(
+      from var(--wj-angle),
+      transparent 0% 56%,
+      var(--wj-glow-jade) 72%,
+      var(--wj-glow-gold) 84%,
+      var(--wj-flag) 93%,
+      transparent 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
+    animation: glow-orbit var(--wj-glow-speed, 7s) linear infinite;
+    pointer-events: none;
+  }
+}
+
+/* 抉择卡：平时只有发丝边，悬停 / 键盘聚焦 / 选中时亮起流光，并有一道光从左扫到右。
+   宿主须 relative + overflow-hidden（扫光靠溢出裁切）。 */
+@utility choice-glow {
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: conic-gradient(
+      from var(--wj-angle),
+      var(--wj-glow-jade),
+      var(--wj-glow-gold),
+      var(--wj-flag),
+      var(--wj-glow-jade)
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask:
+      linear-gradient(#000 0 0) content-box exclude,
+      linear-gradient(#000 0 0);
     opacity: 0;
-    transform: translateY(-14px) scaleY(0.9);
+    transition: opacity 220ms ease-out;
+    animation: glow-orbit 3.6s linear infinite;
+    pointer-events: none;
   }
-  14% {
-    opacity: 1;
-    transform: translateY(0) scaleY(1);
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      105deg,
+      transparent 30%,
+      rgb(255 255 255 / 0.12) 50%,
+      transparent 70%
+    );
+    transform: translateX(-120%);
+    pointer-events: none;
   }
-  76% {
+  &:hover::before,
+  &:focus-visible::before,
+  &[data-chosen="true"]::before {
     opacity: 1;
-    transform: translateY(0) scaleY(1);
+  }
+  &:hover::after,
+  &:focus-visible::after {
+    animation: shimmer-sweep 900ms ease-out;
+  }
+}
+
+@keyframes shimmer-sweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+/* 泥金到青碧的字面渐变：只用在品牌字「文境」上 */
+@utility text-sheen {
+  background-image: linear-gradient(
+    100deg,
+    var(--wj-glow-gold) 0%,
+    var(--wj-ink) 48%,
+    var(--wj-glow-jade) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 流式文字的「笔尖」：正在写出的最后几个字带一层青碧辉光，像墨还没干 */
+@utility ink-fresh {
+  color: var(--wj-glow-jade);
+  text-shadow: 0 0 14px color-mix(in srgb, var(--wj-glow-jade) 70%, transparent);
+}
+
+/* 新消息入场：上浮 + 由虚到实 */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* 只填 backwards：动画结束后让位给元素自己的样式，字幕的 opacity 淡出过渡才接得上 */
+.animate-rise-in {
+  animation: rise-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+}
+
+/* 流式光标：一支发光的笔尖，明暗呼吸 */
+@keyframes caret-glow {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 10px var(--wj-glow-jade);
+  }
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 2px var(--wj-glow-jade);
+  }
+}
+
+.animate-caret-glow {
+  animation: caret-glow 1.1s ease-in-out infinite;
+}
+
+/* 「思考中」三点：墨点依次晕开 */
+@keyframes ink-breathe {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.55);
+    opacity: 0.35;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-ink-breathe {
+  animation: ink-breathe 1.4s ease-in-out infinite both;
+}
+
+/* 当前节点的光环外扩 */
+@keyframes ring-pulse {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--wj-glow-jade) 60%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 9px transparent;
+  }
+}
+
+.animate-ring-pulse {
+  animation: ring-pulse 1.8s ease-out infinite;
+}
+
+/* 录音中的麦克风水波 */
+@keyframes ripple {
+  from {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  to {
+    transform: scale(2.3);
+    opacity: 0;
+  }
+}
+
+.animate-ripple {
+  animation: ripple 1.6s ease-out infinite;
+}
+
+/* 无图时的幕布极光：三团柔光慢慢漂移，画面不至于死黑一片 */
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-4%, -3%, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate3d(4%, 2%, 0) rotate(6deg) scale(1.08);
+  }
+  100% {
+    transform: translate3d(-2%, 4%, 0) rotate(-4deg) scale(1.02);
+  }
+}
+
+.animate-aurora {
+  animation: aurora-drift 28s ease-in-out infinite alternate;
+}
+
+/* 背景图推镜（Ken Burns）：极慢地推近、平移，静态画也有呼吸。挂在淡入之后起跑 */
+@keyframes ken-burns {
+  from {
+    transform: scale(1.04) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.14) translate3d(-2%, -1.5%, 0);
+  }
+}
+
+.animate-stage-kenburns {
+  animation:
+    stage-fade 700ms ease-out both,
+    ken-burns 42s ease-in-out 700ms infinite alternate;
+}
+
+/* 墨晕转场：换场景时一层墨色铺满画面，从中心化开，露出新的一幕。
+   半径注册成可插值的百分比，遮罩才能跟着动画变 */
+@property --wj-ink-r {
+  syntax: "<percentage>";
+  initial-value: 0%;
+  inherits: false;
+}
+
+@utility stage-ink {
+  background:
+    radial-gradient(42% 36% at 28% 34%, rgb(255 255 255 / 0.035), transparent 70%),
+    radial-gradient(38% 30% at 74% 70%, rgb(255 255 255 / 0.03), transparent 70%),
+    var(--wj-sunken);
+  -webkit-mask-image: radial-gradient(
+    circle at 50% 56%,
+    transparent var(--wj-ink-r),
+    #000 calc(var(--wj-ink-r) + 18%)
+  );
+  mask-image: radial-gradient(
+    circle at 50% 56%,
+    transparent var(--wj-ink-r),
+    #000 calc(var(--wj-ink-r) + 18%)
+  );
+}
+
+@keyframes ink-open {
+  from {
+    --wj-ink-r: 0%;
+  }
+  to {
+    --wj-ink-r: 135%;
+  }
+}
+
+.animate-ink-open {
+  animation: ink-open 1.4s cubic-bezier(0.55, 0.05, 0.25, 1) both;
+}
+
+/* 题签毛笔写出：竖排自上而下、横排自左而右地「写」出来，停住，再淡去 */
+@keyframes slip-brush-v {
+  0% {
+    opacity: 1;
+    clip-path: inset(0 0 100% 0);
+  }
+  22% {
+    clip-path: inset(0 0 0 0);
+  }
+  78% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
   }
   100% {
     opacity: 0;
-    transform: translateY(6px) scaleY(0.98);
+    clip-path: inset(0 0 0 0);
   }
 }
 
-.animate-slip-in {
-  animation: slip-in 2.8s ease-in-out both;
-  transform-origin: top center;
+@keyframes slip-brush-h {
+  0% {
+    opacity: 1;
+    clip-path: inset(0 100% 0 0);
+  }
+  22% {
+    clip-path: inset(0 0 0 0);
+  }
+  78% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+  100% {
+    opacity: 0;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+.animate-slip-brush-v {
+  animation: slip-brush-v 3.2s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.animate-slip-brush-h {
+  animation: slip-brush-h 3.2s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* 配音中的声纹光环：两圈错开外扩 */
+@keyframes voice-ring {
+  from {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+
+.animate-voice-ring {
+  animation: voice-ring 1.3s ease-out infinite;
+}
+
+/* ── 特效档位：简洁 ─────────────────────────────────
+   学校机房、投影电脑跑不动大面积模糊与长循环：简洁档把循环动效停住，
+   毛玻璃换成不模糊的实底。粒子、视差、墨晕由组件自己按档位不渲染。 */
+[data-effects="lite"] .animate-aurora,
+[data-effects="lite"] .animate-stage-kenburns,
+[data-effects="lite"] .animate-voice-ring {
+  animation: none;
+}
+
+[data-effects="lite"] .glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: var(--wj-panel);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -2,7 +2,8 @@
 
 `contracts.script.ScriptPackage`（冻结契约、带证据）是 Stage1 的对外产物；
 `core.types.Script`（纯 dataclass）是 GameRuntime 的运行时输入。
-转换只保留引擎推进所需的字段；证据/教学重点留在契约层供前端与审计使用。
+转换只保留引擎推进所需的字段；证据留在契约层供前端与审计使用。
+教学重点随包进引擎：续写阶段的小目标据此出题。
 """
 
 from __future__ import annotations
@@ -61,4 +62,5 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
         characters=characters,
         scenes=scenes,
         stage2_ending_beat_id=pkg.stage2_ending_beat_id,
+        teaching_focus=list(pkg.teaching_focus),
     )
