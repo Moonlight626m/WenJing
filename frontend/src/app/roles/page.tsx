@@ -3,13 +3,17 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AnimatePresence } from "motion/react";
 
 import { ApiError, getScriptDetail, getStatus, submitAsyncCommandRest } from "@/lib/api";
 import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
-import { useUiStore } from "@/stores/uiStore";
+import { useEffectsLevel, useUiStore } from "@/stores/uiStore";
+import { GameStage } from "@/components/game-stage";
+import { FirstActWaiting, RoleCard } from "@/components/role-card";
 import { ToastHost } from "@/components/toast-host";
-import { Button, buttonClass } from "@/components/ui/button";
+import { buttonClass } from "@/components/ui/button";
+import { MotionRoot } from "@/components/ui/motion-root";
 import { Empty, Loading } from "@/components/ui/states";
 import { PageShell } from "@/components/ui/section";
 import { Tag } from "@/components/ui/tag";
@@ -26,13 +30,21 @@ function RolesContent() {
   const storeCharacters = useGameStore((s) => s.characters);
   const storeTitle = useGameStore((s) => s.scriptTitle);
   const setScriptInfo = useGameStore((s) => s.setScriptInfo);
+  const hydrateEffects = useUiStore((s) => s.hydrateEffects);
+  const effects = useEffectsLevel();
 
   const [playableRoles, setPlayableRoles] = useState<string[]>([]);
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  // 在等首幕：记下选的角色与起始时间，等待过场据此显示角色名和已等秒数
+  const [waiting, setWaiting] = useState<{ role: string; since: number } | null>(null);
+  const submitting = waiting !== null;
   // 超时/失败后的重试复用同一 command_id：服务端可能已经跑完并落库，命令表的幂等
   // 闸据此返回首次结果，而不是再跑一轮（选角后立刻重跑会多推一个 beat）。
   const pending = useRef<{ role: string; command: PlayerCommand } | null>(null);
+
+  useEffect(() => {
+    hydrateEffects();
+  }, [hydrateEffects]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -81,7 +93,7 @@ function RolesContent() {
 
   async function handleSelect(role: string) {
     if (!sessionId || submitting) return;
-    setSubmitting(true);
+    setWaiting({ role, since: Date.now() });
     // 换了角色就换命令；同一角色重试沿用旧 command_id（见 pending 的注释）
     if (pending.current?.role !== role) {
       pending.current = {
@@ -101,7 +113,7 @@ function RolesContent() {
         // 上个进程留下的孤儿受理：换新 command_id 重新受理
         pending.current = null;
         push({ kind: "error", title: "生成中断", description: "上次生成中断，请再试一次" });
-        setSubmitting(false);
+        setWaiting(null);
         return;
       }
       // accepted / pending / done 三态都等推进：轮询状态直到选角生效（真实
@@ -116,7 +128,7 @@ function RolesContent() {
         if (status.selected_role && status.stage !== "stage1_complete") {
           pending.current = null;
           router.push(`/game?id=${sessionId}`);
-          return; // setSubmitting 保持：跳转动画期间按钮仍禁用
+          return; // 等待态保持：跳转期间过场不撤、按钮仍禁用
         }
       }
     } catch (err) {
@@ -130,7 +142,7 @@ function RolesContent() {
               ? err.message
               : String(err),
       });
-      setSubmitting(false);
+      setWaiting(null);
     }
   }
 
@@ -152,88 +164,85 @@ function RolesContent() {
   }
 
   const ready = selectedRole !== null;
+  const playable = new Set(
+    characters.filter((c) => c.is_player_playable.value).map((c) => c.name)
+  );
+  for (const name of playableRoles) playable.add(name);
 
   return (
-    <PageShell width="max-w-2xl">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2 border-b border-rule pb-3">
-        <div>
-          <h1 className="text-2xl text-ink">选择角色</h1>
-          {storeTitle && (
-            <p className="mt-1 text-sm text-ink-soft">剧本《{storeTitle}》</p>
-          )}
-        </div>
-        <span className="font-mono text-2xs text-ink-faint">
-          {sessionId.slice(0, 8)}
-        </span>
-      </header>
-
-      {submitting && (
-        <p className="measure text-sm text-ink-soft">
-          正在为所有角色生成首幕（含提议与校验），通常十几秒到几分钟，请勿关闭页面——
-          会话状态已保存，随时可回来。
-        </p>
-      )}
-
-      {ready && (
-        <div className="flex flex-wrap items-center gap-3 rounded-md border border-flag/50 bg-flag-wash px-4 py-3">
-          <Tag tone="flag">你</Tag>
-          <span className="text-sm text-ink">你已扮演 {selectedRole}</span>
-          <Link
-            href={`/game?id=${sessionId}`}
-            className={buttonClass("accent", "sm", "ml-auto")}
-          >
-            进入舞台
-          </Link>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-3">
-        {characters.length === 0 && <Loading label="正在取回角色…" />}
-        {characters.map((c) => {
-          const isSelected = c.name === selectedRole;
-          return (
-            <div
-              key={c.name}
-              // 选中态用一道朱砂界行标记，而不是整块染色——上方横幅已经用底色说了
-              // 同一件事，两处都填色就只剩热闹，朱砂也就不再是标记。
-              className={`relative flex flex-wrap items-start justify-between gap-x-5 gap-y-3 overflow-hidden rounded-lg border p-4 pl-5 transition-colors ${
-                isSelected ? "border-flag/50 bg-surface" : "border-rule bg-surface"
-              }`}
-            >
-              {isSelected && (
-                <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-flag" />
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-serif text-lg text-ink">{c.name}</span>
-                  {c.is_player_playable.value && <Tag tone="accent">可扮演</Tag>}
-                  {isSelected && <Tag tone="flag">你</Tag>}
+    <main
+      data-surface="stage"
+      data-effects={effects}
+      className="flex h-screen w-full flex-col overflow-hidden bg-canvas"
+    >
+      <MotionRoot>
+        <GameStage>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6 md:py-10">
+              <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+                <div>
+                  <p className="font-serif text-sm tracking-[0.3em] text-glow-gold">
+                    {storeTitle ? `《${storeTitle}》` : "文境"}
+                  </p>
+                  <h1 className="mt-2 font-serif text-3xl tracking-[0.2em] text-ink md:text-4xl">
+                    选择角色
+                  </h1>
+                  <p className="mt-2 text-sm text-ink-soft">
+                    选一位走进课文。其余角色由 AI 来演，你说的话会改变他们的反应。
+                  </p>
                 </div>
-                {c.public_background && (
-                  <p className="measure mt-2 text-sm text-ink-soft">
-                    {c.public_background}
-                  </p>
-                )}
-                {c.personality_traits.length > 0 && (
-                  <p className="mt-2 text-xs text-ink-faint">
-                    {c.personality_traits.map((t) => t.label).join("、")}
-                  </p>
-                )}
-              </div>
-              <Button
-                tone={isSelected ? "outline" : "accent"}
-                size="sm"
-                onClick={() => handleSelect(c.name)}
-                disabled={submitting || isSelected}
-              >
-                {isSelected ? "已选" : submitting ? "生成首幕中…" : "扮演此角色"}
-              </Button>
+                <Link href="/" className={buttonClass("quiet", "sm")} title={`会话 ${sessionId}`}>
+                  返回首页
+                </Link>
+              </header>
+
+              {ready && !submitting && (
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-flag/50 bg-glass px-4 py-3 backdrop-blur-md">
+                  <Tag tone="flag">你</Tag>
+                  <span className="text-sm text-ink">你已选定 {selectedRole}</span>
+                  <Link
+                    href={`/game?id=${sessionId}`}
+                    className={buttonClass("glow", "sm", "ml-auto")}
+                  >
+                    进入舞台
+                  </Link>
+                </div>
+              )}
+
+              {characters.length === 0 ? (
+                <Loading label="正在取回角色…" />
+              ) : (
+                <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                  {characters.map((c) => (
+                    <RoleCard
+                      key={c.name}
+                      profile={c}
+                      playable={playable.has(c.name)}
+                      selected={c.name === selectedRole}
+                      submitting={submitting}
+                      onSelect={() => handleSelect(c.name)}
+                    />
+                  ))}
+                </div>
+              )}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        </GameStage>
+
+        <AnimatePresence>
+          {waiting && (
+            <FirstActWaiting
+              key="waiting"
+              role={waiting.role}
+              scriptTitle={storeTitle}
+              characters={characters}
+              since={waiting.since}
+            />
+          )}
+        </AnimatePresence>
+      </MotionRoot>
       <ToastHost />
-    </PageShell>
+    </main>
   );
 }
 

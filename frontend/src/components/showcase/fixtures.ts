@@ -16,7 +16,7 @@ import type {
   UserPublic,
 } from "@/lib/contracts/types";
 import { CONTRACTS_SCHEMA_VERSION as V } from "@/lib/contracts/types";
-import type { ChatMessage, LiveStream } from "@/stores/gameStore";
+import type { ChatMessage, LiveStream, PendingCommand } from "@/stores/gameStore";
 
 const ORG = "f16ca50e-4f13-4a87-985a-38c188495239";
 
@@ -279,6 +279,23 @@ export const INTERACTION: ActiveInteraction = {
     { option_id: "o2", label: "说起自己在城里见过的热闹" },
   ],
   hint: "选一项，或自己写下要说的话。",
+};
+
+/** 一条在途命令：画廊用它摆出「正在推进」的顶栏。sentAt 不参与渲染（顶栏不显示秒数）。 */
+export const PENDING: PendingCommand = {
+  commandId: "cmd-showcase",
+  kind: "choose_option",
+  label: "选项 追问他刺猹那晚的细节",
+  sentAt: 0,
+  retries: 0,
+  command: {
+    schema_version: V,
+    command_id: "cmd-showcase",
+    session_id: "showcase",
+    kind: "choose_option",
+    payload: { option_id: "o1" },
+    issued_at: null,
+  },
 };
 
 export const GENERATION_RUNNING: GenerationProgress = {
