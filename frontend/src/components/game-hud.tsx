@@ -150,6 +150,7 @@ export function GameHud({
   playerRole,
   connection,
   pending,
+  homeHref = "/",
   transcriptOpen,
   onToggleTranscript,
 }: {
@@ -159,6 +160,8 @@ export function GameHud({
   playerRole: string | null;
   connection: Connection;
   pending: PendingCommand | null;
+  /** 「返回」去哪：游戏页回首页，演出模式回书匣 */
+  homeHref?: string;
   /** 不传则不显示剧情回顾开关（如画廊里单独摆的顶栏） */
   transcriptOpen?: boolean;
   onToggleTranscript?: () => void;
@@ -213,8 +216,8 @@ export function GameHud({
             </button>
           )}
         </div>
-        <Link href="/" className={buttonClass("quiet", "xs")}>
-          返回首页
+        <Link href={homeHref} className={buttonClass("quiet", "xs")}>
+          {homeHref === "/" ? "返回首页" : "返回"}
         </Link>
       </div>
     </header>

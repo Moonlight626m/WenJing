@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
 import { useSpeakingSpeakers } from "@/lib/audio-session";
@@ -35,9 +35,27 @@ import { MotionRoot } from "@/components/ui/motion-root";
  * ```
  *
  * 全部数据从 gameStore 读：游戏页负责接 WS 和拉状态，/showcase 往 store 里灌假数据，
- * 两边渲染的是同一份版式，不再各抄一份。
+ * 两边渲染的是同一份版式，不再各抄一份。演出模式（/demo）也渲染它，另外在几个插槽里
+ * 加自己的东西：舞台上的浮层（拾句、命运抉择）、抉择卡上方的一排现成的话、换掉结局卡。
  */
-export function GameScreen() {
+export function GameScreen({
+  homeHref = "/",
+  stageOverlay,
+  interactionAccessory,
+  ending,
+  transcriptDefault,
+}: {
+  /** 顶栏「返回」去哪 */
+  homeHref?: string;
+  /** 盖在舞台视口上的一层（不盖抉择卡与剧情回顾） */
+  stageOverlay?: ReactNode;
+  /** 抉择卡正上方 */
+  interactionAccessory?: ReactNode;
+  /** 换掉默认的结局卡；参数是「打开剧情回顾」 */
+  ending?: (openReview: () => void) => ReactNode;
+  /** 剧情回顾默认开还是关；不给就按屏宽（宽屏开、窄屏关） */
+  transcriptDefault?: boolean;
+} = {}) {
   const sessionId = useGameStore((s) => s.sessionId);
   const stage = useGameStore((s) => s.stage);
   const scriptTitle = useGameStore((s) => s.scriptTitle);
@@ -68,7 +86,7 @@ export function GameScreen() {
   // 剧情回顾：宽屏默认展开、窄屏默认收起；学生点过开关后就听学生的
   const wide = useMediaQuery("(min-width: 1024px)");
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const transcriptOpen = userOpen ?? wide;
+  const transcriptOpen = userOpen ?? transcriptDefault ?? wide;
   const [tab, setTab] = useState<TranscriptTab>("story");
 
   const cast = stageCast(messages, streams);
@@ -97,6 +115,7 @@ export function GameScreen() {
             playerRole={playerRole}
             connection={connection}
             pending={pending}
+            homeHref={homeHref}
             transcriptOpen={transcriptOpen}
             onToggleTranscript={() => setUserOpen(!transcriptOpen)}
           />
@@ -144,7 +163,9 @@ export function GameScreen() {
                     playerRole={playerRole}
                   />
                 </div>
+                {stageOverlay}
               </div>
+              {interactionAccessory}
               <InteractionCard />
             </section>
 
@@ -159,7 +180,11 @@ export function GameScreen() {
         </GameStage>
 
         <ActCurtain />
-        <EndingCard onReview={() => openTranscript("story")} />
+        {ending ? (
+          ending(() => openTranscript("story"))
+        ) : (
+          <EndingCard onReview={() => openTranscript("story")} />
+        )}
       </div>
     </MotionRoot>
   );

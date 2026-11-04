@@ -123,3 +123,40 @@ export function SendIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function PlayIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M7 5.5v13l11-6.5-11-6.5Z" />
+    </Icon>
+  );
+}
+
+export function PauseIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M8 5v14M16 5v14" />
+    </Icon>
+  );
+}
+
+export function NextIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="m5 5.5 9 6.5-9 6.5v-13Z" />
+      <path d="M18.5 5v14" />
+    </Icon>
+  );
+}
+
+export function BranchIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <circle cx="6" cy="5.5" r="2" />
+      <circle cx="6" cy="18.5" r="2" />
+      <circle cx="18" cy="8.5" r="2" />
+      <path d="M6 7.5v9" />
+      <path d="M18 10.5c0 4-6 3-11.2 6.6" />
+    </Icon>
+  );
+}
