@@ -91,6 +91,18 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   不提前展示；续写与终局时全部展开。`paragraph_index` 从 0 起，显示时加 1。
 - **选项的 `proposed_by`** 标出「谁的主意」；系统选项（进入续写 / 到此结束）为 null。
 
+### 演出模式 `/demo`
+
+答辩与路演用的离线演示（手册见 `docs/design/demo-theater.md`）。台本在 `lib/demo/scripts/`，
+`lib/demo/director.ts` 顶替 WS：`setSender` 换成导演自己的 `send`，抉择卡、回溯栏发出的命令落到它那里，
+它再按台本调 `handleServerMessage`，消息形状与后端投影一致。所以舞台就是 `GameScreen`，演出模式只往
+它的插槽里加东西（`stageOverlay` / `interactionAccessory` / `ending`），不另抄版式。
+
+- **预置图走 URL 缓存**：导演启动时用 `putCachedAssetUrl` 把 `public/demo/` 下的路径登记成永不过期，
+  `useAssetUrl` 读缓存命中，不会去签名接口。
+- **命运抉择的褪色挂在演出页根节点的 `data-fate` 上**（globals.css「演出模式」一节），游戏页没有这个属性，不受影响。
+- 印章 `seal-face` 用固定的深朱砂，不取 `--wj-flag`：台面上的 flag 太浅，不像印泥。
+
 ### 字体
 
 不引 webfont（CJK 字体包 10MB+）。界面用系统黑体，正文与标题用系统宋体——课文在课本里

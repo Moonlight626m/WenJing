@@ -667,6 +667,117 @@
   animation: voice-ring 1.3s ease-out infinite;
 }
 
+/* ── 演出模式（/demo）────────────────────────────────
+   答辩演示用的几样：命运抉择时画面褪色、选定后墨点溅开、开卷时画轴向两边展开。
+   只在演出页的根节点挂 data-fate，游戏页不受影响。 */
+
+[data-fate] [data-testid="stage-background"] {
+  transition: filter 1.2s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+[data-fate="choosing"] [data-testid="stage-background"],
+[data-fate="splash"] [data-testid="stage-background"] {
+  filter: saturate(0.12) brightness(0.55) contrast(1.15);
+}
+
+/* 墨点：从中心溅开，边缘被噪声啃出毛边，停一下再淡去 */
+@keyframes ink-splash {
+  0% {
+    transform: scale(0.2);
+    opacity: 0;
+  }
+  18% {
+    opacity: 0.95;
+  }
+  60% {
+    transform: scale(1);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(1.08);
+    opacity: 0;
+  }
+}
+
+.animate-ink-splash {
+  animation: ink-splash 1.3s cubic-bezier(0.16, 0.8, 0.3, 1) both;
+}
+
+/* 抉择题字：一笔写出，留在画面上 */
+@keyframes brush-write {
+  from {
+    clip-path: inset(0 100% 0 0);
+    filter: blur(4px);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+    filter: blur(0);
+  }
+}
+
+.animate-brush-write {
+  animation: brush-write 1.1s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* 落印：从大到小砸下来，略微回弹 */
+@keyframes seal-stamp {
+  0% {
+    transform: scale(2.4) rotate(-14deg);
+    opacity: 0;
+  }
+  55% {
+    transform: scale(0.92) rotate(-6deg);
+    opacity: 1;
+  }
+  75% {
+    transform: scale(1.04) rotate(-6deg);
+  }
+  100% {
+    transform: scale(1) rotate(-6deg);
+    opacity: 1;
+  }
+}
+
+.animate-seal-stamp {
+  animation: seal-stamp 0.62s cubic-bezier(0.3, 0.7, 0.3, 1) both;
+}
+
+/* 印面的纸纹：朱砂不是平涂，有一点斑驳。
+   印泥用固定的深朱砂，不取 `--wj-flag`：台面上的 flag 是提亮过的浅橘红（标「在场」用），
+   拿来当印泥像一块粉色贴纸。 */
+@utility seal-face {
+  background-color: #b23a2b;
+  background-image:
+    radial-gradient(circle at 20% 30%, rgb(0 0 0 / 0.16) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 70% 65%, rgb(255 255 255 / 0.12) 0 1px, transparent 1.6px),
+    radial-gradient(circle at 45% 80%, rgb(0 0 0 / 0.12) 0 1.2px, transparent 2px);
+  background-size: 7px 7px, 9px 9px, 11px 11px;
+  color: #f6ead8;
+  box-shadow:
+    inset 0 0 0 2px rgb(255 255 255 / 0.2),
+    0 0 28px -8px #b23a2b;
+}
+
+/* 画轴的纸：米色带一点纤维 */
+@utility scroll-paper {
+  background-color: #efe6d2;
+  background-image:
+    radial-gradient(120% 80% at 50% 0%, rgb(255 255 255 / 0.5), transparent 60%),
+    repeating-linear-gradient(92deg, rgb(120 96 60 / 0.04) 0 2px, transparent 2px 7px),
+    radial-gradient(90% 70% at 50% 100%, rgb(120 96 60 / 0.16), transparent 70%);
+  color: #2b2219;
+}
+
+/* 画轴的轴头：深檀木，两端包铜 */
+@utility scroll-rod {
+  background:
+    linear-gradient(90deg, #2a1a10, #6b4428 45%, #3a2416),
+    #3a2416;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.4),
+    0 12px 30px -8px rgb(0 0 0 / 0.8);
+}
+
 /* ── 特效档位：简洁 ─────────────────────────────────
    学校机房、投影电脑跑不动大面积模糊与长循环：简洁档把循环动效停住，
    毛玻璃换成不模糊的实底。粒子、视差、墨晕由组件自己按档位不渲染。 */
