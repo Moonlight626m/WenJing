@@ -23,7 +23,12 @@ from pydantic import ValidationError
 from app.contracts.content import TextAnalysis
 from app.contracts.enums import UsagePurpose
 from app.contracts.generation import DoubterIssue, DoubterVerdict
-from app.contracts.review import AssetOp, BranchSpec, GateEdits
+from app.contracts.review import (
+    AssetOp,
+    BranchSpec,
+    GateEdits,
+    SceneDialogueDraft,
+)
 from app.contracts.script import (
     AssetCredit,
     AssetRef,
@@ -44,6 +49,7 @@ from app.domain.game.media import (
 from app.domain.game.prompt_writer import APPEARANCE_FIELDS, ScenePromptContextDict
 from app.domain.generation.json_text import extract_json
 from app.domain.generation.stage1 import Stage1Generator
+from app.domain.generation.validators import validate_all, validate_replay
 from app.domain.generation.workflow.state import (
     WorkflowState,
     state_dossier,
@@ -59,6 +65,7 @@ from app.domain.prompts import (
     collect_materials,
     divide_events,
     doubter,
+    write_dialogue,
     write_script,
 )
 from app.domain.prompts.bundle import PromptBundle, default_bundle
@@ -123,8 +130,34 @@ def _backfill_scenes(
             updates["visual_notes"] = draft.visual_notes
         if scene.interaction_point is None and draft.interaction_point is not None:
             updates["interaction_point"] = draft.interaction_point
+        if not scene.options and draft.options:
+            updates["options"] = list(draft.options)
         new_scenes.append(scene.model_copy(update=updates) if updates else scene)
-    return package.model_copy(update={"scenes": new_scenes})
+    updates: dict[str, Any] = {"scenes": new_scenes}
+    if not package.endings and division.endings:
+        updates["endings"] = list(division.endings)
+    return package.model_copy(update=updates)
+
+
+def _merge_dialogue(scene: Scene, draft: SceneDialogueDraft) -> Scene:
+    """把台词草稿按 id 合并回场景；未知 id 静默忽略（校验在 final_audit 统一做）。"""
+    beat_lines = {b.beat_id: b.dialogue for b in draft.beats if b.dialogue}
+    branch_lines = {b.branch_id: b.dialogue for b in draft.branches if b.dialogue}
+    if not beat_lines and not branch_lines:
+        return scene
+    beats = [
+        beat.model_copy(update={"dialogue": beat_lines[beat.beat_id]})
+        if beat.beat_id in beat_lines
+        else beat
+        for beat in scene.beats
+    ]
+    branches = [
+        branch.model_copy(update={"dialogue": branch_lines[branch.branch_id]})
+        if branch.branch_id in branch_lines
+        else branch
+        for branch in scene.branches
+    ]
+    return scene.model_copy(update={"beats": beats, "branches": branches})
 
 
 def _branch_prompt(
@@ -721,6 +754,30 @@ class WorkflowNodes:
                     logger.info(
                         "[script-gen][final_gate] asset_ops applied (%d)",
                         len(edits.asset_ops),
+                    )
+        if action != "reject":
+            # 教师编辑/配图操作后的包必须重跑确定性校验（design §A3）：
+            # 直接 raise 让恢复请求可见地失败，而不是把非法包写进库。
+            final_package = out.get("package") or package
+            if final_package is not None:
+                analysis = state.get("analysis")
+                if analysis is not None:
+                    problems = [
+                        f"{name}: {issue}"
+                        for name, issues in validate_all(
+                            final_package, analysis
+                        ).items()
+                        for issue in issues
+                    ]
+                else:
+                    problems = [
+                        f"replay: {issue}"
+                        for issue in validate_replay(final_package)
+                    ]
+                if problems:
+                    raise new(
+                        codes.CNT_GENERATION_FAILED,
+                        extra={"reason": "终审编辑未通过校验：" + "；".join(problems)},
                     )
         if action == "reject":
             feedback_parts: list[str] = [
@@ -1354,6 +1411,88 @@ class WorkflowNodes:
                             "reason": f"分支 {spec.branch_id} beat_outline 为空",
                         },
                     )
+            # 珊瑚图（divide_events v4）：选项目标与结局表必须是可解析的引用。
+            scene_count = len(division.scenes)
+            ending_ids = [e.ending_id for e in division.endings]
+            if len(set(ending_ids)) != len(ending_ids):
+                raise new(
+                    codes.LLM_OUTPUT_PARSE_FAILED,
+                    extra={"target": "EventDivisionDraft", "reason": "ending_id 重复"},
+                )
+            if len(ending_ids) > 4:
+                raise new(
+                    codes.LLM_OUTPUT_PARSE_FAILED,
+                    extra={"target": "EventDivisionDraft", "reason": "结局超过 4 个"},
+                )
+            if ending_ids and not any(
+                e.kind == "canonical" for e in division.endings
+            ):
+                raise new(
+                    codes.LLM_OUTPUT_PARSE_FAILED,
+                    extra={
+                        "target": "EventDivisionDraft",
+                        "reason": "结局表缺少 canonical 结局",
+                    },
+                )
+            branch_ids = {b.branch_id for b in scene.branches}
+            for option in scene.options:
+                if option.ending_id is not None and option.ending_id not in ending_ids:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": f"选项 {option.option_id} 引用未知结局 {option.ending_id}",
+                        },
+                    )
+                if (
+                    option.target_scene_id is not None
+                    and not 1 <= option.target_scene_id <= scene_count
+                ):
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": (
+                                f"选项 {option.option_id} 引用非法场景序号 "
+                                f"{option.target_scene_id}"
+                            ),
+                        },
+                    )
+                if option.branch_id is not None and option.branch_id not in branch_ids:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": (
+                                f"选项 {option.option_id} 引用未知分支 {option.branch_id}"
+                            ),
+                        },
+                    )
+            for spec in scene.branches:
+                if spec.ending_id is not None and spec.ending_id not in ending_ids:
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": (
+                                f"分支 {spec.branch_id} 引用未知结局 {spec.ending_id}"
+                            ),
+                        },
+                    )
+                if (
+                    spec.return_scene_id is not None
+                    and not 1 <= spec.return_scene_id <= scene_count
+                ):
+                    raise new(
+                        codes.LLM_OUTPUT_PARSE_FAILED,
+                        extra={
+                            "target": "EventDivisionDraft",
+                            "reason": (
+                                f"分支 {spec.branch_id} 返回场景序号非法 "
+                                f"{spec.return_scene_id}"
+                            ),
+                        },
+                    )
 
     # ===== 人物设定（Send 并行）=====
 
@@ -1543,6 +1682,14 @@ class WorkflowNodes:
                 branch = await self._write_one_branch(
                     scene_by_id[scene_no], spec, state, audit_feedback=feedback
                 )
+                # 返回方式/终局是划分草稿的结构决策，不由分支文本决定
+                branch = branch.model_copy(
+                    update={
+                        "return_mode": spec.return_mode,
+                        "return_scene_id": spec.return_scene_id,
+                        "ending_id": spec.ending_id or branch.ending_id,
+                    }
+                )
                 if branch.branch_id == spec.branch_id:
                     written[(scene_no, spec.branch_id)] = branch
                 else:
@@ -1572,6 +1719,87 @@ class WorkflowNodes:
             else:
                 new_scenes.append(scene)
         return package.model_copy(update={"scenes": new_scenes})
+
+    # ===== 台词预写（珊瑚图纯 IO 播放的数据源）=====
+
+    async def write_dialogue(self, state: WorkflowState) -> dict[str, Any]:
+        """逐场景预写台词（design play-through-redesign §A2）。
+
+        单场景一次 LLM 调用；该场景失败只降级为空台词，不阻塞整包——
+        运行时对空台词场景回退到运行期 agent 路径。
+        """
+        package = state.get("package")
+        if package is None:
+            raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
+        profiles = state.get("merged_profiles") or []
+        await self._report("write_dialogue", "预写台词开始")
+        scenes: list[Scene] = []
+        written = 0
+        for scene in package.scenes:
+            try:
+                updated = await self._write_scene_dialogue(scene, profiles, state)
+            except Exception as exc:  # noqa: BLE001 - 单场景失败降级为空台词
+                logger.warning(
+                    "[script-gen][write_dialogue] scene_dialogue_failed scene=%s"
+                    " reason=%s",
+                    scene.scene_id,
+                    str(exc).replace("\n", " ")[:200],
+                )
+                updated = scene
+            if updated is not scene:
+                written += 1
+            scenes.append(updated)
+        await self._report(
+            "write_dialogue", f"预写台词完成（{written}/{len(scenes)} 场）"
+        )
+        return {"package": package.model_copy(update={"scenes": scenes})}
+
+    async def _write_scene_dialogue(
+        self,
+        scene: Scene,
+        profiles: list[CharacterProfile],
+        state: WorkflowState,
+    ) -> Scene:
+        payload = {
+            "scene_id": scene.scene_id,
+            "title": scene.title,
+            "participants": list(scene.participants),
+            "beats": [
+                {"beat_id": beat.beat_id, "description": beat.description}
+                for beat in scene.beats
+            ],
+            "branches": [
+                {
+                    "branch_id": branch.branch_id,
+                    "label": branch.label,
+                    "beats": [beat.description for beat in branch.beats],
+                }
+                for branch in scene.branches
+            ],
+        }
+        prompt = write_dialogue.build_user_message(
+            json.dumps(payload, ensure_ascii=False),
+            json.dumps(
+                [
+                    profile.model_dump(
+                        mode="json", exclude={"schema_version"}
+                    )
+                    for profile in profiles
+                ],
+                ensure_ascii=False,
+            ),
+            bundle=await self._bundle(write_dialogue),
+        )
+        draft = await self._chat_parsed(
+            prompt,
+            state.get("session_id", ""),
+            UsagePurpose.SCRIPT_WRITING,
+            parse=lambda raw: SceneDialogueDraft.model_validate_json(
+                extract_json(raw)
+            ),
+            target="SceneDialogueDraft",
+        )
+        return _merge_dialogue(scene, draft)
 
     async def _write_one_branch(
         self, scene: Scene, spec: BranchSpec, state: WorkflowState,
@@ -1604,6 +1832,18 @@ class WorkflowNodes:
         package = state.get("package")
         if package is None:
             raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
+        # 确定性珊瑚图校验先于 doubter：结构错误不该花 LLM 钱也只换来一句打回。
+        replay_issues = validate_replay(package)
+        if replay_issues:
+            logger.warning(
+                "[script-gen][final_audit] replay validation failed issues=%d", len(replay_issues)
+            )
+            return {
+                "audit_verdict": "reject",
+                "audit_issues": replay_issues,
+                "write_retries": int(state.get("write_retries", 0)) + 1,
+                "audit_feedback": "珊瑚图结构不合法：" + "；".join(replay_issues),
+            }
         logger.info("[script-gen][final_audit] auditing script...")
         prompt = doubter.build_user_message(
             node_name="write_script",

@@ -43,6 +43,7 @@ from app.domain.generation.stage1 import (
     Stage1Generator,
     synthesize_script_package,
 )
+from app.domain.generation.validators import validate_replay
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
 from app.domain.prompts import write_script
 from app.domain.prompts.manager import PromptManager
@@ -804,6 +805,12 @@ class ScriptLibrary:
         self, script_id: int, package, telemetry: dict
     ) -> None:
         """写 scripts.script_data（竞态防护：仅草稿可写）。"""
+        replay_issues = validate_replay(package)
+        if replay_issues:
+            raise new(
+                codes.CNT_GENERATION_FAILED,
+                extra={"reason": "珊瑚图校验失败：" + "；".join(replay_issues)},
+            )
         async with self._factory() as s:
             row = await s.get(ScriptRecord, script_id)
             # 竞态防护：若生成期间剧本已被发布/下架/删除，丢弃结果，绝不覆盖

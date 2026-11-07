@@ -37,6 +37,7 @@ class GenerationNode(StrEnum):
     DIVIDE_EVENTS = "divide_events"
     DESIGN_CHARACTERS = "design_characters"
     WRITE_SCRIPT = "write_script"
+    WRITE_DIALOGUE = "write_dialogue"
     FINAL_AUDIT = "final_audit"
     DESIGN_ASSETS = "design_assets"
 

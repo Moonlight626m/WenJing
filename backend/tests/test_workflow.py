@@ -66,8 +66,41 @@ _DIVISION_JSON = json.dumps(
                         "key_event_order": 3,
                     },
                 ],
+                "interaction_point": {
+                    "player_role_hint": "我",
+                    "what_player_can_do": "回应母亲的叮嘱",
+                    "must_not_change": [1],
+                },
+                "options": [
+                    {
+                        "option_id": "o1",
+                        "label": "出门买药",
+                        "kind": "canonical",
+                        "ending_id": "e1",
+                    },
+                    {
+                        "option_id": "o2",
+                        "label": "留下来陪母亲",
+                        "kind": "distractor",
+                        "ending_id": "e2",
+                    },
+                ],
             }
-        ]
+        ],
+        "endings": [
+            {
+                "ending_id": "e1",
+                "title": "雪夜归人",
+                "kind": "canonical",
+                "description": "我买药归来，母亲仍在灯下等候。",
+            },
+            {
+                "ending_id": "e2",
+                "title": "错过的离别",
+                "kind": "distractor",
+                "description": "我留在家中，错过了原文的那场离别。",
+            },
+        ],
     },
     ensure_ascii=False,
 )
@@ -117,6 +150,44 @@ class ScriptedWorkflowLLM:
         self.divide_prompts: list[str] = []
         self.writing_prompts: list[str] = []
 
+    @staticmethod
+    def _dialogue_json(prompt: str) -> str:
+        body = prompt.split("【场景与节拍】\n", 1)[1].split("\n\n【人物设定", 1)[0]
+        scene = json.loads(body)
+        speaker = scene["participants"][0] if scene["participants"] else None
+        return json.dumps(
+            {
+                "scene_id": scene["scene_id"],
+                "beats": [
+                    {
+                        "beat_id": beat["beat_id"],
+                        "dialogue": [
+                            {
+                                "speaker": speaker,
+                                "text": "（测试台词）",
+                                "stage_direction": "",
+                            }
+                        ],
+                    }
+                    for beat in scene["beats"]
+                ],
+                "branches": [
+                    {
+                        "branch_id": branch["branch_id"],
+                        "dialogue": [
+                            {
+                                "speaker": None,
+                                "text": "（分支旁白）",
+                                "stage_direction": "",
+                            }
+                        ],
+                    }
+                    for branch in scene["branches"]
+                ],
+            },
+            ensure_ascii=False,
+        )
+
     async def chat(self, messages, *, session_id: str = "", purpose=None):  # noqa: ANN001
         name = getattr(purpose, "value", purpose)
         self.calls.append(name)
@@ -132,7 +203,11 @@ class ScriptedWorkflowLLM:
         if name == UsagePurpose.CHARACTER_DESIGN.value:
             return _PROFILE_JSON
         if name in (UsagePurpose.STAGE1.value, UsagePurpose.SCRIPT_WRITING.value):
-            self.writing_prompts.append(messages[0]["content"])
+            prompt = messages[0]["content"]
+            # write_dialogue 与 write_script 共用 SCRIPT_WRITING：按 prompt 标记分流
+            if "【场景与节拍】" in prompt:
+                return self._dialogue_json(prompt)
+            self.writing_prompts.append(prompt)
             return self._package_json
         raise AssertionError(f"unexpected purpose: {name}")
 
@@ -513,7 +588,7 @@ async def test_final_gate_reject_reruns_writing_then_approves() -> None:
     )
 
     # 打回后重写一轮，再次停在终审闸门
-    assert llm.calls.count(UsagePurpose.SCRIPT_WRITING.value) == 2
+    assert len(llm.writing_prompts) == 2  # 打回/重新通过各重写一次
     assert resumed.snapshot().status == "awaiting_review"
     assert resumed.review["gate"] == "final"
     assert any(directive in p for p in llm.writing_prompts)
@@ -537,6 +612,11 @@ async def test_workflow_end_to_end_with_scripted_llm() -> None:
     final = await runner.run(state, thread_id="t-e2e")
 
     assert isinstance(final["package"], ScriptPackage)
+    pkg = final["package"]
+    # M3：珊瑚图字段与预写台词都进入最终剧本包
+    assert [o.option_id for o in pkg.scenes[0].options] == ["o1", "o2"]
+    assert {e.ending_id for e in pkg.endings} == {"e1", "e2"}
+    assert any(beat.dialogue for scene in pkg.scenes for beat in scene.beats)
     assert len(final["merged_profiles"]) == 2  # MATERIAL_TEXT 分析出 2 个人物
     snap = runner.snapshot()
     assert snap.status == "succeeded"
@@ -572,7 +652,7 @@ async def test_audit_reject_then_pass_reruns_writing() -> None:
     final = await runner.run(state, thread_id="t-audit-reject")
 
     assert final["package"] is not None
-    assert llm.calls.count(UsagePurpose.SCRIPT_WRITING.value) == 2  # 打回后重写一次
+    assert len(llm.writing_prompts) == 2  # 打回/重新通过各重写一次  # 打回后重写一次
     events = runner.snapshot().doubter_events
     assert [e.verdict for e in events] == ["pass", "reject", "pass"]
     assert events[1].round == 1  # 首轮书写被打回

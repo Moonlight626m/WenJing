@@ -55,14 +55,34 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 - **旧剧本分流**：没有 `options`/`dialogue`/`endings` 的剧本仍走运行期 agent
   线性路径，行为与改动前完全一致。
 
-### 3.2 生成期要做的事（M3）
+### 3.2 生成期（M3 已落地）
 
-按设计 §A2/§A3：`divide_events` 产出图大纲 → `write_script` 写主干 →
-新增 `write_dialogue` 逐场景/分支预写台词 → `final_audit + validate_replay` →
-`design_assets` 预生成全部图 → 教师 `final_gate` 改动后**重跑** `validate_all`。
+节点链（`workflow/graph.py`）：
 
-`replay_ready=true` 的条件：主干场景都有台词、选项目标合法、分支有返回、
-至少一个 `canonical` 结局。
+```
+divide_events(v4 大纲：beats + branches + options + endings)
+  → design_characters → [pre_write_gate]
+  → write_script(主干) → write_dialogue(逐场景预写台词) → final_audit
+  → design_assets → [final_gate]
+```
+
+- `divide_events` v4 产出 `SceneDraft.options` / `BranchSpec.return_mode|return_scene_id|
+  ending_id` / `EventDivisionDraft.endings`；`write_script` 经 `_backfill_scenes`
+  回填到 `Scene.options` / `ScriptPackage.endings`，分支的返回方式以草稿为准
+  （不由分支文本决定）。
+- `write_dialogue` 逐场景一次 LLM 调用，把 `Beat.dialogue` 与
+  `BranchScene.dialogue` 填进剧本包；单场景失败只降级为空台词（运行时回退
+  agent 路径），不阻塞整包。
+- `validate_replay`（`domain/generation/validators.py`）把关珊瑚图：选项目标存在、
+  canonical 可达 canonical 结局、分支返回合法、干扰项 ≤2/场景、分支台词 ≤4、
+  结局 ≤4 且至少 1 个 canonical、speaker ∈ participants、无隐式环
+  （`choice` 回决策点不算环）。旧剧本恒通过。
+- 校验时机三处：`final_audit` 先跑确定性校验（失败直接打回重写，不花 doubter
+  的钱）、`final_gate` 在教师编辑/配图后重跑 `validate_all`、落库
+  `_persist_package` 前再跑一次 `validate_replay`。
+
+> 关系表解析（设计 §A2 的 `script_*` 表）尚未落地：剧本仍整包存
+> `scripts.script_data`。见第 5 节的延期说明。
 
 ### 3.3 运行期（M4）
 
@@ -76,7 +96,8 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 
 ### 4.1 版本与同步
 
-当前 `CONTRACTS_SCHEMA_VERSION = 3.0.0`（`backend/app/contracts/base.py`）。
+当前 `CONTRACTS_SCHEMA_VERSION = 3.1.0`（`backend/app/contracts/base.py`）。
+3.0.0 是 Stage2 删除自由输入的 breaking；3.1.0 是 M3 给生成草稿加可选字段（minor）。
 
 改契约必须同步四处，缺一处都不会报错：
 

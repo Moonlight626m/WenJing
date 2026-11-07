@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from app.contracts.content import TextAnalysis
 from app.contracts.material import EvidenceSourceType
-from app.contracts.script import ScriptPackage
+from app.contracts.script import Scene, ScriptPackage
 
 VALIDATORS: tuple[str, ...] = (
     "structure",
@@ -17,6 +17,7 @@ VALIDATORS: tuple[str, ...] = (
     "event_order",
     "teaching",
     "branches",
+    "replay",
 )
 
 
@@ -143,8 +144,198 @@ def validate_branches(pkg: ScriptPackage, analysis: TextAnalysis) -> list[str]:
     return issues
 
 
+def validate_replay(pkg: ScriptPackage) -> list[str]:
+    """珊瑚图校验（design play-through-redesign §A3）。
+
+    旧剧本（无 options/dialogue/endings）恒通过——新字段全为可选是零迁移的前提。
+    只查确定性结构；台词质量/结局忠实性仍由 doubter 承担。
+    """
+    issues: list[str] = []
+
+    scene_ids = [s.scene_id for s in pkg.scenes]
+    scene_by_id = {s.scene_id: s for s in pkg.scenes}
+    ending_ids = {e.ending_id for e in pkg.endings}
+    has_graph = any(s.options for s in pkg.scenes) or bool(pkg.endings)
+
+    if len(ending_ids) != len(pkg.endings):
+        issues.append("duplicate ending_id")
+    if len(pkg.endings) > 4:
+        issues.append("too many endings (max 4)")
+    if has_graph:
+        if not pkg.endings:
+            issues.append("graph script requires endings")
+        elif not any(e.kind == "canonical" for e in pkg.endings):
+            issues.append("graph script requires at least one canonical ending")
+
+    for scene in pkg.scenes:
+        branch_ids = {b.branch_id for b in scene.branches}
+        distractor_count = 0
+        for option in scene.options:
+            if option.kind == "distractor":
+                distractor_count += 1
+            targets = [
+                option.branch_id is not None,
+                option.target_scene_id is not None,
+                option.ending_id is not None,
+            ]
+            if sum(targets) > 1:
+                issues.append(
+                    f"scene {scene.scene_id} option {option.option_id} has multiple targets"
+                )
+            if option.branch_id is not None and option.branch_id not in branch_ids:
+                issues.append(
+                    f"scene {scene.scene_id} option {option.option_id} "
+                    f"references unknown branch {option.branch_id}"
+                )
+            if (
+                option.target_scene_id is not None
+                and option.target_scene_id not in scene_ids
+            ):
+                issues.append(
+                    f"scene {scene.scene_id} option {option.option_id} "
+                    f"references unknown scene {option.target_scene_id}"
+                )
+            if option.ending_id is not None and option.ending_id not in ending_ids:
+                issues.append(
+                    f"scene {scene.scene_id} option {option.option_id} "
+                    f"references unknown ending {option.ending_id}"
+                )
+        if distractor_count > 2:
+            issues.append(f"scene {scene.scene_id} has more than 2 distractor options")
+
+        for branch in scene.branches:
+            if branch.return_scene_id is not None and branch.return_scene_id not in scene_ids:
+                issues.append(
+                    f"branch {branch.branch_id} returns to unknown scene "
+                    f"{branch.return_scene_id}"
+                )
+            if branch.ending_id is not None and branch.ending_id not in ending_ids:
+                issues.append(
+                    f"branch {branch.branch_id} references unknown ending {branch.ending_id}"
+                )
+            if len(branch.dialogue) > 4:
+                issues.append(f"branch {branch.branch_id} has more than 4 dialogue lines")
+
+        participants = set(scene.participants)
+        for beat in scene.beats:
+            for line in beat.dialogue:
+                if line.speaker is not None and line.speaker not in participants:
+                    issues.append(
+                        f"scene {scene.scene_id} dialogue speaker not in participants: "
+                        f"{line.speaker}"
+                    )
+        for branch in scene.branches:
+            allowed = set(branch.participants) or participants
+            for line in branch.dialogue:
+                if line.speaker is not None and line.speaker not in allowed:
+                    issues.append(
+                        f"branch {branch.branch_id} dialogue speaker not in participants: "
+                        f"{line.speaker}"
+                    )
+
+    if has_graph:
+        issues.extend(_check_replay_cycles(pkg, scene_by_id))
+        issues.extend(_check_canonical_ending(pkg))
+    return issues
+
+
+def _check_replay_cycles(pkg: ScriptPackage, scene_by_id: dict[int, Scene]) -> list[str]:
+    """`continue` 回边不得成环；`choice` 回决策点不算环（同一决策点重新展示）。"""
+    issues: list[str] = []
+    scene_ids = [s.scene_id for s in pkg.scenes]
+
+    def next_scene(scene_id: int) -> int | None:
+        idx = scene_ids.index(scene_id)
+        return scene_ids[idx + 1] if idx + 1 < len(scene_ids) else None
+
+    def visited(scene_id: int, seen: frozenset[int]) -> bool:
+        if scene_id in seen:
+            return True
+        seen = seen | {scene_id}
+        scene = scene_by_id[scene_id]
+        for option in scene.options:
+            target: int | None = None
+            if option.ending_id is not None:
+                target = None
+            elif option.target_scene_id is not None:
+                target = option.target_scene_id
+            elif option.branch_id is not None:
+                branch = next(
+                    (b for b in scene.branches if b.branch_id == option.branch_id),
+                    None,
+                )
+                if branch is None:
+                    continue
+                if branch.ending_id is not None:
+                    target = None
+                elif branch.return_mode == "choice":
+                    continue
+                else:
+                    target = branch.return_scene_id or next_scene(scene_id)
+            if target is not None and target in scene_by_id and visited(target, seen):
+                return True
+        return False
+
+    for scene_id in scene_ids:
+        if visited(scene_id, frozenset()):
+            issues.append(f"scene {scene_id} is part of an implicit cycle")
+            break
+    return issues
+
+
+def _check_canonical_ending(pkg: ScriptPackage) -> list[str]:
+    """沿 canonical 路径必须能到达 canonical 结局。"""
+    canonical_endings = {e.ending_id for e in pkg.endings if e.kind == "canonical"}
+    if not canonical_endings:
+        return []
+    scene_ids = [s.scene_id for s in pkg.scenes]
+    scene_by_id: dict[int, Scene] = {s.scene_id: s for s in pkg.scenes}
+
+    def reached(scene_id: int, seen: frozenset[int]) -> bool:
+        if scene_id in seen:
+            return False
+        seen = seen | {scene_id}
+        scene = scene_by_id[scene_id]
+        options = [o for o in scene.options if o.kind == "canonical"]
+        idx = scene_ids.index(scene_id)
+        mainline_ended = idx + 1 >= len(scene_ids)  # 主干到底 = stage2_ending_beat
+        if not options:
+            return mainline_ended
+        for option in options:
+            if option.ending_id in canonical_endings:
+                return True
+            if option.target_scene_id is not None:
+                if option.target_scene_id in scene_by_id and reached(
+                    option.target_scene_id, seen
+                ):
+                    return True
+            elif option.branch_id is not None:
+                branch = next(
+                    (b for b in scene.branches if b.branch_id == option.branch_id),
+                    None,
+                )
+                if branch is None:
+                    continue
+                if branch.ending_id in canonical_endings:
+                    return True
+                if branch.return_mode == "continue":
+                    target = branch.return_scene_id or (
+                        scene_ids[idx + 1] if idx + 1 < len(scene_ids) else None
+                    )
+                    if target is not None and reached(target, seen):
+                        return True
+            elif mainline_ended:
+                # 全空目标 = 续接主干下一场；已在最后一场即到达结局
+                return True
+        return False
+
+    if not reached(scene_ids[0], frozenset()):
+        return ["canonical path does not reach a canonical ending"]
+    return []
+
+
 def validate_all(pkg: ScriptPackage, analysis: TextAnalysis) -> dict[str, list[str]]:
-    """运行全部六类校验，返回 {validator_name: issues}（空 issues = 通过）。"""
+    """运行全部七类校验，返回 {validator_name: issues}（空 issues = 通过）。"""
     return {
         "structure": validate_structure(pkg),
         "evidence": validate_evidence(pkg),
@@ -152,4 +343,5 @@ def validate_all(pkg: ScriptPackage, analysis: TextAnalysis) -> dict[str, list[s
         "event_order": validate_event_order(pkg, analysis),
         "teaching": validate_teaching(pkg),
         "branches": validate_branches(pkg, analysis),
+        "replay": validate_replay(pkg),
     }

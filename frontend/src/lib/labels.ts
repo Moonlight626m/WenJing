@@ -42,6 +42,7 @@ export const GENERATION_NODE_LABELS: Record<string, string> = {
   divide_events: "事件划分",
   design_characters: "人物设定",
   write_script: "剧本书写",
+  write_dialogue: "台词预写",
   final_audit: "总审",
   design_assets: "配图设计",
 };

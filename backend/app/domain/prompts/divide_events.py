@@ -1,4 +1,4 @@
-"""事件/情景划分节点 prompt v3（prompt 落库：段落经 PromptBundle 取值）。
+"""事件/情景划分节点 prompt v4（prompt 落库：段落经 PromptBundle 取值）。
 
 段落构成（section）：
 - system：角色定位与忠实性总纲；
@@ -7,10 +7,15 @@
 - interaction_rules：介入点写法（drama manager 心智，为运行时留白）；
 - visual_rules：场景视觉锚点（visual_notes，文生图槽位，只写原文可推断）；
 - branch_rules：伪分支规格（branch_specs，挂在介入点上的替代过场）；
+- option_rules：珊瑚图决策点（珊瑚形分支的目标与返回）；
+- ending_rules：结局表（canonical / alternate / distractor）；
 - checklist：输出前自检。
 
 v3 变更（方案 branch-montage-dm）：新增 visual_notes 与 branches 两个产出维度；
 分支只在 interaction_point 非空的场景规格化，write_script 负责补写成文。
+v4 变更（珊瑚图纯 IO）：新增 options 与 endings——决策点指向分支/场景/结局，
+非终局分支声明 return_mode/return_scene_id；write_script 负责回填成
+ScriptPackage.options / endings，write_dialogue 预写台词。
 改判据必须升 VERSION：DB 覆盖行按 version 匹配，旧行不会回退到新默认。
 
 输出契约文本与 Pydantic 契约同步，留在代码不落库。
@@ -23,7 +28,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "divide_events"
 STAGE = "script_gen"
-VERSION = "v3"
+VERSION = "v4"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -88,7 +93,28 @@ BRANCH_RULES = """\
 must_not_change 列出的关键事件与课文结局在分支里同样不可改变；
 - participants 只能取自该场景参与者；
 - beat_outline 2-4 条：分支过场的行为骨架，最后一条要能自然接回主线下一场；
-- 分支不是第二结局：不得引入原文不存在的人物、不得写成不同结局。
+- return_mode：`choice`（播完回到刚才的决策点）或 `continue`（续接主干下一场）；
+- return_scene_id：`continue` 时可选，指向场景序号（1 起）；留空表示主干下一场；
+- ending_id：仅当该分支是终局时填写（对应 endings 里的结局 id），否则为 null；
+- 分支不是第二结局：非终局分支不得引入原文不存在的人物、不得写成不同结局。
+"""
+
+OPTION_RULES = """\
+【珊瑚图决策点（options）】
+- 只给 interaction_point 非空的场景产出 options；每个决策点 1-3 个选项；
+- 每个选项最多指向一个目标：branch_id（本场景分支）、target_scene_id（场景序号，1 起）\
+或 ending_id（结局 id）；三者全空表示续接主干下一场；
+- kind=canonical 的选项构成主线：从第一场出发，沿 canonical 选项必须能到达\
+至少一个 canonical 结局；kind=distractor 是干扰选项（错路），每个场景最多 2 个；
+- option_id 场景内唯一（"o1"/"o2"…）；label 是玩家看到的选项文案。
+"""
+
+ENDING_RULES = """\
+【结局表（endings）】
+- 结局总数最多 4 个，其中至少 1 个 kind=canonical（必达的主线结局）；
+- alternate 是合理变体，distractor 只用于干扰分支的错结局；
+- ending_id 全剧唯一（"e1"/"e2"…）；title 一句话，description 一两句；
+- canonical 结局必须与课文原文结局一致，不得改写原文事实。
 """
 
 SELF_CHECK = """\
@@ -98,6 +124,8 @@ SELF_CHECK = """\
 - 参与人物名是否全部取自【人物列表】？
 - 有玩家可参与的场景是否已给出介入点？
 - 有介入点的场景是否给了分支规格？分支是否避开了关键事件与结局？
+- 有分支的场景是否给了 options，且 canonical 路径能到达 canonical 结局？
+- 结局是否 ≤4 个、至少 1 个 canonical、id 互不重复？
 """
 
 DEFAULTS: dict[str, str] = {
@@ -107,6 +135,8 @@ DEFAULTS: dict[str, str] = {
     "interaction_rules": INTERACTION_RULES,
     "visual_rules": VISUAL_RULES,
     "branch_rules": BRANCH_RULES,
+    "option_rules": OPTION_RULES,
+    "ending_rules": ENDING_RULES,
     "checklist": SELF_CHECK,
 }
 
@@ -141,11 +171,32 @@ _OUTPUT_CONTRACT = """\
           "trigger_option": "典型玩家选择的一句话（字符串）",
           "value_turn": "分支内 A→B 微转折（字符串）",
           "participants": ["分支中出现的人物名（取自该场景参与者）"],
-          "beat_outline": ["分支过场的行为骨架（字符串数组，2-4 条，末条接回主线）"]
+          "beat_outline": ["分支过场的行为骨架（字符串数组，2-4 条，末条接回主线）"],
+          "return_mode": "choice 或 continue（字符串）",
+          "return_scene_id": 返回场景序号（整数或 null）,
+          "ending_id": 终局分支的结局 id（字符串或 null）
+        }
+      ]（无介入点的场景为空数组）,
+      "options": [
+        {
+          "option_id": "场景内唯一（字符串，如 o1）",
+          "label": "玩家看到的选项文案（字符串）",
+          "kind": "canonical 或 distractor（字符串）",
+          "branch_id": "目标分支 id（字符串或 null）",
+          "target_scene_id": 目标场景序号（整数或 null）,
+          "ending_id": "目标结局 id（字符串或 null）"
         }
       ]（无介入点的场景为空数组）
     }
-  ]
+  ],
+  "endings": [
+    {
+      "ending_id": "全剧唯一（字符串，如 e1）",
+      "title": "结局标题（字符串）",
+      "kind": "canonical / alternate / distractor（字符串）",
+      "description": "结局描述（字符串）"
+    }
+  ]（无珊瑚图时为空数组）
 }"""
 
 
@@ -171,6 +222,10 @@ def build_user_message(
         "",
         b.text("branch_rules"),
         "",
+        b.text("option_rules"),
+        "",
+        b.text("ending_rules"),
+        "",
         "【字段类型契约（必须严格遵守，只输出此 JSON）】",
         _OUTPUT_CONTRACT,
         "【硬性约束】",
@@ -181,7 +236,9 @@ def build_user_message(
         "- 参与人物名只能取自【人物列表】。",
         "- branches 只出现在 interaction_point 非空的场景，branch_id 用 "
         "b1/b2 补齐编号，严禁留空字符串；",
-        "- 分支规格不得包含 must_not_change 列出的关键事件，不得改写课文结局。",
+        "- 分支规格不得包含 must_not_change 列出的关键事件，不得改写课文结局；",
+        "- options 每个选项最多一个目标；canonical 路径必须到达 canonical 结局；",
+        "- endings 至少一个 canonical；ending_id / option_id 不得重复。",
         "",
         b.text("checklist"),
         "",

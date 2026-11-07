@@ -98,6 +98,27 @@ scripts（content_version/format/replay_ready）
 干扰分支 ≤2/场景且台词 ≤4 句、结局 ≤4（至少 1 canonical）、speaker ∈ participants、
 无隐式环、教师编辑后重跑。
 
+**实现注记（2026-11-07，M3 已落地）**：
+- `divide_events` v4：`EventDivisionDraft` 增 `endings`，`SceneDraft` 增
+  `options`，`BranchSpec` 增 `return_mode/return_scene_id/ending_id`；prompt 新增
+  `option_rules`/`ending_rules` 两段；`_validate_division` 机器校验结局表、
+  选项目标（分支/场景序号/结局）与分支返回引用。
+- `write_script` 经 `_backfill_scenes` 把 `options`/`endings` 回填进剧本包；
+  分支的返回方式以划分草稿为准（不由分支文本决定）。
+- 新节点 `write_dialogue`：逐场景一次 LLM 调用，填 `Beat.dialogue` 与
+  `BranchScene.dialogue`（`SceneDialogueDraft`）；单场景失败降级为空台词。
+  注册在 graph / runner `_NODE_MAP`·`_NODE_ORDER` / `GenerationNode` /
+  `types.ts` / `labels.ts` / prompts defaults 六处。
+- `validate_replay` 三处接线：`final_audit`（先于 doubter，失败直接打回重写）、
+  `final_gate`（教师编辑/配图后重跑 `validate_all`，不合法即报错不落库）、
+  `_persist_package`（落库前再跑一次）。
+- 契约版本：M3 新增的草稿字段（`SceneDraft.options` / `EventDivisionDraft.endings` /
+  `BranchSpec` 返回字段）是可选增量，按流程升 **3.1.0**（四处同步）。
+- **与草案的差异**：§A2 的「解析成 `script_*` 关系表 + `replay_ready`」
+  仍未落地（与 M2 的延期一致）；剧本继续整包存 `scripts.script_data`，
+  表解析与 `replay_ready` 列留给表仓储里程碑。台词按**场景**一次生成
+  （含该场景全部分支），不是每分支单独调用——成本与前后连贯性的权衡。
+
 ### A4. 运行时：纯 IO（`domain/game/replay.py`）
 
 - `ReplayDirector`：`start/options/choose/resolve`，从表派生珊瑚图，零 LLM、零 agent。

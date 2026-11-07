@@ -19,7 +19,10 @@ from app.contracts.base import ContractModel, VersionedContract
 from app.contracts.material import ClaimRef, SourceConflict, WebEvidence
 from app.contracts.script import (
     CharacterProfile,
+    DialogueLine,
+    Ending,
     InteractionPoint,  # noqa: F401 - re-export（Scene 亦引用）
+    SceneOption,
     ScriptPackage,
     VisualNotes,
 )
@@ -70,6 +73,11 @@ class BranchSpec(ContractModel):
     value_turn: str = Field(min_length=1)
     participants: list[str] = Field(default_factory=list)
     beat_outline: list[str] = Field(min_length=1)
+    # 珊瑚图返回方式（divide_events v4）：choice 回决策点 / continue 续接主干；
+    # ending_id 非空表示该分支是终局，不回主干。
+    return_mode: Literal["choice", "continue"] = "continue"
+    return_scene_id: int | None = None
+    ending_id: str | None = None
 
 
 class BeatDraft(ContractModel):
@@ -91,12 +99,38 @@ class SceneDraft(ContractModel):
     visual_notes: VisualNotes | None = None
     # 伪分支规格（divide_events v3）：只在 interaction_point 非空的场景产出。
     branches: list[BranchSpec] = Field(default_factory=list)
+    # 珊瑚图决策点（v4）：目标为 branch / 场景序号 / 结局；全空 = 续接主干。
+    options: list[SceneOption] = Field(default_factory=list)
 
 
 class EventDivisionDraft(ContractModel):
     """事件/情景划分草稿：beats 结构先于剧本书写（#31 深化）。"""
 
     scenes: list[SceneDraft] = Field(min_length=1)
+    # 珊瑚图结局（v4）：空 = 旧式单一结局（stage2_ending_beat_id）。
+    endings: list[Ending] = Field(default_factory=list)
+
+
+class BeatDialogueDraft(ContractModel):
+    """write_dialogue 节点的单节拍台词产出（按 beat_id 合并回剧本包）。"""
+
+    beat_id: int
+    dialogue: list[DialogueLine] = Field(default_factory=list)
+
+
+class BranchDialogueDraft(ContractModel):
+    """单分支台词产出（按 branch_id 合并）。"""
+
+    branch_id: str = Field(min_length=1)
+    dialogue: list[DialogueLine] = Field(default_factory=list)
+
+
+class SceneDialogueDraft(ContractModel):
+    """单场景台词产出：逐 beat 与逐分支各一组。"""
+
+    scene_id: int
+    beats: list[BeatDialogueDraft] = Field(default_factory=list)
+    branches: list[BranchDialogueDraft] = Field(default_factory=list)
 
 
 class GateReview(VersionedContract):

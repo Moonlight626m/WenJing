@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.0.0",
+  "schema_version": "3.1.0",
   "title": "背影",
   "characters": [
     {
@@ -49,14 +49,14 @@
         "reason": "戏份贯穿全剧，动机清晰可共情"
       },
       "avatar_asset": {
-        "schema_version": "3.0.0",
+        "schema_version": "3.1.0",
         "asset_id": "11111111-1111-4111-8111-111111111111",
         "kind": "avatar",
         "status": "ready"
       },
       "fullbody_asset": null,
       "avatar_credit": {
-        "schema_version": "3.0.0",
+        "schema_version": "3.1.0",
         "author": "某画师",
         "license": "CC0",
         "source_url": "https://example.org/avatar/1111",
@@ -123,7 +123,7 @@
           ],
           "dialogue": [
             {
-              "schema_version": "3.0.0",
+              "schema_version": "3.1.0",
               "speaker": "父亲",
               "text": "我买几个橘子去。你就在此地，不要走动。",
               "stage_direction": "把橘子堆在儿子的皮大衣上"
@@ -203,13 +203,13 @@
           },
           "dialogue": [
             {
-              "schema_version": "3.0.0",
+              "schema_version": "3.1.0",
               "speaker": "儿子",
               "text": "爸爸，我来帮你。",
               "stage_direction": "快步奔向铁道边"
             },
             {
-              "schema_version": "3.0.0",
+              "schema_version": "3.1.0",
               "speaker": null,
               "text": "父亲回过头，摆了摆手，示意他站着别动。",
               "stage_direction": ""
@@ -221,7 +221,7 @@
         }
       ],
       "background_asset": {
-        "schema_version": "3.0.0",
+        "schema_version": "3.1.0",
         "asset_id": "22222222-2222-4222-8222-222222222222",
         "kind": "background",
         "status": "pending"
@@ -229,7 +229,7 @@
       "background_credit": null,
       "options": [
         {
-          "schema_version": "3.0.0",
+          "schema_version": "3.1.0",
           "option_id": "opt-1",
           "label": "追上月台，替父亲擦汗",
           "kind": "canonical",
@@ -238,7 +238,7 @@
           "ending_id": null
         },
         {
-          "schema_version": "3.0.0",
+          "schema_version": "3.1.0",
           "option_id": "opt-2",
           "label": "原地等候父亲回来",
           "kind": "canonical",
@@ -261,14 +261,14 @@
   "stage2_ending_beat_id": 3,
   "endings": [
     {
-      "schema_version": "3.0.0",
+      "schema_version": "3.1.0",
       "ending_id": "e1",
       "title": "背影远去",
       "description": "父子在浦口车站分别，父亲的背影混入人群。",
       "kind": "canonical"
     },
     {
-      "schema_version": "3.0.0",
+      "schema_version": "3.1.0",
       "ending_id": "e2",
       "title": "错过的追赶",
       "description": "儿子没能追上父亲，只留下月台上的怅惘。",
@@ -279,7 +279,7 @@
     "start_location_key": "station",
     "locations": [
       {
-        "schema_version": "3.0.0",
+        "schema_version": "3.1.0",
         "title": "浦口车站月台",
         "participants": [
           "父亲",
@@ -293,7 +293,7 @@
         ]
       },
       {
-        "schema_version": "3.0.0",
+        "schema_version": "3.1.0",
         "title": "月台尽头",
         "participants": [
           "儿子"

@@ -11,6 +11,7 @@ from app.domain.prompts import (
     collect_materials,
     divide_events,
     doubter,
+    write_dialogue,
     write_script,
 )
 
@@ -22,6 +23,7 @@ DEFAULTS: dict[tuple[str, str, str], dict[str, str]] = {
     (STAGE, character_design.NODE, character_design.VERSION): character_design.DEFAULTS,
     (STAGE, doubter.NODE, doubter.VERSION): doubter.DEFAULTS,
     (STAGE, write_script.NODE, write_script.VERSION): write_script.DEFAULTS,
+    (STAGE, write_dialogue.NODE, write_dialogue.VERSION): write_dialogue.DEFAULTS,
 }
 
 __all__ = ["DEFAULTS", "STAGE"]

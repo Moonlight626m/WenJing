@@ -183,6 +183,7 @@ def build_workflow(
         # #34 中段闸门：人物+场景划分完成后，教师审定/编辑再进入书写
         graph.add_node(PRE_WRITE_GATE_NODE, _logged(PRE_WRITE_GATE_NODE)(nodes.pre_write_gate))
     graph.add_node("write_script", _logged("write_script")(nodes.write_script))
+    graph.add_node("write_dialogue", _logged("write_dialogue")(nodes.write_dialogue))
     graph.add_node("final_audit", _logged("final_audit")(nodes.final_audit))
     # #48 场景/角色配图：总审通过后为定稿包配图（先审计再花钱；无 designer
     # 注入时节点内部直接跳过，拓扑不变——resume/checkpoint 兼容性依赖于此）。
@@ -214,7 +215,8 @@ def build_workflow(
         graph.add_edge(PRE_WRITE_GATE_NODE, "write_script")
     else:
         graph.add_edge("merge_characters", "write_script")
-    graph.add_edge("write_script", "final_audit")
+    graph.add_edge("write_script", "write_dialogue")
+    graph.add_edge("write_dialogue", "final_audit")
     # 配图在总审通过后：reject → 重写（不白付配图钱）；pass → design_assets → 终审/END
     audit_targets: dict[str, Any] = {
         "write_script": "write_script",
