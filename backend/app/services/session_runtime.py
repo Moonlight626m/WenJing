@@ -42,6 +42,7 @@ from app.domain.game.media import (
     AssetRepositoryPort,
     SceneAssetRequest,
 )
+from app.domain.game.replay import build_replay_graph
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.llm import LLMService
@@ -837,6 +838,8 @@ class SessionApplication:
             config=self._config,
             event_store=store,
             speech_sink=speech_sink,
+            # 珊瑚图剧本走确定性播放；旧剧本（无 options/endings）为 None = agent 路径
+            replay_graph=build_replay_graph(package),
         )
         return runtime, store
 

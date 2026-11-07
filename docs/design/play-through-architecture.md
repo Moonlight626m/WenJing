@@ -1,6 +1,6 @@
 # 游玩链路说明（现行）
 
-> 状态：M0–M3 已落地（2026-11-07）。上游设计见
+> 状态：M0–M4 已落地（2026-11-07）。上游设计见
 > `docs/design/play-through-redesign.md`（v5，下称「设计」）。
 > 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M4–M8）与排查时查阅；
 > 任务与进度仍以 GitHub Issues 为追踪源。
@@ -25,10 +25,11 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 事件溯源：events 是唯一权威；分支切换保留历史；快照只是缓存
 ```
 
-当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2）、回溯修复（M0），
-以及 Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线）。
-运行期的珊瑚图播放（M4）、Stage3 探索/工作人员（M5/M6）、离线 tick（M7）、
-快照新列与回溯页（M8）仍按设计推进——它们依赖的契约与事件名已经就位，见第 4 节。
+当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2）、回溯修复（M0）、
+Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线），以及 Stage2 运行期
+（M4：珊瑚图纯 IO 播放，旧剧本走原 agent 路径）。
+Stage3 探索/工作人员（M5/M6）、离线 tick（M7）、快照新列与回溯页（M8）仍按设计
+推进——它们依赖的契约与事件名已经就位，见第 4 节。
 
 ---
 
@@ -90,12 +91,31 @@ divide_events(v4 大纲：beats + branches + options + endings)
 > 关系表解析（设计 §A2 的 `script_*` 表）尚未落地：剧本仍整包存
 > `scripts.script_data`。见第 5 节的延期说明。
 
-### 3.3 运行期（M4）
+### 3.3 运行期（M4 已落地）
 
-`ReplayDirector` 零 LLM、零 agent，只读剧本 + 写事件；预写台词也落
-`character_speech`（`source=replay`），这样 Stage3 的 `speech_log` 有上下文。
-玩家所选角色的台词在播放时跳过（不替玩家说话），该拍的 action 由 beat 描述
-以旁白呈现。**Stage2 不允许自由输入**（见 6.1）。
+`domain/game/replay.py` 从 `ScriptPackage` 派生只读珊瑚图（`build_replay_graph`，
+无第二份持久化真相），`ReplayDirector` 零 LLM、零 agent，只产出事件：
+
+- `start` / `enter(node_id)` 播到下一个决策点或结局；`choose(state, option_id)`
+  写选择并播目标节点；`options(state)` 给交互点；`resolve(events)` 从活动分支
+  事件折叠播放位置（快照不含它）。
+- 节点编号：`scene:{id}`、`scene:{id}::branch:{id}`（与配图槽位同拼法）、
+  `ending:{id}`。决策点选项 id 就是 `option_id` 字符串（`o1`…），前端无需改动。
+- 事件：`replay_node_entered`（场景/分支，带 scene_key/title/current_asset）、
+  `replay_narration`、`replay_choice`、`replay_ending_reached`；预写台词落
+  `character_speech`（`source=replay`），Stage3 的 `speech_log` 因此有上下文。
+  节点进入与旁白按 narrative 消息下发，选择/结局按 system 消息下发。
+- 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。
+- 回主干：`return_mode=choice` 的分支播完停在父场景决策点，交互文案
+  「回到刚才的选择」；`continue` 续接 return_scene / 主干下一场；带
+  `ending_id` 的分支是终点。主干播完没有显式结局时用第一个 canonical 结局。
+- 回溯的「拍」变成 `replay_node_entered`：回退后整节点重演（新分支继承前缀）。
+- 到达结局：`beat_cursor` 对齐 `total_beats`，交互复用 0=续写 / 1=结束。
+- **Stage2 不允许自由输入**（见 6.1）；Stage3 仍是旧的 3 轮 agent 路径，
+  探索/换景/工作人员在 M5/M6。
+
+运行期不推 `beat_cursor`；场景键/标题/背景由播放位置解析（`export_state`）。
+旧剧本（无 options/endings）不派生图，运行时保持原 agent 线性路径。
 
 ---
 
@@ -249,6 +269,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 契约（剧本/命令/枚举/版本） | `backend/app/contracts/{script,commands,enums,base}.py` |
 | 事件常量 | `backend/app/domain/game/event.py` |
 | 运行时（重放/回溯/推进） | `backend/app/domain/game/game_runtime.py` |
+| 珊瑚图派生与纯 IO 播放 | `backend/app/domain/game/replay.py` |
 | 角色记忆折叠 | `backend/app/domain/agents/character.py` |
 | 恢复与命令事务 | `backend/app/services/session_runtime.py`、`session_store.py` |
 | 投影（事件→消息/状态） | `backend/app/services/session_projection.py` |
@@ -256,6 +277,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 迁移 URL 解析 | `backend/alembic/env.py` |
 | 前端契约镜像 | `frontend/src/lib/contracts/types.ts` |
 | 回溯验收测试 | `backend/tests/test_rollback_memory.py`、`test_branch_replay.py`、`test_full_flow.py` |
+| 珊瑚图播放测试 | `backend/tests/test_replay_director.py` |
 
 ## 9. 验证口径
 

@@ -32,6 +32,7 @@ from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
 from app.domain.game.goals import GoalState, derive_goals
 from app.domain.game.media import scene_visual_description
+from app.domain.game.replay import ReplayCue, ReplayDirector, ReplayGraph, ReplayState
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.game.types import (
@@ -121,6 +122,7 @@ class GameRuntime:
         event_store: EventStore | None = None,
         on_flush: Callable[[], Awaitable[None]] | None = None,
         speech_sink: SpeechStreamSink | None = None,
+        replay_graph: ReplayGraph | None = None,
     ) -> None:
         self.session_id = session_id
         self.script = script
@@ -145,6 +147,9 @@ class GameRuntime:
         self.verifier = VerifierAgent(llm)
         self.characters = CharacterAgentManager(llm, self.world_view)
         self.characters.create_agents(script.characters)
+        # 珊瑚图纯 IO 播放（M4）：有图就走确定性路径，不建 agent、不调 LLM
+        self.replay = ReplayDirector(replay_graph) if replay_graph is not None else None
+        self._replay_state: ReplayState | None = None
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
@@ -204,6 +209,15 @@ class GameRuntime:
         # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
         scene = self._beat_ctx(s.beat_cursor)
         current_asset = self._current_background(scene)
+        scene_title = scene.title if scene is not None else None
+        if self.replay is not None and self._replay_state is not None:
+            # 珊瑚图播放不推 beat 游标（§A4）：场景键/标题/图从播放位置解析
+            scene_title = self.replay.title_of(self._replay_state) or scene_title
+            current_asset = (
+                RuntimeAssets.rebuild(self.event_store).current(s.scene_key)
+                or self.replay.background_of(self._replay_state)
+                or current_asset
+            )
         return {
             "stage": s.stage,
             "phase": s.phase,
@@ -214,7 +228,7 @@ class GameRuntime:
             "speech_log": [list(t) for t in s.speech_log],
             "direction": dict(s.direction),
             "scene_key": s.scene_key,
-            "scene_title": scene.title if scene is not None else None,
+            "scene_title": scene_title,
             "ended": s.ended,
             "character_memories": self.characters.snapshot_memories(),
             "latest_event_id": self.event_store.latest_event_id,
@@ -312,6 +326,9 @@ class GameRuntime:
         self.screenwriter.beat_index = self.state.beat_cursor
         if self.state.player_role:
             self.characters.player_role = self.state.player_role
+        if self.replay is not None:
+            # 播放位置从**活动分支**事件折叠（快照不含它；只折重放切片会漏前缀）
+            self._replay_state = self.replay.resolve(self.event_store.active_events())
 
     def _replay_event(self, ev: dict) -> None:
         etype = ev.get("event_type") or ev.get("type")
@@ -356,6 +373,20 @@ class GameRuntime:
                 self.state.speech_log.append(
                     (str(speaker), self.state.scene_key, str(payload.get("text", "")))
                 )
+        elif etype == evt.EVENT_REPLAY_NODE_ENTERED:
+            scene_key = payload.get("scene_key")
+            if isinstance(scene_key, str):
+                self.state.scene_key = scene_key
+        elif etype == evt.EVENT_REPLAY_NARRATION:
+            # 旁白进入剧情上下文：续写目标/角色视图靠它了解演到哪了
+            text = str(payload.get("text", ""))
+            if text:
+                self.state.plot_log.append(text)
+                self.characters.broadcast_plot_context(text)
+        elif etype == evt.EVENT_REPLAY_ENDING_REACHED:
+            summary = f"结局：{payload.get('title', '')}".rstrip("：")
+            self.state.plot_log.append(summary)
+            self.characters.broadcast_plot_context(summary)
 
     # ===== 生命周期 =====
 
@@ -413,6 +444,8 @@ class GameRuntime:
             case "select_role":
                 return await self._on_select_role(payload)
             case "choose_option":
+                if self._at_replay_decision():
+                    return await self._on_replay_choice(cid, payload)
                 return await self._on_input(cid, action_type="choose_option", payload=payload)
             case "free_input":
                 return await self._on_input(cid, action_type="speak", payload=payload)
@@ -530,9 +563,7 @@ class GameRuntime:
         current_stage = self._runtime_stage_alias()
 
         # Stage2 结局确认出口（design_interaction 到结局时提供 0=续写 / 1=结束）
-        reached_ending = current_stage == "stage2" and self.state.beat_cursor >= total_beats(
-            self.script
-        )
+        reached_ending = current_stage == "stage2" and self._reached_ending()
         if reached_ending and action_type == "choose_option":
             self._log.info("ending_choice", extra={"choice": action.option_id})
             if action.option_id == 1:
@@ -570,9 +601,91 @@ class GameRuntime:
             return "stage3"
         raise new(codes.ENG_INVALID_TRANSITION, extra={"stage": self.state.stage})
 
+    # ===== 珊瑚图纯 IO 播放（M4；design play-through-redesign §A4）=====
+
+    def _at_replay_decision(self) -> bool:
+        """当前交互点是不是珊瑚图决策点（结局后的 0/1 出口不算）。"""
+        return (
+            self.replay is not None
+            and self._replay_state is not None
+            and self._replay_state.ending_id is None
+        )
+
+    def _reached_ending(self) -> bool:
+        if self.replay is not None:
+            return (
+                self._replay_state is not None
+                and self._replay_state.ending_id is not None
+            )
+        return self.state.beat_cursor >= total_beats(self.script)
+
+    async def _on_replay_choice(self, cid: str, payload: dict) -> StepResult:
+        """珊瑚图决策点：校验选项 → 写事件 → 播到下一个决策点/结局。"""
+        assert self.replay is not None and self._replay_state is not None  # noqa: S101
+        option_id = str(payload.get("option_id") or "")
+        option = self.replay.find_option(self._replay_state, option_id)
+        if option is None:
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID,
+                extra={"option_id": option_id, "node": self._replay_state.node_id},
+            )
+        self._append(
+            evt.EVENT_PLAYER_ACTION,
+            {"type": "choose_option", "option_id": option_id, "text": option.label},
+        )
+        self.active_interaction = None
+        state, cues = self.replay.choose(
+            self._replay_state, option_id, self.state.player_role
+        )
+        self._log.info(
+            "replay_choice",
+            extra={"option_id": option_id, "node": self._replay_state.node_id},
+        )
+        return await self._apply_replay_advance(state, cues)
+
+    async def _drive_replay(
+        self, new_events: list[dict] | None = None, *, force_node_id: str | None = None
+    ) -> StepResult:
+        """珊瑚图推进：从开局/指定节点播到下一个稳定决策点或结局。"""
+        assert self.replay is not None  # noqa: S101
+        sink: list[dict] = new_events if new_events is not None else []
+        self.state.phase = InteractionPhase.NARRATIVE.value
+        if force_node_id is not None:
+            state, cues = self.replay.enter(force_node_id, self.state.player_role)
+        elif self._replay_state is None:
+            state, cues = self.replay.start(self.state.player_role)
+        else:
+            state, cues = self._replay_state, []
+        return await self._apply_replay_advance(state, cues, sink=sink)
+
+    async def _apply_replay_advance(
+        self, state: ReplayState, cues: list[ReplayCue], *, sink: list[dict] | None = None
+    ) -> StepResult:
+        assert self.replay is not None  # noqa: S101
+        for cue in cues:
+            self._append(cue.event_type, cue.payload, sink=sink)
+        self._replay_state = state
+        self.state.scene_key = self.replay.scene_key_of(state) or self.state.scene_key
+        if state.ending_id is not None:
+            # 到达结局：游标对齐到末尾（旧投影/前端按它判断「已演完」）
+            self.state.beat_cursor = total_beats(self.script)
+            self.active_interaction = self.replay.ending_interaction(state)
+        else:
+            self.active_interaction = self.replay.options(state)
+        self.state.phase = InteractionPhase.PLAYER_TURN.value
+        self.state_machine.enter_phase(InteractionPhase.PLAYER_TURN)
+        return await self._result_at_point(new_events=sink or [])
+
     # ===== 推进引擎：跑到下一个稳定交互点 =====
 
-    async def _drive_until_interaction(self, *, new_events: list[dict] | None = None) -> StepResult:
+    async def _drive_until_interaction(
+        self,
+        *,
+        new_events: list[dict] | None = None,
+        force_node_id: str | None = None,
+    ) -> StepResult:
+        if self.replay is not None and self.state.stage == StageValue.STAGE2_REENACTING.value:
+            return await self._drive_replay(new_events, force_node_id=force_node_id)
         sink: list[dict] = new_events if new_events is not None else []
 
         while True:
@@ -812,26 +925,36 @@ class GameRuntime:
                 extra={"event_id": target_event_id},
             )
 
-        # 回溯点语义（回溯页口径：目标总是 narrative 事件）：回到该拍**开始前**。
         # 目标所属拍 = 路径上 id ≤ target 的最后一个叙事事件；重放它之前的全部前缀
         # （含此前各回合的 direction/proposal/发言），该拍由随后的
         # `_drive_until_interaction` 整拍重演。目标落在同回合后续事件上时同一规则
         # 仍回到该回合起点（防御：UI 只提供 narrative 目标）。
+        # 珊瑚图播放的「拍」是 `replay_node_entered`（M4），旧路径是 plot_advancement。
         # 目标之前没有任何叙事事件（如开局阶段事件）→ 不是合法回溯点，切分支前拒绝。
-        target_beat_id = max(
-            (
-                e.event_id
-                for e in self.event_store.active_events()
-                if e.event_id <= target_event_id
-                and e.event_type == evt.EVENT_PLOT_ADVANCEMENT
-            ),
-            default=0,
+        beat_type = (
+            evt.EVENT_REPLAY_NODE_ENTERED
+            if self.replay is not None
+            else evt.EVENT_PLOT_ADVANCEMENT
         )
+        beat_events = [
+            e
+            for e in self.event_store.active_events()
+            if e.event_id <= target_event_id and e.event_type == beat_type
+        ]
+        target_beat_id = max((e.event_id for e in beat_events), default=0)
         if target_beat_id == 0:
             raise new(
                 codes.ENG_ROLLBACK_TARGET_MISSING,
                 extra={"event_id": target_event_id},
             )
+        target_node_id = next(
+            (
+                str(e.payload["node_id"])
+                for e in beat_events
+                if e.event_id == target_beat_id and e.payload.get("node_id")
+            ),
+            None,
+        )
         prefix = [
             e for e in self.event_store.active_events() if e.event_id < target_beat_id
         ]
@@ -856,8 +979,11 @@ class GameRuntime:
             },
         )
         self.active_interaction = None
-        # 回溯后从恢复点重新推进到下一个稳定交互点（新分支继续追加）
-        driven = await self._drive_until_interaction(new_events=[roll_ev])
+        # 回溯后从恢复点重新推进到下一个稳定交互点（新分支继续追加）；
+        # 珊瑚图播放要整拍重演被回退的节点，故显式指定节点。
+        driven = await self._drive_until_interaction(
+            new_events=[roll_ev], force_node_id=target_node_id
+        )
         self._processed_commands[key] = driven
         self._log.info(
             "rollback_done",

@@ -224,6 +224,11 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     "rollback": "system",
     "proposal": "system",
     "direction": "system",
+    # 珊瑚图纯 IO 播放（M4）：节点进入与旁白是叙事，选择与结局是系统提示
+    "replay_node_entered": "narrative",
+    "replay_narration": "narrative",
+    "replay_choice": "system",
+    "replay_ending_reached": "system",
     # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
     "stage3_goals_set": "system",
     "stage3_goal_achieved": "system",
@@ -245,6 +250,10 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return f"{p.get('proposed_by')} 提议：{p.get('description', '')}"
     if event_type == "direction":
         return str(p.get("conflict", ""))
+    if event_type == "replay_choice":
+        return f"你选择了：{p.get('label', '')}"
+    if event_type == "replay_ending_reached":
+        return f"到达结局：{p.get('title', '')}"
     if event_type == EVENT_STAGE3_GOALS_SET:
         descs = [str(g.get("description", "")) for g in p.get("goals", []) if isinstance(g, dict)]
         return "续写目标：" + "；".join(descs)
@@ -255,8 +264,11 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
 
 def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
     """事件 → 用户可见文本（WS 消息与回溯页共用，避免两处口径漂移）。"""
+    if event_type == "replay_node_entered":
+        prefix = "分支" if p.get("node_kind") == "branch" else "场景"
+        return f"{prefix}：{p.get('scene_title', '')}"
     if category == "narrative":
-        return str(p.get("summary", ""))
+        return str(p.get("summary") or p.get("text") or "")
     if category == "character_speech":
         return str(p.get("text", ""))
     return _system_text(event_type, p)
@@ -360,7 +372,7 @@ def project_timeline(
     plot_asset: AssetRef | None = None
     for seq, ev in enumerate(path):
         p = ev.payload or {}
-        if ev.event_type == "plot_advancement":
+        if ev.event_type in ("plot_advancement", "replay_node_entered"):
             next_key = p.get("scene_key")
             if next_key and next_key != scene_key:
                 # 换场必须清掉上一场的图：新场还没有图时（current_asset 为空），

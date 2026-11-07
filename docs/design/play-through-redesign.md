@@ -152,6 +152,28 @@ scripts（content_version/format/replay_ready）
   `CommandKind.FREE_INPUT` 保留给 Stage3。
 - 游玩期只读表 + 写事件 + 签名资产 URL。
 
+**实现注记（2026-11-07，M4 已落地）**：
+- `domain/game/replay.py`：`build_replay_graph(pkg)` 派生只读珊瑚图（场景顺序即
+  主干；节点 `scene:{id}` / `scene:{id}::branch:{id}` / `ending:{id}`）；
+  `ReplayDirector.start/enter/choose/options/resolve` 产出事件序列，零 LLM。
+  旧剧本（无 options/endings）返回 None，运行时保持 agent 线性路径。
+- 事件与投影：节点进入/旁白按 narrative 消息、选择/结局按 system 消息下发；
+  `replay_node_entered` 带 scene_key/title/current_asset，时间线沿它累积场景。
+- 对话：`Beat.dialogue` 与 `BranchScene.dialogue` 落 `character_speech`
+  （`source=replay`）；`speaker=null` 的台词转 `replay_narration`；玩家所选
+  角色的台词跳过。
+- 决策点：选项 id 即 `option_id` 字符串；上下文取介入点的
+  `what_player_can_do`（契约介入点没有 `context` 字段）。
+- `return_mode=choice` 的分支停在父场景决策点（文案「回到刚才的选择」），
+  不建事件分支；`continue` 续接 `return_scene_id` 或主干下一场；主干播完且
+  没有显式结局时用第一个 canonical 结局。
+- 回溯按 `replay_node_entered` 定位「拍」：回退到节点开始前，新分支整节点重演。
+- **与草案/前序注记的差异**：珊瑚图仍从 `scripts.script_data` 派生（表仓储后置，
+  见 §D2 修正）；**Stage3 未改动**——到达结局选 0 进入续写仍是旧的 3 轮 agent
+  路径（`beat_cursor` 在结局时对齐末尾，续写会复读最后一拍），探索/换景在 M5。
+- 前端无需改动：现有消息流已按 narrative/character_speech/system 渲染，
+  交互点选项 id 是字符串、自由输入框按 `allowed_commands` 自动隐藏。
+
 ### A5. 前端
 
 镜像 `DialogueLine/Ending/SceneOption` 与新事件；Stage2 渲染 narration+dialogue、
