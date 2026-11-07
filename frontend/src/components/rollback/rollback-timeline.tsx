@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -14,6 +14,7 @@ import {
   formatApiError,
   getTimeline,
   submitCommandRest,
+  type BranchSummary,
   type SavePoint,
   type SessionTimeline,
   type TimelineEntry,
@@ -28,7 +29,8 @@ import { useUiStore } from "@/stores/uiStore";
 interface RollbackTarget {
   sequence: number;
   eventId: string;
-  title: string | null;
+  /** 场景名或存档点标签，仅用于确认文案。 */
+  label: string | null;
 }
 
 /** 一幕（或一段无场景的系统提示）：条目按出现顺序分组，不重排。 */
@@ -97,18 +99,64 @@ function latestNarrativeSequence(entries: TimelineEntry[]): number | null {
   return latest;
 }
 
+/**
+ * 存档点 → 实际回溯拍。
+ *
+ * 服务端把 `target_event_id` 解析为「目标及之前最后一个叙事事件」，所以存档点
+ * 落在台词/系统事件上时会回到更早的一拍。前端提前解析，卡片按钮与确认文案才能
+ * 和回溯结果一致；找不到可回溯的叙事拍时（最新存档点、只读分支）不给按钮。
+ */
+function resolveSavePointTarget(
+  point: SavePoint,
+  entries: TimelineEntry[]
+): TimelineEntry | null {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i];
+    if (
+      entry.kind === "narrative" &&
+      entry.rollbackable &&
+      entry.sequence <= point.sequence
+    ) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+/** 分支显示名：活动分支固定「当前分支」，旧分支按创建顺序从 1 编号。 */
+function branchLabels(branches: BranchSummary[]): Map<string, string> {
+  const labels = new Map<string, string>();
+  let ordinal = 0;
+  for (const branch of branches) {
+    labels.set(
+      branch.branch_id,
+      branch.is_active ? "当前分支" : `旧分支 ${++ordinal}`
+    );
+  }
+  return labels;
+}
+
+function labelForBranch(
+  labels: Map<string, string>,
+  branchId: string | null
+): string {
+  return (branchId ? labels.get(branchId) : null) ?? "旧分支";
+}
+
 /** 一幕：场景图 + 简洁描述（每拍一句）+ 台词折叠；拍上带「回到这里」。 */
 function SceneCard({
   group,
   index,
   latestNarrative,
   canRollback,
+  savePoints,
   onPick,
 }: {
   group: TimelineGroup;
   index: number;
   latestNarrative: number | null;
   canRollback: boolean;
+  savePoints: Map<string, SavePoint>;
   onPick: (target: RollbackTarget) => void;
 }) {
   const title = group.sceneTitle ?? "未命名场景";
@@ -139,8 +187,9 @@ function SceneCard({
           <ol className="flex flex-col gap-2.5">
             {narratives.map((entry) => {
               const current = entry.sequence === latestNarrative;
+              const savePoint = savePoints.get(entry.event_id);
               return (
-                <li key={entry.sequence} className="border-l border-rule pl-3">
+                <li key={entry.event_id} className="border-l border-rule pl-3">
                   <p className="measure text-sm leading-relaxed text-ink-soft">
                     {entry.text}
                   </p>
@@ -149,6 +198,9 @@ function SceneCard({
                       #{entry.sequence}
                     </span>
                     {current && <Tag tone="accent">当前进度</Tag>}
+                    {savePoint && (
+                      <Tag title={savePoint.label}>存档点</Tag>
+                    )}
                     {canRollback && entry.rollbackable && (
                       <Button
                         tone="outline"
@@ -157,7 +209,7 @@ function SceneCard({
                           onPick({
                             sequence: entry.sequence,
                             eventId: entry.event_id,
-                            title: group.sceneTitle,
+                            label: group.sceneTitle,
                           })
                         }
                       >
@@ -181,11 +233,19 @@ function SceneCard({
               </summary>
               <ul className="mt-1.5 flex flex-col gap-1.5">
                 {speeches.map((entry) => (
-                  <li key={entry.sequence} className="text-ink-soft">
+                  <li
+                    key={entry.event_id}
+                    className="flex flex-wrap items-baseline gap-1.5 text-ink-soft"
+                  >
                     <span className="text-ink-faint">
                       {entry.speaker ?? "角色"}：
                     </span>
-                    {entry.text}
+                    <span>{entry.text}</span>
+                    {savePoints.has(entry.event_id) && (
+                      <Tag title={savePoints.get(entry.event_id)?.label}>
+                        存档点
+                      </Tag>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -199,7 +259,17 @@ function SceneCard({
               </summary>
               <ul className="mt-1.5 flex flex-col gap-1">
                 {notes.map((entry) => (
-                  <li key={entry.sequence}>{entry.text}</li>
+                  <li
+                    key={entry.event_id}
+                    className="flex flex-wrap items-baseline gap-1.5"
+                  >
+                    <span>{entry.text}</span>
+                    {savePoints.has(entry.event_id) && (
+                      <Tag title={savePoints.get(entry.event_id)?.label}>
+                        存档点
+                      </Tag>
+                    )}
+                  </li>
                 ))}
               </ul>
             </details>
@@ -211,11 +281,25 @@ function SceneCard({
 }
 
 /** 第一幕之前的系统提示（阶段切换等）：按行列出，不参与场景卡。 */
-function NotesGroup({ group }: { group: TimelineGroup }) {
+function NotesGroup({
+  group,
+  savePoints,
+}: {
+  group: TimelineGroup;
+  savePoints: Map<string, SavePoint>;
+}) {
   return (
     <li className="flex flex-col gap-1.5 border-l border-rule pl-4 text-xs text-ink-faint">
       {group.entries.map((entry) => (
-        <p key={entry.sequence}>{entry.text}</p>
+        <p
+          key={entry.event_id}
+          className="flex flex-wrap items-baseline gap-1.5"
+        >
+          <span>{entry.text}</span>
+          {savePoints.has(entry.event_id) && (
+            <Tag title={savePoints.get(entry.event_id)?.label}>存档点</Tag>
+          )}
+        </p>
       ))}
     </li>
   );
@@ -224,15 +308,50 @@ function NotesGroup({ group }: { group: TimelineGroup }) {
 /** 存档点卡片：一条命令结束时的快照坐标（标签已由服务端按场景/命令写好）。 */
 function SavePointCard({
   point,
+  target,
+  isHead,
   canRollback,
+  readOnly,
   onPick,
 }: {
   point: SavePoint;
+  /** 该存档点实际会回到的叙事拍（服务端按「目标及之前最后一个叙事事件」解析）。 */
+  target: TimelineEntry | null;
+  isHead: boolean;
   canRollback: boolean;
+  readOnly: boolean;
   onPick: (target: RollbackTarget) => void;
 }) {
+  let action: ReactNode = null;
+  if (isHead) {
+    action = (
+      <Tag tone={readOnly ? undefined : "ok"} className="mt-1 self-start">
+        {readOnly ? "该线终点" : "当前进度"}
+      </Tag>
+    );
+  } else if (canRollback) {
+    action = target ? (
+      <Button
+        tone="outline"
+        size="xs"
+        className="mt-1 self-start"
+        onClick={() =>
+          onPick({
+            sequence: target.sequence,
+            eventId: target.event_id,
+            label: point.label,
+          })
+        }
+      >
+        回到 #{target.sequence}
+      </Button>
+    ) : (
+      <span className="mt-1 text-2xs text-ink-faint">不可回溯</span>
+    );
+  }
+
   return (
-    <li className="flex min-w-52 flex-col gap-1 rounded-lg border border-rule bg-surface px-3 py-2">
+    <li className="flex w-52 shrink-0 flex-col gap-1 rounded-lg border border-rule bg-surface px-3 py-2">
       <div className="flex items-baseline justify-between gap-2">
         <span className="font-mono text-2xs text-ink-faint tabular-nums">
           #{point.sequence}
@@ -241,7 +360,7 @@ function SavePointCard({
           {point.kind === "rollback" ? "回溯" : "进度"}
         </Tag>
       </div>
-      <span className="truncate font-serif text-sm text-ink" title={point.label}>
+      <span className="line-clamp-2 font-serif text-sm text-ink" title={point.label}>
         {point.label}
       </span>
       {point.created_at && (
@@ -249,22 +368,7 @@ function SavePointCard({
           {new Date(point.created_at).toLocaleString()}
         </span>
       )}
-      {canRollback && (
-        <Button
-          tone="outline"
-          size="xs"
-          className="mt-1 self-start"
-          onClick={() =>
-            onPick({
-              sequence: point.sequence,
-              eventId: point.event_id,
-              title: point.label,
-            })
-          }
-        >
-          回到这里
-        </Button>
-      )}
+      {action}
     </li>
   );
 }
@@ -283,40 +387,94 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
   const [timeline, setTimeline] = useState<SessionTimeline | null>(null);
   const [viewBranch, setViewBranch] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [reloadKey, setReloadKey] = useState(0);
   const [confirming, setConfirming] = useState<RollbackTarget | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [rollbackError, setRollbackError] = useState<string | null>(null);
 
   useEffect(() => {
+    // 每次切换分支/重试都是新的 effect：cleanup 把上一轮的 active 置否，
+    // 迟到的响应直接丢弃，避免快速连点时旧分支盖掉新分支。
+    // 加载/清错在触发方（分支按钮、重试）里做，effect 只在回调里落结果。
     let active = true;
     getTimeline(sessionId, viewBranch ?? undefined)
       .then((resp) => {
-        if (active) setTimeline(resp);
+        if (active) {
+          setTimeline(resp);
+          setLoading(false);
+        }
       })
       .catch((err) => {
-        if (active) setError(formatApiError(err));
+        if (active) {
+          setError(formatApiError(err));
+          setLoading(false);
+        }
       });
     return () => {
       active = false;
     };
-  }, [sessionId, viewBranch]);
+  }, [sessionId, viewBranch, reloadKey]);
 
   const groups = useMemo(
     () => (timeline ? groupTimeline(timeline.entries) : []),
     [timeline]
   );
   const latestNarrative = useMemo(
-    () => (timeline ? latestNarrativeSequence(timeline.entries) : null),
+    () =>
+      timeline && !timeline.read_only
+        ? latestNarrativeSequence(timeline.entries)
+        : null,
     [timeline]
   );
+  const branchLabelById = useMemo(
+    () => (timeline ? branchLabels(timeline.branches) : new Map<string, string>()),
+    [timeline]
+  );
+  const branches = useMemo(
+    () =>
+      timeline
+        ? [...timeline.branches].sort(
+            (a, b) => Number(b.is_active) - Number(a.is_active)
+          )
+        : [],
+    [timeline]
+  );
+  const recentSavePoints = useMemo(
+    () => (timeline ? [...timeline.save_points].reverse() : []),
+    [timeline]
+  );
+  const savePointByEventId = useMemo(() => {
+    const map = new Map<string, SavePoint>();
+    for (const point of timeline?.save_points ?? []) {
+      map.set(point.event_id, point);
+    }
+    return map;
+  }, [timeline]);
   const sceneCount = groups.filter((g) => g.sceneKey !== null).length;
   const sceneNumbers = new Map<string, number>();
   for (const group of groups) {
     if (group.sceneKey !== null) sceneNumbers.set(group.key, sceneNumbers.size + 1);
   }
+  const viewedBranch = timeline?.read_only
+    ? labelForBranch(branchLabelById, timeline.branch_id)
+    : null;
+
+  function retry() {
+    setLoading(true);
+    setError(null);
+    setReloadKey((n) => n + 1);
+  }
+
+  function pickTarget(target: RollbackTarget) {
+    setRollbackError(null);
+    setConfirming(target);
+  }
 
   async function doRollback() {
     if (!confirming || submitting) return;
     setSubmitting(true);
+    setRollbackError(null);
     try {
       await submitCommandRest(
         sessionId,
@@ -335,17 +493,13 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
       useGameStore.getState().resetSession(sessionId);
       router.push(`/game?id=${sessionId}`);
     } catch (err) {
-      push({
-        kind: "error",
-        title: "回溯失败",
-        description: formatApiError(err),
-      });
+      // 保留确认态就地报错：会话冲突/临时故障时可以直接重试，不用重新选拍。
+      setRollbackError(formatApiError(err));
       setSubmitting(false);
-      setConfirming(null);
     }
   }
 
-  if (error) {
+  if (error && !timeline) {
     return (
       <PageShell>
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -356,9 +510,14 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
         <FormError message={error} />
         <Empty
           action={
-            <Link href="/student" className="text-sm text-accent underline">
-              去学生空间
-            </Link>
+            <div className="flex flex-wrap items-center gap-4">
+              <Button tone="outline" size="sm" onClick={retry}>
+                重试
+              </Button>
+              <Link href="/student" className="text-sm text-accent underline">
+                去学生空间
+              </Link>
+            </div>
           }
         >
           可能是会话不存在，或不属于当前账号。
@@ -391,29 +550,40 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
         </p>
       </header>
 
-      {timeline.branches.length > 1 && (
+      {branches.length > 1 && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-ink-faint">分支</span>
-          {timeline.branches.map((branch, index) => {
-            const current =
-              viewBranch === branch.branch_id ||
-              (viewBranch === null && branch.is_active);
+          {branches.map((branch) => {
+            // 高亮跟着**已加载的** timeline 走，而不是请求中的 viewBranch：
+            // 切换失败时页面仍显示旧数据，高亮不能跑到没读到的分支上。
+            const current = branch.is_active
+              ? !timeline.read_only
+              : branch.branch_id === timeline.branch_id;
             return (
               <button
                 key={branch.branch_id}
                 type="button"
                 aria-pressed={current}
+                aria-busy={current && loading}
+                title={`分支 ${branch.branch_id} · ${branch.event_count} 个事件（含继承前缀）`}
                 onClick={() => {
+                  if (current) return;
+                  setLoading(true);
+                  setError(null);
                   setConfirming(null);
-                  setViewBranch(branch.is_active ? null : branch.branch_id);
+                  setRollbackError(null);
+                  const next = branch.is_active ? null : branch.branch_id;
+                  // 同一个目标（上次加载失败）再点一次 = 重试，state 不变不会触发 effect
+                  if (next === viewBranch) retry();
+                  else setViewBranch(next);
                 }}
-                className={`rounded-full border px-2.5 py-0.5 transition-colors ${
+                className={`rounded-full border px-2.5 py-0.5 transition-colors disabled:opacity-60 ${
                   current
                     ? "border-accent/60 bg-accent-wash text-accent"
                     : "border-rule text-ink-soft hover:text-ink"
                 }`}
               >
-                {branch.is_active ? "当前分支" : `旧分支 ${index}`}
+                {branchLabelById.get(branch.branch_id) ?? "分支"}
                 <span className="ml-1.5 text-ink-faint tabular-nums">
                   {branch.event_count}
                 </span>
@@ -423,41 +593,55 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
         </div>
       )}
 
-      {timeline.read_only && (
-        <p className="measure rounded-md border border-warn/50 bg-warn-wash px-3 py-2 text-xs text-warn">
-          这是回溯后保留的旧分支，只读回看；要回到这条线，请在活动分支上重新选择。
-        </p>
+      {loading && (
+        <div className="rounded-md border border-rule bg-sunken px-3 py-2">
+          <Loading label={viewBranch ? "读取旧分支…" : "读取进度…"} />
+        </div>
       )}
 
-      {!timeline.can_rollback && (
+      {error && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-danger/40 bg-danger-wash px-3 py-2 text-xs text-danger"
+        >
+          <span className="measure">{error}</span>
+          <Button tone="outline" size="xs" onClick={retry}>
+            重试
+          </Button>
+        </div>
+      )}
+
+      {timeline.read_only ? (
         <p className="measure rounded-md border border-warn/50 bg-warn-wash px-3 py-2 text-xs text-warn">
-          {timeline.entries.length === 0
-            ? "剧情还没开始，暂时没有可回溯的进度。"
-            : timeline.read_only
-              ? "旧分支只读：下面是它保留的完整进度。"
-              : "当前阶段不开放回溯（或已超出可回溯步数），下面是只读的进度回顾。"}
+          「{viewedBranch}」已停止推进：下面是它保留的完整进度，只读回看；
+          要沿这条线继续，请在活动分支上重新选择。
         </p>
+      ) : (
+        !timeline.can_rollback && (
+          <p className="measure rounded-md border border-warn/50 bg-warn-wash px-3 py-2 text-xs text-warn">
+            {timeline.entries.length === 0
+              ? "剧情还没开始，暂时没有可回溯的进度。"
+              : "当前阶段不开放回溯（或已超出可回溯步数），下面是只读的进度回顾。"}
+          </p>
+        )
       )}
 
       {timeline.save_points.length > 0 && (
         <>
           <SectionHeading
             title="存档点"
-            meta={`${timeline.save_points.length} 处`}
+            meta={`${timeline.save_points.length} 处 · 最近在前`}
           />
-          <ol className="flex flex-wrap gap-2">
-            {timeline.save_points.map((point) => (
+          <ol className="flex gap-2 overflow-x-auto pb-1 sm:flex-wrap sm:overflow-visible">
+            {recentSavePoints.map((point) => (
               <SavePointCard
                 key={`${point.branch_id}:${point.sequence}`}
                 point={point}
-                canRollback={
-                  timeline.can_rollback &&
-                  point.sequence < timeline.head_sequence &&
-                  timeline.entries.some(
-                    (e) => e.rollbackable && e.sequence <= point.sequence
-                  )
-                }
-                onPick={setConfirming}
+                target={resolveSavePointTarget(point, timeline.entries)}
+                isHead={point.sequence >= timeline.head_sequence}
+                canRollback={timeline.can_rollback}
+                readOnly={timeline.read_only}
+                onPick={pickTarget}
               />
             ))}
           </ol>
@@ -486,7 +670,11 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
         <ol className="flex flex-col gap-4">
           {groups.map((group, index) =>
             group.sceneKey === null ? (
-              <NotesGroup key={group.key} group={group} />
+              <NotesGroup
+                key={group.key}
+                group={group}
+                savePoints={savePointByEventId}
+              />
             ) : (
               <SceneCard
                 key={group.key}
@@ -494,7 +682,8 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
                 index={sceneNumbers.get(group.key) ?? index + 1}
                 latestNarrative={latestNarrative}
                 canRollback={timeline.can_rollback}
-                onPick={setConfirming}
+                savePoints={savePointByEventId}
+                onPick={pickTarget}
               />
             )
           )}
@@ -502,12 +691,25 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
       )}
 
       {confirming && (
-        <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-surface px-4 py-3 shadow-lg">
-          <span className="measure text-sm text-ink">
-            确认回到 #{confirming.sequence}
-            {confirming.title ? `（${confirming.title}）` : ""}？
-            将从这一拍开启新分支，已发生的旧进度保留。
-          </span>
+        <div
+          role="group"
+          aria-label="回溯确认"
+          className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-danger/40 bg-surface px-4 py-3 shadow-lg"
+        >
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="measure text-sm text-ink">
+              确认回到 #{confirming.sequence}
+              {confirming.label ? `（${confirming.label}）` : ""}？
+            </span>
+            <span className="measure text-xs text-ink-faint">
+              该拍之后的进度会被放弃，旧分支保留可审计。
+            </span>
+            {rollbackError && (
+              <p role="alert" className="measure text-xs text-danger">
+                {rollbackError}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <Button
               tone="danger"

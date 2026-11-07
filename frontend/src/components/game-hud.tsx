@@ -215,6 +215,7 @@ export function GameHud({
         </div>
         <Link
           href={`/game/rollback?id=${sessionId}`}
+          title="回溯进度：查看存档点与旧分支"
           className={buttonClass("quiet", "xs")}
         >
           回溯进度

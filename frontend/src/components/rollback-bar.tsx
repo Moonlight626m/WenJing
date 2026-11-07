@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
+
 import { useGameStore } from "@/stores/gameStore";
 import { isRollbackTarget } from "@/components/message-stream";
-import { Button } from "@/components/ui/button";
+import { Button, buttonClass } from "@/components/ui/button";
 import { Select } from "@/components/ui/field";
 
 /**
@@ -25,6 +27,7 @@ export function RollbackBar({
   const messages = useGameStore((s) => s.messages);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const pending = useGameStore((s) => s.pending);
+  const sessionId = useGameStore((s) => s.sessionId);
   const submit = useGameStore((s) => s.submitCommand);
 
   if (!allowedCommands.includes("rollback_to_event")) return null;
@@ -62,6 +65,14 @@ export function RollbackBar({
           </option>
         ))}
       </Select>
+      {sessionId && (
+        <Link
+          href={`/game/rollback?id=${sessionId}`}
+          className={buttonClass("quiet", "xs")}
+        >
+          存档点与分支 →
+        </Link>
+      )}
       {target !== null && !confirming && (
         <Button
           tone="danger"
