@@ -12,6 +12,7 @@
 | `docs/agents/` | agent skills 配置:issue tracker / triage labels / domain docs | 现行 |
 | `docs/contract-change-process.md` | 契约变更流程(四处单源) | 现行 |
 | `docs/design/` | 专题设计:游玩链路重构、Stage3 自由探索 | 草案 |
+| `docs/design/play-through-architecture.md` | 游玩链路说明(现行语义/契约/存储/不变量,供后续任务查阅) | 现行 |
 | `docs/research/` | 技术 / 部署调研快照(带日期,非规格,不追改) | 参考 |
 
 历史上的架构决策文档(`docs/adr/` ADR-0001…0006 与 `docs/archive/design/` MVP 期设计)于
