@@ -199,9 +199,15 @@ def test_allowed_commands_semantics() -> None:
     assert CommandKind.SELECT_ROLE in ALLOWED_COMMANDS[StageValue.STAGE1_COMPLETE]
     assert ALLOWED_COMMANDS[StageValue.INIT] == frozenset()
     assert ALLOWED_COMMANDS[StageValue.ENDED] == frozenset()
-    game_cmds = ALLOWED_COMMANDS[StageValue.STAGE2_REENACTING]
-    assert {CommandKind.CHOOSE_OPTION, CommandKind.FREE_INPUT} & game_cmds
-    assert CommandKind.ROLLBACK_TO_EVENT in game_cmds
+    stage2 = ALLOWED_COMMANDS[StageValue.STAGE2_REENACTING]
+    assert CommandKind.CHOOSE_OPTION in stage2
+    assert CommandKind.ROLLBACK_TO_EVENT in stage2
+    # 还原期是纯 IO 播放：不接受自由输入（design play-through-redesign §A4）
+    assert CommandKind.FREE_INPUT not in stage2
+    stage3 = ALLOWED_COMMANDS[StageValue.STAGE3_EXTENDING]
+    assert CommandKind.FREE_INPUT in stage3
+    # INTERVENE 的契约已就位，但接入允许列表要等 M6 的 ProducerAgent 处理器
+    assert CommandKind.INTERVENE not in stage3
 
 
 # ===== 3. PlayerCommand payload 判别校验 =====
@@ -221,6 +227,39 @@ def test_player_command_payload_model_resolution() -> None:
     payload = cmd.payload_model
     assert type(payload).__name__ == "ChooseOptionPayload"
     assert payload.option_id == "opt_buy_oranges_reply"
+
+
+def test_intervene_payload_requires_text() -> None:
+    from uuid import uuid4
+
+    from app.contracts.commands import IntervenePayload
+
+    cmd = PlayerCommand(
+        session_id=uuid4(),
+        kind=CommandKind.INTERVENE,
+        payload={"text": "创建一个雨夜的客栈场景"},
+    )
+    assert isinstance(cmd.payload_model, IntervenePayload)
+    with pytest.raises(Exception):
+        PlayerCommand(session_id=uuid4(), kind=CommandKind.INTERVENE, payload={})
+
+
+def test_script_package_coral_graph_fields() -> None:
+    """M1 契约波：珊瑚图字段可解析（dialogue/options/endings/exploration）。"""
+    from app.contracts.script import ScriptPackage
+
+    pkg = ScriptPackage.model_validate(
+        json.loads((FIXTURES / "script_package.json").read_text())
+    )
+    scene = pkg.scenes[0]
+    assert scene.options[0].branch_id == "b1"
+    assert scene.beats[0].dialogue[0].speaker == "父亲"
+    branch = scene.branches[0]
+    assert branch.dialogue and branch.return_mode == "continue"
+    assert {e.kind for e in pkg.endings} == {"canonical", "distractor"}
+    assert pkg.exploration is not None
+    assert pkg.exploration.start_location_key == "station"
+    assert [loc.key for loc in pkg.exploration.locations] == ["station", "platform_end"]
 
 
 # ===== 4. ErrorEnvelope 规则 =====

@@ -96,6 +96,31 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 编剧 Agent（`screenwriter`）是剧情推进的"主持人"角色；"DM"仅口语别名，不是独立术语，
 代码与契约沿用 `screenwriter`。
 
+### 还原（Stage2 珊瑚图）
+
+Stage2 是**纯 IO 的珊瑚形还原**（设计见 `docs/design/play-through-redesign.md` §A）：
+主干场景顺序播放，场景的 `options`（`SceneOption`）指向分支（`BranchScene`）、
+下一场景或结局（`Ending`）；非主分支播完按 `return_mode` 回主干——`choice` 回决策点、
+`continue` 续接下一场，带 `ending_id` 的分支是终局。台词在生成期预写成
+`Beat.dialogue`（`DialogueLine`，`speaker=None` 为旁白），游玩期零 LLM。
+无 `options/dialogue` 的旧剧本走运行期 agent 的线性路径。**还原期禁用自由输入**
+（`free_input` 只属于续写阶段）。
+
+### 参演与工作人员（Cast / Staff）
+
+Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC）与人类玩家，
+出场、写台词、进 `speech_log`；**工作人员**是 `DirectorAgent`（设计玩家选项）、
+`ProducerAgent`（解析玩家干涉）、`PainterAgent`/`VerifierAgent`/`ScreenwriterAgent`
+（既有能力），不出场、不写角色台词，输出只进系统事件/选项/资产。
+
+### 干涉（Intervene）
+
+Stage3 玩家用自然语言改变世界的命令（`intervene` + `IntervenePayload`）：
+建场景、从角色池拉人、新增角色。`ProducerAgent` 解析为结构化意图并做 canon/预算
+校验，应用结果全部事件化（`scene_created`/`character_created` 等），因此**可回溯**——
+回到创建之前，该场景/角色等于从未存在。离线期间 NPC 自主行动（§B6），回来只给
+`offline_hint` 提示并指路时间线。
+
 ### 回溯（Rollback）与回溯页
 
 回溯是**保留历史的分支切换**：`rollback_to_event`（payload 为目标事件在活动分支上的

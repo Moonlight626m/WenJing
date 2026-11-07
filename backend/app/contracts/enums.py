@@ -38,6 +38,8 @@ class CommandKind(StrEnum):
     ENTER_STAGE3 = "enter_stage3"
     CONFIRM_ENDING = "confirm_ending"
     EXIT_GAME = "exit_game"
+    # Stage3 玩家干涉世界（建场景/拉入角色）：自然语言 → ProducerAgent 解析。
+    INTERVENE = "intervene"
 
 
 # 每阶段允许的命令（allowed_commands 约束，runtime 校验依据）
@@ -47,8 +49,9 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
     StageValue.STAGE1_COMPLETE: frozenset({CommandKind.SELECT_ROLE, CommandKind.EXIT_GAME}),
     StageValue.STAGE2_REENACTING: frozenset(
         {
+            # 还原阶段是纯 IO 播放：只接受选项，不接受自由输入（design
+            # play-through-redesign §A4）。FREE_INPUT 保留给 Stage3。
             CommandKind.CHOOSE_OPTION,
-            CommandKind.FREE_INPUT,
             CommandKind.ROLLBACK_TO_EVENT,
             CommandKind.EXIT_GAME,
         }
@@ -63,6 +66,8 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
             CommandKind.ROLLBACK_TO_EVENT,
             CommandKind.CONFIRM_ENDING,
             CommandKind.EXIT_GAME,
+            # CommandKind.INTERVENE 由 M6 接线（ProducerAgent 就绪后才允许，
+            # 否则「允许的命令」会落到引擎的非法命令兜底）
         }
     ),
     StageValue.ENDED: frozenset(),
@@ -92,6 +97,23 @@ class EventType(StrEnum):
     # plot_advancement 带 branch_key（主干为 null）区分两条推进线。
     BRANCH_TAKEN = "branch_taken"
     BRANCH_COMPLETED = "branch_completed"
+    # Stage2 珊瑚图纯 IO 播放（design play-through-redesign §A4）
+    REPLAY_NODE_ENTERED = "replay_node_entered"
+    REPLAY_NARRATION = "replay_narration"
+    REPLAY_CHOICE = "replay_choice"
+    REPLAY_ENDING_REACHED = "replay_ending_reached"
+    # Stage3 探索/场景/干涉（§B3–B5）
+    EXPLORATION_SETTLED = "exploration_settled"
+    SCENE_CREATED = "scene_created"
+    SCENE_SWITCHED = "scene_switched"
+    SCENE_UNLOCK_REJECTED = "scene_unlock_rejected"
+    CHARACTER_CREATED = "character_created"
+    CHARACTER_PULLED_IN = "character_pulled_in"
+    INTERVENTION_REQUESTED = "intervention_requested"
+    INTERVENTION_REJECTED = "intervention_rejected"
+    WORLD_FACT = "world_fact"
+    # 离线 tick 的提示（§B6）：不写详细摘要，只指路时间线。
+    OFFLINE_HINT = "offline_hint"
 
 
 class ErrorDomain(StrEnum):

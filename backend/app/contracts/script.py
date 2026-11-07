@@ -109,6 +109,40 @@ class CharacterProfile(VersionedContract):
     fullbody_credit: AssetCredit | None = None
 
 
+class DialogueLine(VersionedContract):
+    """一句预写台词。`speaker=None` 表示旁白。"""
+
+    speaker: str | None = None
+    text: str
+    stage_direction: str = ""
+
+
+class Ending(VersionedContract):
+    """剧本结局。`canonical` 是必达主线结局，`alternate` 是合理变体，
+    `distractor` 只用于干扰分支的「错结局」。"""
+
+    ending_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    description: str = ""
+    kind: Literal["canonical", "alternate", "distractor"]
+
+
+class SceneOption(VersionedContract):
+    """珊瑚图决策点的玩家选项：指向分支 / 目标场景 / 结局之一。
+
+    `branch_id` 指向本场景 `branches` 里的内容；`target_scene_id` 直接跳到某
+    场景；`ending_id` 表示这是终局选项。三者按优先级 branch → target → ending
+    解释，其余为 None。
+    """
+
+    option_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    kind: Literal["canonical", "distractor"]
+    branch_id: str | None = None
+    target_scene_id: int | None = None
+    ending_id: str | None = None
+
+
 class Beat(VersionedContract):
     """单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。"""
 
@@ -116,6 +150,25 @@ class Beat(VersionedContract):
     description: str
     is_key_event: bool = False
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    # 生成期预写台词（珊瑚图纯 IO 播放的数据源）：空 = 走运行期 agent 旧路径。
+    dialogue: list[DialogueLine] = Field(default_factory=list)
+
+
+class ExplorationLocation(VersionedContract):
+    """Stage3 探索地图上的一个地点（在场角色 + 视觉摘要）。"""
+
+    key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    participants: list[str] = Field(default_factory=list)
+    visual_summary: str = ""
+
+
+class ExplorationMap(VersionedContract):
+    """Stage3 自由探索的地图：起点地点 + 地点列表。"""
+
+    start_location_key: str = Field(min_length=1)
+    locations: list[ExplorationLocation] = Field(default_factory=list)
+    ending_brief: str = ""
 
 
 class InteractionPoint(ContractModel):
@@ -169,6 +222,14 @@ class BranchScene(VersionedContract):
     # 分支场景图（完整场面 kind=scene_montage）；生成期预生成（#48 同通道）。
     background_asset: AssetRef | None = None
     background_credit: AssetCredit | None = None
+    # 生成期预写台词（珊瑚图播放）。
+    dialogue: list[DialogueLine] = Field(default_factory=list)
+    # 分支终局：非空表示播完即到达该结局，不回主干。
+    ending_id: str | None = None
+    # 非终局分支的返回方式：choice = 回到决策点，continue = 续接主干下一场。
+    return_mode: Literal["choice", "continue"] = "continue"
+    # `return_mode=continue` 时的目标场景；None = 主干下一场。
+    return_scene_id: int | None = None
 
 
 class Scene(VersionedContract):
@@ -184,6 +245,8 @@ class Scene(VersionedContract):
     interaction_point: InteractionPoint | None = None
     # 伪分支替代过场：玩家在介入点选择后播放，播完并回主干下一场。
     branches: list[BranchScene] = Field(default_factory=list)
+    # 珊瑚图决策点：空 = 线性播放（旧剧本走运行期 agent 路径）。
+    options: list[SceneOption] = Field(default_factory=list)
     # 游玩内全屏背景（ADR-0005 §1）；无图时为 None（纯文本降级）。
     background_asset: AssetRef | None = None
     # 背景署名/许可（ADR-0005 §6）：需署名许可时详情页展示（#51/#54）。
@@ -199,3 +262,7 @@ class ScriptPackage(VersionedContract):
     teaching_focus: list[str] = Field(default_factory=list)
     playable_roles: list[str] = Field(min_length=1)
     stage2_ending_beat_id: int
+    # 多结局（珊瑚图）：空 = 旧剧本，结局仍是单一 `stage2_ending_beat_id`。
+    endings: list[Ending] = Field(default_factory=list)
+    # Stage3 探索地图：None = 旧剧本，Stage3 走现有 3 轮行为。
+    exploration: ExplorationMap | None = None

@@ -5,7 +5,7 @@
       "description": "当前等待玩家响应的交互点（稳定交互点语义）。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -47,7 +47,7 @@
       "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。\n\n`scene_montage`（方案 branch-montage-dm）是**完整场面图**：背景+在场人物+\n行为一图的插画（推翻 ADR-0005 §1「游玩内不显示人物」需随 ADR 修订走）；\n`background` 保留给旧脚本与纯空镜背景。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -89,7 +89,7 @@
       "description": "RuntimeUpdate 内的事件引用（完整 DomainEvent 由 event store 持久化）。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -133,7 +133,21 @@
         "stage3_goals_set",
         "stage3_goal_achieved",
         "branch_taken",
-        "branch_completed"
+        "branch_completed",
+        "replay_node_entered",
+        "replay_narration",
+        "replay_choice",
+        "replay_ending_reached",
+        "exploration_settled",
+        "scene_created",
+        "scene_switched",
+        "scene_unlock_rejected",
+        "character_created",
+        "character_pulled_in",
+        "intervention_requested",
+        "intervention_rejected",
+        "world_fact",
+        "offline_hint"
       ],
       "title": "EventType",
       "type": "string"
@@ -153,7 +167,7 @@
       "description": "交互点的单个选项。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -190,7 +204,7 @@
       "description": "显式、可序列化的运行时状态；恢复/回放的重建目标。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -331,7 +345,7 @@
       "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。\n\n进入续写时由编剧 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件\n（`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。",
       "properties": {
         "schema_version": {
-          "default": "2.8.0",
+          "default": "2.9.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -375,7 +389,7 @@
   "description": "一次命令推进的结果：提交后到下一个稳定交互点或终态返回。\n\n含状态、新事件、活动交互与允许命令——session 层据此投影对外消息。",
   "properties": {
     "schema_version": {
-      "default": "2.8.0",
+      "default": "2.9.0",
       "title": "Schema Version",
       "type": "string"
     },

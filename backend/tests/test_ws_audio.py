@@ -87,13 +87,17 @@ def _drain(ws, until: str) -> list[dict]:
 
 
 def test_audio_track_frames_flow_without_seq(ws_client, fake_tts):  # noqa: ANN001
-    """验收：音频可播放 —— audio_start → 二进制 → audio_end，且都不带 seq。"""
+    """验收：音频可播放 —— audio_start → 二进制 → audio_end，且都不带 seq。
+
+    Stage2 已禁用自由输入（design play-through-redesign §A4），这里用「选一项」
+    触发同一批 NPC 反应发言；音频链路与命令种类无关。
+    """
     sid, role = _full_setup(ws_client)
     with ws_client.websocket_connect(f"/ws/{sid}") as ws:
         ws.receive_json()
         _submit(ws, sid, "select_role", {"role_name": role})
         _drain(ws, "interaction")
-        _submit(ws, sid, "free_input", {"text": "我说一句话"})
+        _submit(ws, sid, "choose_option", {"option_id": "0"})
         messages = _drain(ws, "narrative")
 
     starts = [m for m in messages if m["type"] == "audio_start"]
@@ -119,7 +123,7 @@ def test_synthesis_receives_whole_sentences_not_deltas(ws_client, fake_tts):  # 
         ws.receive_json()
         _submit(ws, sid, "select_role", {"role_name": role})
         _drain(ws, "interaction")
-        _submit(ws, sid, "free_input", {"text": "再说一句"})
+        _submit(ws, sid, "choose_option", {"option_id": "0"})
         _drain(ws, "narrative")
 
     assert fake_tts.texts, "没有任何句子进合成"
@@ -136,7 +140,7 @@ def test_cancel_audio_is_accepted_and_does_not_disturb_the_command(ws_client, fa
         _drain(ws, "interaction")
 
         ws.send_json({"type": "cancel_audio", "track_id": "does-not-exist"})
-        _submit(ws, sid, "free_input", {"text": "打断之后照常推进"})
+        _submit(ws, sid, "choose_option", {"option_id": "0"})
         messages = _drain(ws, "narrative")
 
     assert any(m["type"] == "character_speech" for m in messages)

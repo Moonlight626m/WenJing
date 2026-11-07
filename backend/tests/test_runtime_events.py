@@ -320,9 +320,10 @@ async def test_report_asset_ready_retries_cas_conflict(factory, actor, monkeypat
 
     assert len(attempts) == 2  # 第一次冲突，重试成功
     assert len(msgs) == 1
-    # 同一分支上仍能继续提交命令（冲突没有把会话行或分支指针弄坏）
+    # 同一分支上仍能继续提交命令（冲突没有把会话行或分支指针弄坏）；
+    # 此刻仍是 Stage2，自由输入已被禁用（design §A4），改用选项目令
     upd = await app.submit_command(
-        sid, _cmd(sid, CommandKind.FREE_INPUT, {"text": "我先去买药"}), actor=actor
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
     )
     assert upd.new_events
 

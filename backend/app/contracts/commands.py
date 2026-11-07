@@ -31,6 +31,12 @@ class FreeInputPayload(CommandPayload):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class IntervenePayload(CommandPayload):
+    """玩家干涉世界：自然语言（建场景 / 拉入或新增角色），由 ProducerAgent 解析。"""
+
+    text: str = Field(min_length=1, max_length=2000)
+
+
 class RollbackToEventPayload(CommandPayload):
     """回溯目标：活动分支上的事件 sequence（回溯不物理删除历史）。"""
 
@@ -45,6 +51,7 @@ _PAYLOAD_BY_KIND: dict[CommandKind, type[CommandPayload]] = {
     CommandKind.SELECT_ROLE: SelectRolePayload,
     CommandKind.CHOOSE_OPTION: ChooseOptionPayload,
     CommandKind.FREE_INPUT: FreeInputPayload,
+    CommandKind.INTERVENE: IntervenePayload,
     CommandKind.ROLLBACK_TO_EVENT: RollbackToEventPayload,
     CommandKind.ENTER_STAGE3: EmptyPayload,
     CommandKind.CONFIRM_ENDING: EmptyPayload,

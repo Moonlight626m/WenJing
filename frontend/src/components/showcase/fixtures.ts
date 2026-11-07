@@ -71,6 +71,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
   teaching_focus: ["把握人物形象", "梳理叙事线索", "品味关键细节"],
   playable_roles: ["我", "闰土"],
   stage2_ending_beat_id: 5,
+  endings: [],
   characters: [
     {
       name: "闰土",
@@ -128,6 +129,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
   scenes: [
     {
       scene_id: 1,
+      options: [],
       title: "月下刺猹",
       participants: ["我", "闰土"],
       background_asset: SLOT("scene_montage", "pending"),
@@ -149,12 +151,14 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
               beat_id: 1,
               description: "月光下，闰土指着瓜地说起猹的狡猾。",
               is_key_event: false,
+              dialogue: [],
               evidence_refs: [],
             },
             {
               beat_id: 2,
               description: "我学着他的样子握住钢叉，却不敢真刺。",
               is_key_event: false,
+              dialogue: [],
               evidence_refs: [],
             },
           ],
@@ -166,6 +170,10 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
             mood: "好奇",
           },
           anchor_beat_id: null,
+          dialogue: [],
+          ending_id: null,
+          return_mode: "continue",
+          return_scene_id: null,
           background_asset: SLOT("scene_montage", "pending"),
         },
       ],
@@ -180,6 +188,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
           beat_id: 1,
           description: "深蓝的天空中挂着一轮金黄的圆月，下面是海边的沙地。",
           is_key_event: false,
+          dialogue: [],
           evidence_refs: [
             { source_type: "original_text", excerpt: "深蓝的天空中挂着一轮金黄的圆月", paragraph_index: 0, char_start: 0, char_end: 18 },
           ],
@@ -188,6 +197,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
           beat_id: 2,
           description: "一个十一二岁的少年，项带银圈，手捏一柄钢叉，向一匹猹尽力的刺去。",
           is_key_event: true,
+          dialogue: [],
           evidence_refs: [
             { source_type: "original_text", excerpt: "项带银圈，手捏一柄钢叉", paragraph_index: 0, char_start: 30, char_end: 42 },
           ],
@@ -196,6 +206,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
     },
     {
       scene_id: 2,
+      options: [],
       title: "雪地捕鸟",
       participants: ["我", "闰土"],
       background_asset: SLOT("background", "failed"),
@@ -204,12 +215,14 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
           beat_id: 3,
           description: "闰土说捕鸟须大雪下了才好，扫开一块雪，支起竹匾。",
           is_key_event: false,
+          dialogue: [],
           evidence_refs: [],
         },
         {
           beat_id: 4,
           description: "我日日盼望新年，新年到，闰土也就到了。",
           is_key_event: true,
+          dialogue: [],
           evidence_refs: [
             { source_type: "original_text", excerpt: "我于是日日盼望新年", paragraph_index: 1, char_start: 0, char_end: 9 },
           ],

@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.8.0";
+export const CONTRACTS_SCHEMA_VERSION = "2.9.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -30,13 +30,15 @@ export type CommandKind =
   | "rollback_to_event"
   | "enter_stage3"
   | "confirm_ending"
-  | "exit_game";
+  | "exit_game"
+  | "intervene";
 
 export const ALLOWED_COMMANDS: Record<StageValue, readonly CommandKind[]> = {
   init: [],
   stage1_creating: [],
   stage1_complete: ["select_role", "exit_game"],
-  stage2_reenacting: ["choose_option", "free_input", "rollback_to_event", "exit_game"],
+  // Stage2 是纯 IO 还原：只选项、无自由输入（design play-through-redesign §A4）
+  stage2_reenacting: ["choose_option", "rollback_to_event", "exit_game"],
   stage2_complete: ["enter_stage3", "exit_game"],
   stage3_extending: [
     "choose_option",
@@ -65,7 +67,21 @@ export type EventType =
   | "stage3_goals_set"
   | "stage3_goal_achieved"
   | "branch_taken"
-  | "branch_completed";
+  | "branch_completed"
+  | "replay_node_entered"
+  | "replay_narration"
+  | "replay_choice"
+  | "replay_ending_reached"
+  | "exploration_settled"
+  | "scene_created"
+  | "scene_switched"
+  | "scene_unlock_rejected"
+  | "character_created"
+  | "character_pulled_in"
+  | "intervention_requested"
+  | "intervention_rejected"
+  | "world_fact"
+  | "offline_hint";
 
 export type ErrorDomain =
   | "input"
@@ -467,11 +483,51 @@ export interface CharacterProfile {
   fullbody_credit?: AssetCredit | null;
 }
 
+/** 预写台词：speaker 为 null 表示旁白。 */
+export interface DialogueLine {
+  speaker: string | null;
+  text: string;
+  stage_direction: string;
+}
+
 export interface Beat {
   beat_id: number;
   description: string;
   is_key_event: boolean;
   evidence_refs: EvidenceRef[];
+  dialogue: DialogueLine[];
+}
+
+/** 剧本结局：canonical 为主线，alternate 为合理变体，distractor 为干扰分支错结局。 */
+export interface Ending {
+  ending_id: string;
+  title: string;
+  description: string;
+  kind: "canonical" | "alternate" | "distractor";
+}
+
+/** 珊瑚图决策点的玩家选项：指向分支 / 目标场景 / 结局之一。 */
+export interface SceneOption {
+  option_id: string;
+  label: string;
+  kind: "canonical" | "distractor";
+  branch_id: string | null;
+  target_scene_id: number | null;
+  ending_id: string | null;
+}
+
+/** Stage3 探索地图上的一个地点。 */
+export interface ExplorationLocation {
+  key: string;
+  title: string;
+  participants: string[];
+  visual_summary: string;
+}
+
+export interface ExplorationMap {
+  start_location_key: string;
+  locations: ExplorationLocation[];
+  ending_brief: string;
 }
 
 /** 场景视觉锚点（文生图槽位：时代/地点/时段/天气/氛围）。 */
@@ -501,6 +557,10 @@ export interface BranchScene {
   anchor_beat_id?: number | null;
   background_asset?: AssetRef | null;
   background_credit?: AssetCredit | null;
+  dialogue: DialogueLine[];
+  ending_id: string | null;
+  return_mode: "choice" | "continue";
+  return_scene_id: number | null;
 }
 
 export interface Scene {
@@ -511,6 +571,7 @@ export interface Scene {
   visual_notes?: VisualNotes | null;
   interaction_point?: InteractionPoint | null;
   branches?: BranchScene[];
+  options: SceneOption[];
   background_asset?: AssetRef | null;
   background_credit?: AssetCredit | null;
 }
@@ -523,6 +584,8 @@ export interface ScriptPackage {
   teaching_focus: string[];
   playable_roles: string[];
   stage2_ending_beat_id: number;
+  endings: Ending[];
+  exploration?: ExplorationMap | null;
 }
 
 // ===== 教师闸门审阅（issue #34）=====
@@ -661,6 +724,7 @@ export interface PlayerCommand {
 export type SelectRolePayload = { role_name: string };
 export type ChooseOptionPayload = { option_id: string };
 export type FreeInputPayload = { text: string };
+export type IntervenePayload = { text: string };
 export type RollbackToEventPayload = { target_sequence: number };
 export type EmptyPayload = Record<string, never>;
 
@@ -668,6 +732,7 @@ export interface CommandPayloadByKind {
   select_role: SelectRolePayload;
   choose_option: ChooseOptionPayload;
   free_input: FreeInputPayload;
+  intervene: IntervenePayload;
   rollback_to_event: RollbackToEventPayload;
   enter_stage3: EmptyPayload;
   confirm_ending: EmptyPayload;

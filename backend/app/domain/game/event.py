@@ -39,6 +39,25 @@ EVENT_ASSET_READY = "asset_ready"
 # 从活动分支事件派生，不进 `_RState`。
 EVENT_STAGE3_GOALS_SET = "stage3_goals_set"
 EVENT_STAGE3_GOAL_ACHIEVED = "stage3_goal_achieved"
+# Stage2 珊瑚图纯 IO 播放（design play-through-redesign §A4）：进入节点 / 旁白 /
+# 玩家选择 / 到达结局。预写台词仍落 EVENT_CHARACTER_SPEECH（source=replay）。
+EVENT_REPLAY_NODE_ENTERED = "replay_node_entered"
+EVENT_REPLAY_NARRATION = "replay_narration"
+EVENT_REPLAY_CHOICE = "replay_choice"
+EVENT_REPLAY_ENDING_REACHED = "replay_ending_reached"
+# Stage3 探索与场景（§B3–B5）：确定性结算 / 场景创建与切换 / 角色创建与拉入 /
+# 玩家干涉审计 / 世界事实（public|private 由投影按观众过滤）。
+EVENT_EXPLORATION_SETTLE = "exploration_settle"
+EVENT_SCENE_CREATED = "scene_created"
+EVENT_SCENE_SWITCH = "scene_switch"
+EVENT_SCENE_UNLOCK_REJECTED = "scene_unlock_rejected"
+EVENT_CHARACTER_CREATED = "character_created"
+EVENT_CHARACTER_PULLED_IN = "character_pulled_in"
+EVENT_INTERVENTION_REQUESTED = "intervention_requested"
+EVENT_INTERVENTION_REJECTED = "intervention_rejected"
+EVENT_WORLD_FACT = "world_fact"
+# 离线 tick 提示（§B6）：只指路时间线，不写详细摘要。
+EVENT_OFFLINE_HINT = "offline_hint"
 
 MAIN_BRANCH_ID = 1
 
