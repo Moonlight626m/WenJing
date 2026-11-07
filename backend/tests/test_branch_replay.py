@@ -136,13 +136,21 @@ async def test_branch_history_is_auditable(make_runtime):
     assert len(branches) == 2
     new_meta = branches[-1]
     assert new_meta.parent_branch_id == MAIN_BRANCH_ID
-    assert new_meta.root_event_id == target
 
-    # 新分支历史 = 主分支前缀（到 target）+ 新分支事件
+    # M0 语义：分支继承止于目标拍叙事事件**之前**——目标拍由新分支重演
+    # （继承它会让 DB 恢复重放把同一拍计两次、beat 游标漂移一拍）。
+    # 目标拍叙事事件本身不在新分支路径里，重演的那一拍是新事件。
+    target_beat = max(
+        e.event_id
+        for e in rt.event_store.events_in_branch(MAIN_BRANCH_ID)
+        if e.event_id <= target and e.event_type == "plot_advancement"
+    )
+    assert new_meta.root_event_id == target_beat - 1
     path = rt.event_store.branch_path(new_meta.branch_id)
     path_ids = [e.event_id for e in path]
     assert path_ids == sorted(path_ids), "分支历史必须有序"
-    assert target in path_ids
+    assert target_beat not in path_ids, "目标拍必须重演，不得继承"
+    assert new_meta.root_event_id in path_ids
     # 主分支被放弃的事件仍在主分支流里（可审计），但不在活动路径
     assert len(rt.event_store.events) > len(path)
 

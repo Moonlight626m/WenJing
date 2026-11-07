@@ -173,8 +173,10 @@ async def test_stage1_to_stage3_full_flow(factory, actor):
     store = await _active_store(app, sid)
     after_branch = branch_uuid(sid, store.active_branch_id)
     assert after_branch != before_branch, "回溯必须切到新分支"
-    # 既定语义（#5）：回溯保留当前阶段，从恢复点继续推进
-    assert upd.state.stage.value == "stage3_extending"
+    # M0 语义（design/play-through-redesign.md §C0）：回溯到目标节点，阶段随
+    # 事件回退——target_sequence=3 是 Stage2 的第一拍叙事，因此回到 Stage2 重演。
+    # （旧语义「保留当前阶段」会让状态停在 Stage3 而事件流退到 Stage2，两者不一致。）
+    assert upd.state.stage.value == "stage2_reenacting"
     assert upd.state.active_interaction is not None
     # 历史保留：事件总数只增不减（旧分支事件仍在库中）
     all_events = await _count_all_events(factory, sid)

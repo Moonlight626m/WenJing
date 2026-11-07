@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,6 +65,15 @@ class CharacterMemory:
         self.plot_context = data["plot_context"]
         self.current_direction = data["current_direction"]
         self.rejected = data["rejected"]
+
+    def clear(self) -> None:
+        """原地清空记忆（保持对象身份——工具闭包持有本对象的引用，换对象会让
+        `view_my_memory` 读到旧记忆）。全量事件重放前用它复位。"""
+        self.working_memory = []
+        self.personal_log = []
+        self.plot_context = ""
+        self.current_direction = {}
+        self.rejected = []
 
 
 class CharacterIdentity:
@@ -328,3 +337,48 @@ class CharacterAgentManager:
     def restore_memories(self, snapshot: dict[str, dict[str, Any]]) -> None:
         for name, data in snapshot.items():
             self.agents[name].memory.restore(data)
+
+    def clear_memories(self) -> None:
+        """原地清空全部角色记忆（保持 agent/memory 对象身份——工具闭包持有引用，
+        换对象会让 `view_my_memory` 读到旧记忆）。全量事件重放前用它复位。"""
+        for agent in self.agents.values():
+            agent.memory.clear()
+
+    def derive_memories(self, events: Iterable[Any]) -> None:
+        """把一段事件折叠进角色记忆（M0：记忆由事件重建，快照只是兼容缓存）。
+
+        与实时路径逐条同构：
+        - `proposal {proposed_by, description}` → 该角色 personal_log/rejected 追加
+          （同 `propose_action` / `revise_proposal` 的实时写入，含「提议：」前缀）；
+        - `character_speech {speaker, text}` → 该角色 working_memory 追加
+          （同 `react_to` 的实时写入，空文本不记）。
+
+        plot/direction 广播不在其列——`_replay_event` 已按事件顺序重放（赋值幂等）。
+        调用方契约：events 必须是记忆基线（快照缓存）**之后**的事件段；
+        与基线重叠会重复追加。只折叠本运行时已创建的角色，其余静默跳过。
+        """
+        for ev in events:
+            if isinstance(ev, dict):
+                etype = ev.get("event_type") or ev.get("type") or ""
+                payload = ev.get("payload") or {}
+            else:
+                etype = ev.event_type
+                payload = ev.payload or {}
+            if etype == "proposal":
+                name = payload.get("proposed_by")
+                agent = self.agents.get(str(name)) if name else None
+                if agent is None:
+                    continue
+                description = str(payload.get("description", "")) or "（无提议）"
+                agent.memory.personal_log.append(f"提议：{description}")
+                agent.memory.rejected.append(description)
+            elif etype == "character_speech":
+                speaker = payload.get("speaker")
+                agent = self.agents.get(str(speaker)) if speaker else None
+                if agent is None:
+                    continue
+                text = str(payload.get("text", ""))
+                if text:
+                    agent.memory.working_memory.append(
+                        {"role": agent.identity.name, "content": text}
+                    )

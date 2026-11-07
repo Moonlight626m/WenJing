@@ -150,8 +150,6 @@ class GameRuntime:
         self._command_events: list[dict] = []
         # 本次命令产生的运行期配图请求（#56，见 StepResult.asset_requests）
         self._asset_requests: list[SceneAssetIntent] = []
-        # 记忆快照标记：(事件id, 记忆快照, 该时刻的 beat 游标, 该时刻的方向)
-        self._memory_marks: list[tuple[int, dict[str, Any], int, dict[str, str]]] = []
         self._valid_proposals: list[Proposal] = []
 
     # ===== 显式状态导出 / 恢复 =====
@@ -276,19 +274,32 @@ class GameRuntime:
         - direction → 角色处境上下文广播
         - system(selected_role) → player_role
         - player_action（Stage3）→ stage3_round_taken+1
+        - proposal / character_speech → 角色记忆折叠（见 `derive_memories`）
 
-        事件形如 `GameEvent.to_dict()`（含 event_type + payload）。纯 LLM 文本
-        （角色发言/提议原文）不入状态，由快照记忆承担。
+        事件形如 `GameEvent.to_dict()`（含 event_type + payload）。快照里的
+        `character_memories` 只是兼容缓存：每次重放**额外**折叠进个人记忆，
+        快照损坏/缺失时调用 `replay_from(None, 全量事件)` 即可完整重建。
         """
         if snapshot_state is not None:
             self.restore(snapshot_state)
+            # 记忆折叠只作用于基线之后的事件：快照缓存已含此前的个人记忆，
+            # 对全量事件再折叠会双计（快照位于 head 时折叠为空，天然兼容）
+            cutoff = int(snapshot_state.get("latest_event_id", 0) or 0)
         else:
             self.state = _RState()
             self.screenwriter.beat_index = 0
-            self.characters.restore_memories({})
+            # 原地清空（保持对象身份）：工具闭包持有 memory 引用，换对象会让
+            # view_my_memory 读到旧记忆
+            self.characters.clear_memories()
+            cutoff = 0
 
         for ev in events:
             self._replay_event(ev)
+        # 角色记忆由事件重建（M0：快照记忆只是兼容缓存）——与实时写入同构
+        # （proposal→personal_log/rejected、character_speech→working_memory）
+        self.characters.derive_memories(
+            ev for ev in events if int(ev.get("event_id", 0) or 0) > cutoff
+        )
 
         # 使 state_machine / screenwriter 与重放结果一致
         self.state_machine.restore({"stage": self.state.stage, "phase": self.state.phase})
@@ -559,7 +570,6 @@ class GameRuntime:
         sink: list[dict] = new_events if new_events is not None else []
 
         while True:
-            self._mark_memories()
             stage_name = self._runtime_stage_alias()
             await self._run_cycle_head(stage_name, sink)
 
@@ -785,21 +795,38 @@ class GameRuntime:
                 extra={"event_id": target_event_id},
             )
 
-        _, snap, mark_beat, mark_direction = 0, {}, 0, {}
-        for mark_event_id, m_snap, m_beat, m_direction in reversed(self._memory_marks):
-            if mark_event_id <= target_event_id:
-                snap, mark_beat, mark_direction = m_snap, m_beat, m_direction
-                break
-        if snap:
-            self.characters.restore_memories(snap)
-            self.state.beat_cursor = min(mark_beat, self.state.beat_cursor)
-            self.state.direction = dict(mark_direction)
-        self.screenwriter.beat_index = self.state.beat_cursor
-
-        # 回溯：旧事件保留，创建新活动分支并从目标节点继承历史
-        superseded = self.event_store.rollback_to(
-            target_event_id, session_id=self.session_id, command_id=command_id
+        # 回溯点语义（回溯页口径：目标总是 narrative 事件）：回到该拍**开始前**。
+        # 截止事件 = 路径上 id ≤ target 的最后一个叙事事件；重放它之前的全部前缀
+        # （含此前各回合的 direction/proposal/发言），目标拍由随后的
+        # `_drive_until_interaction` 整拍重演。目标落在同回合后续事件上时同一规则
+        # 仍回到该回合起点（防御：UI 只提供 narrative 目标）。
+        # 目标之前没有任何叙事事件（如开局阶段事件）→ 不是合法回溯点，切分支前拒绝。
+        cutoff = max(
+            (
+                e.event_id
+                for e in self.event_store.active_events()
+                if e.event_id <= target_event_id
+                and e.event_type == evt.EVENT_PLOT_ADVANCEMENT
+            ),
+            default=0,
         )
+        if cutoff == 0:
+            raise new(
+                codes.ENG_ROLLBACK_TARGET_MISSING,
+                extra={"event_id": target_event_id},
+            )
+        prefix = [e for e in self.event_store.active_events() if e.event_id < cutoff]
+
+        # 分支继承终点 = 前缀最后一个事件（含）：新分支路径恰好等于「重放前缀 +
+        # 重演事件」，不与重放双计。若 root 含目标拍，下一次从 DB 恢复时目标拍与
+        # 重演拍会各计一次、beat 游标漂移一拍（旧 `_memory_marks` 时代的隐性 bug）。
+        superseded = self.event_store.rollback_to(
+            prefix[-1].event_id, session_id=self.session_id, command_id=command_id
+        )
+        # 切分支后重放前缀整段，全部运行时状态（游标/剧情/方向/角色记忆）随事件
+        # 回退（M0：事件是唯一权威；记忆由 `replay_from` → `derive_memories` 重建）
+        self.replay_from(None, [e.to_dict() for e in prefix])
+
         roll_ev = self._append(
             evt.EVENT_ROLLBACK,
             {
@@ -832,16 +859,6 @@ class GameRuntime:
         if sink is not None:
             sink.append(entry)
         return entry
-
-    def _mark_memories(self) -> None:
-        self._memory_marks.append(
-            (
-                self.event_store.latest_event_id,
-                self.characters.snapshot_memories(),
-                self.state.beat_cursor,
-                dict(self.state.direction),
-            )
-        )
 
     def _transition_to(self, stage_value: str) -> None:
         stage = GameStage(stage_value)
