@@ -481,7 +481,7 @@ class WorkflowNodes:
             except Exception as exc:
                 raise new(
                     codes.LLM_OUTPUT_PARSE_FAILED,
-                    extra={"target": target, "reason": str(exc).replace("\n", " ")[:300]},
+                    extra={"target": target, "reason": exc_reason(exc)},
                 ) from exc
 
     @staticmethod
@@ -604,7 +604,7 @@ class WorkflowNodes:
                 codes.CNT_GENERATION_FAILED,
                 extra={
                     "reason": "invalid gate resume payload",
-                    "detail": str(exc).replace("\n", " ")[:300],
+                    "detail": exc_reason(exc),
                 },
             ) from exc
         return req.directives, req.edits, req.action
@@ -1007,7 +1007,7 @@ class WorkflowNodes:
             logger.warning(
                 "scene_asset_design_error subject=%s reason=%s",
                 subject_key,
-                str(exc).replace("\n", " ")[:200],
+                exc_reason(exc),
             )
             return None
         if record.status is AssetStatus.READY:
@@ -1289,7 +1289,7 @@ class WorkflowNodes:
                 "asset_op %s error subject=%s reason=%s",
                 op.op,
                 op.subject_key,
-                str(exc).replace("\n", " ")[:200],
+                exc_reason(exc),
             )
             return keep_old()
         if record.status is AssetStatus.READY:
@@ -1704,7 +1704,7 @@ class WorkflowNodes:
                     " spec=%s reason=%s",
                     scene_no,
                     spec.branch_id,
-                    str(exc).replace("\n", " ")[:200],
+                    exc_reason(exc),
                 )
         if not written:
             return package

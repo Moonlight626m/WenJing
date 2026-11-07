@@ -644,7 +644,7 @@ export interface BranchSpec {
   participants: string[];
   beat_outline: string[];
   /** 珊瑚图返回方式（v4）：choice 回决策点 / continue 续接主干。 */
-  return_mode?: "choice" | "continue" | null;
+  return_mode: "choice" | "continue";
   return_scene_id?: number | null;
   /** 非空表示该分支是终局，不回主干。 */
   ending_id?: string | null;

@@ -255,6 +255,15 @@ def _resolve_branch_target(
     return branch.return_scene_id or next_scene_id
 
 
+def _find_branch(scene: Scene, branch_id: str) -> BranchScene | None:
+    return next((b for b in scene.branches if b.branch_id == branch_id), None)
+
+
+def _next_scene_id(scene_ids: list[int], scene_id: int) -> int | None:
+    idx = scene_ids.index(scene_id)
+    return scene_ids[idx + 1] if idx + 1 < len(scene_ids) else None
+
+
 def _scene_targets(scene: Scene, next_scene_id: int | None) -> list[int]:
     """该场景向外的场景边：决策点目标 + 无 options 时的隐式主干续接。
 
@@ -270,9 +279,7 @@ def _scene_targets(scene: Scene, next_scene_id: int | None) -> list[int]:
         if option.target_scene_id is not None:
             targets.append(option.target_scene_id)
         elif option.branch_id is not None:
-            branch = next(
-                (b for b in scene.branches if b.branch_id == option.branch_id), None
-            )
+            branch = _find_branch(scene, option.branch_id)
             if branch is None:
                 continue
             target = _resolve_branch_target(branch, next_scene_id)
@@ -288,15 +295,12 @@ def _check_replay_cycles(pkg: ScriptPackage, scene_by_id: dict[int, Scene]) -> l
     issues: list[str] = []
     scene_ids = [s.scene_id for s in pkg.scenes]
 
-    def next_scene(scene_id: int) -> int | None:
-        idx = scene_ids.index(scene_id)
-        return scene_ids[idx + 1] if idx + 1 < len(scene_ids) else None
-
     def has_cycle_from(scene_id: int, seen: frozenset[int]) -> bool:
         if scene_id in seen:
             return True
         seen = seen | {scene_id}
-        for target in _scene_targets(scene_by_id[scene_id], next_scene(scene_id)):
+        next_id = _next_scene_id(scene_ids, scene_id)
+        for target in _scene_targets(scene_by_id[scene_id], next_id):
             if target in scene_by_id and has_cycle_from(target, seen):
                 return True
         return False
@@ -347,10 +351,7 @@ def _check_key_event_traversal(pkg: ScriptPackage) -> list[str]:
                     index[option.target_scene_id],
                 )
             elif option.branch_id is not None:
-                branch = next(
-                    (b for b in scene.branches if b.branch_id == option.branch_id),
-                    None,
-                )
+                branch = _find_branch(scene, option.branch_id)
                 if (
                     branch is not None
                     and branch.ending_id is None
@@ -374,12 +375,11 @@ def _check_canonical_ending(pkg: ScriptPackage) -> list[str]:
     scene_by_id: dict[int, Scene] = {s.scene_id: s for s in pkg.scenes}
 
     def reached(scene_id: int, seen: frozenset[int]) -> bool:
-        if scene_id in seen:
+        if scene_id in seen or scene_id not in scene_by_id:
             return False
         seen = seen | {scene_id}
         scene = scene_by_id[scene_id]
-        idx = scene_ids.index(scene_id)
-        next_scene_id = scene_ids[idx + 1] if idx + 1 < len(scene_ids) else None
+        next_scene_id = _next_scene_id(scene_ids, scene_id)
         if not scene.options:
             # 线性场景：续接主干下一场；最后一场即 stage2_ending_beat
             if next_scene_id is None:
@@ -391,15 +391,10 @@ def _check_canonical_ending(pkg: ScriptPackage) -> list[str]:
             if option.ending_id in canonical_endings:
                 return True
             if option.target_scene_id is not None:
-                if option.target_scene_id in scene_by_id and reached(
-                    option.target_scene_id, seen
-                ):
+                if reached(option.target_scene_id, seen):
                     return True
             elif option.branch_id is not None:
-                branch = next(
-                    (b for b in scene.branches if b.branch_id == option.branch_id),
-                    None,
-                )
+                branch = _find_branch(scene, option.branch_id)
                 if branch is None:
                     continue
                 if branch.ending_id is not None:
@@ -407,7 +402,11 @@ def _check_canonical_ending(pkg: ScriptPackage) -> list[str]:
                         return True
                     continue  # 终局分支（非 canonical）不是主线推进
                 target = _resolve_branch_target(branch, next_scene_id)
-                if target is not None and reached(target, seen):
+                if target is not None:
+                    if reached(target, seen):
+                        return True
+                elif branch.return_mode == "continue":
+                    # 续接主干且主干已到底 = 到达结局
                     return True
             elif next_scene_id is None:
                 # 最后一场的全空目标 = 到达主干结局

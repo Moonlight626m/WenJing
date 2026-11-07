@@ -25,7 +25,8 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 事件溯源：events 是唯一权威；分支切换保留历史；快照只是缓存
 ```
 
-当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2），以及回溯修复（M0）。
+当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2）、回溯修复（M0），
+以及 Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线）。
 运行期的珊瑚图播放（M4）、Stage3 探索/工作人员（M5/M6）、离线 tick（M7）、
 快照新列与回溯页（M8）仍按设计推进——它们依赖的契约与事件名已经就位，见第 4 节。
 
@@ -83,7 +84,8 @@ divide_events(v4 大纲：beats + branches + options + endings)
   不得跳过含关键事件的场景」保证。旧剧本恒通过。
 - 校验时机三处：`final_audit` 先跑确定性校验（失败直接打回重写，不花 doubter
   的钱）、`final_gate` 在教师编辑/配图后重跑 `validate_all`、落库
-  `_persist_package` 前再跑一次 `validate_replay`。
+  `_persist_package` 前再跑一次（有原文分析时跑全量 `validate_all`，否则
+  至少 `validate_replay`）。
 
 > 关系表解析（设计 §A2 的 `script_*` 表）尚未落地：剧本仍整包存
 > `scripts.script_data`。见第 5 节的延期说明。

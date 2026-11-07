@@ -43,7 +43,7 @@ from app.domain.generation.stage1 import (
     Stage1Generator,
     synthesize_script_package,
 )
-from app.domain.generation.validators import validate_replay
+from app.domain.generation.validators import validate_all, validate_replay
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
 from app.domain.prompts import write_script
 from app.domain.prompts.manager import PromptManager
@@ -595,7 +595,9 @@ class ScriptLibrary:
         telemetry = dict(final.get("write_telemetry") or {})
         telemetry["doubter_rounds"] = len(runner.snapshot().doubter_events)
         telemetry["prompt_versions"] = _prompt_versions()
-        await self._persist_package(script.id, package, telemetry)
+        await self._persist_package(
+            script.id, package, telemetry, analysis=final.get("analysis")
+        )
 
     async def upload_asset(
         self,
@@ -760,7 +762,9 @@ class ScriptLibrary:
             session_id=f"script-{script.id}",
         )
         package, telemetry = outcome.script_package, outcome.telemetry
-        await self._persist_package(script.id, package, _telemetry_dict(telemetry))
+        await self._persist_package(
+            script.id, package, _telemetry_dict(telemetry), analysis=analysis
+        )
         await self._save_progress(
             attempt_id,
             status=GenerationStatus.SUCCEEDED.value,
@@ -797,7 +801,9 @@ class ScriptLibrary:
                 messages=[{"role": "user", "content": ""}],
                 completion=package.model_dump_json(),
             )
-        await self._persist_package(script.id, package, _telemetry_dict(telemetry))
+        await self._persist_package(
+            script.id, package, _telemetry_dict(telemetry), analysis=analysis
+        )
         await self._save_progress(
             attempt_id,
             status=GenerationStatus.SUCCEEDED.value,
@@ -805,14 +811,30 @@ class ScriptLibrary:
         )
 
     async def _persist_package(
-        self, script_id: int, package, telemetry: dict
+        self,
+        script_id: int,
+        package,
+        telemetry: dict,
+        *,
+        analysis: TextAnalysis | None = None,
     ) -> None:
-        """写 scripts.script_data（竞态防护：仅草稿可写）。"""
-        replay_issues = validate_replay(package)
-        if replay_issues:
+        """写 scripts.script_data（竞态防护：仅草稿可写）。
+
+        落库前再跑一次确定性校验：拿到原文分析时跑全量 `validate_all`
+        （教师闸门恢复后的编辑也走这里），否则至少跑珊瑚图 `validate_replay`。
+        """
+        if analysis is not None:
+            problems = [
+                f"{name}: {issue}"
+                for name, issues in validate_all(package, analysis).items()
+                for issue in issues
+            ]
+        else:
+            problems = validate_replay(package)
+        if problems:
             raise new(
                 codes.CNT_GENERATION_FAILED,
-                extra={"reason": "珊瑚图校验失败：" + "；".join(replay_issues)},
+                extra={"reason": "剧本校验失败：" + "；".join(problems)},
             )
         async with self._factory() as s:
             row = await s.get(ScriptRecord, script_id)

@@ -114,7 +114,8 @@ scripts（content_version/format/replay_ready）
   角色的台词。
 - `validate_replay` 三处接线：`final_audit`（先于 doubter，失败直接打回重写）、
   `final_gate`（教师编辑/配图后重跑 `validate_all`，不合法即报错不落库）、
-  `_persist_package`（落库前再跑一次）。
+  `_persist_package`（落库前再跑一次：三个调用点都能拿到原文分析，故跑全量
+  `validate_all`，拿不到时才退回 `validate_replay`）。
 - `validate_replay` 的走向判定按珊瑚语义：没有 `options` 的场景是线性播放、
   隐式续接主干下一场；「全空目标」的选项同样续接主干；带 `ending_id` 的分支
   是终点，即使 `return_mode=continue` 也不把主线往下带。环检测把线性场景的
@@ -134,8 +135,9 @@ scripts（content_version/format/replay_ready）
     前后连贯性的权衡。
   - 选项直指 `ending_id`（不经分支）时没有独立场景，故没有配图槽位；M4 用当前
     场景背景兜底。`design_assets` 本身未改。
-  - `_persist_package` 只跑 `validate_replay`：`validate_all` 需要原文
-    `TextAnalysis`，而落库入口拿不到；闸门路径在 `final_gate` 已经跑过全量校验。
+  - 关键事件顺序在 `validate_replay` 里是**相对判据**（canonical 只能向前跳、
+    不得跳过含关键事件的场景）；与原文关键事件的对应仍由 `validate_event_order`
+    按 beat 描述匹配，两者在总审/闸门/落库三处都会跑。
 
 ### A4. 运行时：纯 IO（`domain/game/replay.py`）
 
@@ -442,6 +444,12 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
 | M8 回溯/快照 | 快照列 + 坐标统一 + 回溯页 + 入口 | 存档点/回跳正确 |
 
 （M2 可与 M0/M1 并行；M3/M4 与 M5/M6 可并行；M7/M8 后置。）
+
+**表仓储归属（M3 后修正）**：§A2 的 `script_*` 关系表、`scripts.replay_ready`
+与 `ScriptRepository` 只读表**没有单列里程碑**——它们是 M3 之后的后置项。
+M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询需求出现，
+再以 0002+ 增量迁移 + 仓储接管落地，届时删 `script_data`。这期间
+`replay_ready` 用「包里有完整的 options/endings/dialogue」现判，不落列。
 
 **契约版本注记（M1）**：草案写 2.9.0，但 §A4 从 Stage2 允许列表删除
 `free_input` 属于 `docs/contract-change-process.md` 定义的**收紧校验

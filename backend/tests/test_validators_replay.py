@@ -329,3 +329,68 @@ def test_canonical_backward_jump_rejected():
     ]
     issues = validate_replay(_pkg(scenes, _CANONICAL))
     assert any("jumps backward" in i for i in issues)
+
+
+def test_branch_return_jump_skipping_key_event_rejected():
+    branch = {
+        "branch_id": "b1",
+        "label": "分支",
+        "title": "分支",
+        "beats": [{"beat_id": 1, "description": "d"}],
+        "return_mode": "continue",
+        "return_scene_id": 3,
+    }
+    scenes = [
+        _scene(
+            1,
+            options=[
+                {"option_id": "o1", "label": "分支", "kind": "canonical", "branch_id": "b1"}
+            ],
+            branches=[branch],
+        ),
+        _scene(2, beats=[{"beat_id": 2, "description": "关键", "is_key_event": True}]),
+        _scene(
+            3,
+            options=[
+                {"option_id": "o2", "label": "收束", "kind": "canonical", "ending_id": "e1"}
+            ],
+        ),
+    ]
+    issues = validate_replay(_pkg(scenes, _CANONICAL))
+    assert any("branch b1 skips key event scene 2" in i for i in issues)
+
+
+def test_continue_branch_at_last_scene_reaches_mainline_ending():
+    """最后一场的 continue 分支续接已到底的主干 = 到达结局，判为合法。"""
+    branch = {
+        "branch_id": "b1",
+        "label": "分支",
+        "title": "分支",
+        "beats": [{"beat_id": 1, "description": "d"}],
+        "return_mode": "continue",
+    }
+    scene = _scene(
+        1,
+        options=[{"option_id": "o1", "label": "分支", "kind": "canonical", "branch_id": "b1"}],
+        branches=[branch],
+    )
+    assert validate_replay(_pkg([scene], _CANONICAL)) == []
+
+
+def test_unknown_branch_return_scene_does_not_crash():
+    """未知返回场景要被报告，而不是在递归里 KeyError。"""
+    branch = {
+        "branch_id": "b1",
+        "label": "分支",
+        "title": "分支",
+        "beats": [{"beat_id": 1, "description": "d"}],
+        "return_mode": "continue",
+        "return_scene_id": 99,
+    }
+    scene = _scene(
+        1,
+        options=[{"option_id": "o1", "label": "分支", "kind": "canonical", "branch_id": "b1"}],
+        branches=[branch],
+    )
+    issues = validate_replay(_pkg([scene], _CANONICAL))
+    assert any("unknown scene 99" in i for i in issues)
