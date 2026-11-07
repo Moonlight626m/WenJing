@@ -27,7 +27,7 @@ from app.domain.game.replay import (
     build_replay_graph,
 )
 from app.domain.game.script_adapter import script_package_to_script
-from app.infrastructure.errx import Error
+from app.infrastructure.errx import Error, codes
 
 
 class _ExplodingLLM:
@@ -129,17 +129,30 @@ def _package() -> ScriptPackage:
     )
 
 
-def _make_runtime() -> tuple[GameRuntime, _ExplodingLLM]:
-    pkg = _package()
+def _runtime_for(
+    pkg: ScriptPackage, *, store: EventStore | None = None
+) -> tuple[GameRuntime, _ExplodingLLM]:
     llm = _ExplodingLLM()
     runtime = GameRuntime(
         session_id="replay-session",
         script=script_package_to_script(pkg),
         llm=llm,
-        event_store=EventStore(),
+        event_store=store if store is not None else EventStore(),
         replay_graph=build_replay_graph(pkg),
     )
     return runtime, llm
+
+
+def _make_runtime() -> tuple[GameRuntime, _ExplodingLLM]:
+    return _runtime_for(_package())
+
+
+def _with_branch(pkg: ScriptPackage, **updates) -> ScriptPackage:
+    """改第一场的第一个分支（return_mode / ending_id 等）。"""
+    scene = pkg.scenes[0]
+    branch = scene.branches[0].model_copy(update=updates)
+    new_scene = scene.model_copy(update={"branches": [branch]})
+    return pkg.model_copy(update={"scenes": [new_scene, *pkg.scenes[1:]]})
 
 
 def _payloads(rt: GameRuntime, event_type: str) -> list[dict]:
@@ -166,6 +179,12 @@ def test_legacy_package_has_no_graph():
         }
     )
     assert build_replay_graph(legacy) is None
+
+
+def test_options_without_endings_falls_back_to_linear():
+    """非法珊瑚图（有选项没结局）退回线性路径，而不是让玩家卡在死局。"""
+    pkg = _package().model_copy(update={"endings": []})
+    assert build_replay_graph(pkg) is None
 
 
 def test_graph_nodes_and_mainline_ending():
@@ -220,6 +239,35 @@ async def test_replay_start_plays_narration_and_skips_player_lines():
     assert llm.calls == 0
 
 
+async def test_live_logs_and_memories_are_folded():
+    """实时推进也要折叠台账：导出/快照读 `_RState`，不能等下一次重建。"""
+    rt, _ = _make_runtime()
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
+
+    assert "两人在渡口相遇" in rt.state.plot_log
+    assert ("乙", "scene:1", "船要开了。") in rt.state.speech_log
+    memories = rt.export_state()["character_memories"]["乙"]["working_memory"]
+    assert any(m.get("content") == "船要开了。" for m in memories)
+
+
+async def test_restore_rebuilds_replay_state_and_logs():
+    """生产恢复形状：共享事件存储 + `replay_from(None, 活动分支事件)`。"""
+    rt, _ = _make_runtime()
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
+    await rt.submit(command_id="c2", kind="choose_option", payload={"option_id": "o2"})
+    events = [e.to_dict() for e in rt.event_store.active_events()]
+
+    restored, _ = _runtime_for(_package(), store=rt.event_store)
+    restored.replay_from(None, events)
+
+    assert restored._replay_state == rt._replay_state
+    assert restored.state.scene_key == rt.state.scene_key
+    assert restored.state.plot_log == rt.state.plot_log
+    assert restored.state.speech_log == rt.state.speech_log
+
+
 # ===== 运行时：决策点 =====
 
 
@@ -234,12 +282,41 @@ async def test_distractor_branch_returns_to_decision_point():
 
     assert _option_ids(result) == ["o1", "o2"]
     assert result.active_interaction["context"] == "回到刚才的选择"
+    # 珊瑚回边：写一条父场景的 node_entered（带 returned_from），不是停在分支节点
+    last_node = _payloads(rt, EVENT_REPLAY_NODE_ENTERED)[-1]
+    assert last_node["node_id"] == "scene:1"
+    assert last_node["returned_from"] == "scene:1::branch:b1"
+    assert result.state["scene_key"] == "scene:1"
+    assert result.state["scene_title"] == "相遇"
     assert _payloads(rt, EVENT_REPLAY_CHOICE)
-    assert _payloads(rt, EVENT_REPLAY_NODE_ENTERED)[-1]["node_id"] == (
-        "scene:1::branch:b1"
-    )
     speech = [p["text"] for p in _payloads(rt, EVENT_CHARACTER_SPEECH)]
     assert speech[-1] == "快点吧。"
+
+
+async def test_continue_branch_moves_to_next_scene():
+    pkg = _with_branch(_package(), return_mode="continue")
+    rt, _ = _runtime_for(pkg)
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
+    result = await rt.submit(
+        command_id="c2", kind="choose_option", payload={"option_id": "o2"}
+    )
+    assert result.state["scene_key"] == "scene:2"
+    assert result.state["scene_title"] == "江上"
+    assert _option_ids(result) == ["o3"]
+
+
+async def test_branch_with_ending_reaches_ending():
+    pkg = _with_branch(_package(), return_mode="continue", ending_id="e1")
+    rt, _ = _runtime_for(pkg)
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
+    result = await rt.submit(
+        command_id="c2", kind="choose_option", payload={"option_id": "o2"}
+    )
+    assert result.state["beat_cursor"] == 3
+    assert _option_ids(result) == ["0", "1"]
+    assert [p["ending_id"] for p in _payloads(rt, EVENT_REPLAY_ENDING_REACHED)] == ["e1"]
 
 
 async def test_canonical_choice_reaches_ending_and_terminal():
@@ -271,20 +348,22 @@ async def test_stage2_free_input_is_rejected():
     rt, _ = _make_runtime()
     await rt.start()
     await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
-    with pytest.raises(Error):
+    with pytest.raises(Error) as excinfo:
         await rt.submit(
             command_id="c2", kind="free_input", payload={"text": "我随便说说"}
         )
+    assert excinfo.value.code == codes.ENG_PLAYER_ACTION_INVALID
 
 
 async def test_unknown_option_is_rejected():
     rt, _ = _make_runtime()
     await rt.start()
     await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "甲"})
-    with pytest.raises(Error):
+    with pytest.raises(Error) as excinfo:
         await rt.submit(
             command_id="c2", kind="choose_option", payload={"option_id": "o9"}
         )
+    assert excinfo.value.code == codes.ENG_PLAYER_ACTION_INVALID
 
 
 # ===== 运行时：回溯重演 =====

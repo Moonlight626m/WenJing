@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +29,8 @@ from app.contracts.script import (
 )
 from app.domain.game import event as evt
 from app.domain.game.types import InteractionPoint
+
+logger = logging.getLogger("wenjing.core.replay")
 
 _BRANCH_SEP = "::branch:"
 _RETURN_TO_CHOICE = "回到刚才的选择"
@@ -99,10 +102,15 @@ class ReplayGraph:
 
 @dataclass(frozen=True)
 class ReplayState:
-    """播放位置：当前节点 + 是否已到达结局。"""
+    """播放位置：当前节点 + 是否已到达结局。
+
+    `returned_from`：刚从哪个分支过场回到本决策点（珊瑚回边），仅用于交互文案
+    「回到刚才的选择」；同一决策点正常进入时为 None。
+    """
 
     node_id: str
     ending_id: str | None = None
+    returned_from: str | None = None
 
 
 def _beat_list(raw_beats: list) -> tuple[ReplayBeat, ...]:
@@ -148,8 +156,16 @@ def _scene_node(scene: Scene) -> ReplayScene:
 
 
 def build_replay_graph(pkg: ScriptPackage) -> ReplayGraph | None:
-    """旧剧本（无 options / endings）返回 None → 运行时走 agent 线性路径。"""
-    if not any(scene.options for scene in pkg.scenes) and not pkg.endings:
+    """旧剧本（无 options / endings）返回 None → 运行时走 agent 线性路径。
+
+    有 options 却没有结局表属于非法珊瑚图（生成期 `validate_replay` 会拒绝）；
+    运行期退回线性路径而不是让玩家卡在无交互的死局。
+    """
+    has_options = any(scene.options for scene in pkg.scenes)
+    if not has_options and not pkg.endings:
+        return None
+    if has_options and not pkg.endings:
+        logger.warning("replay_graph_missing_endings")
         return None
     scenes = tuple(_scene_node(scene) for scene in pkg.scenes)
     endings: dict[str, ReplayEnding] = {}
@@ -238,7 +254,11 @@ class ReplayDirector:
             if etype == evt.EVENT_REPLAY_NODE_ENTERED:
                 node_id = payload.get("node_id")
                 if node_id in self.graph.by_node:
-                    state = ReplayState(node_id=str(node_id))
+                    returned_from = payload.get("returned_from")
+                    state = ReplayState(
+                        node_id=str(node_id),
+                        returned_from=str(returned_from) if returned_from else None,
+                    )
             elif etype == evt.EVENT_REPLAY_ENDING_REACHED:
                 ending_id = payload.get("ending_id")
                 node_id = payload.get("node_id") or f"ending:{ending_id}"
@@ -258,10 +278,9 @@ class ReplayDirector:
         scene = self._decision_scene(state)
         if scene is None or not scene.options:
             return None
-        node = self.graph.by_node.get(state.node_id)
         context = (
             _RETURN_TO_CHOICE
-            if isinstance(node, ReplayBranch)
+            if state.returned_from is not None
             else scene.interaction_context
         )
         return InteractionPoint(
@@ -316,10 +335,17 @@ class ReplayDirector:
     ) -> tuple[ReplayState, list[ReplayCue]]:
         cues: list[ReplayCue] = []
         current: str | None = node_id
+        # 教师手改包可能带环（生成期已用 validate_replay 拦住）；兜底不无限播放
+        seen: set[str] = set()
         while current is not None:
+            if current in seen:
+                logger.warning("replay_walk_cycle", extra={"node_id": current})
+                return self._mainline_ending(cues)
+            seen.add(current)
             node = self.graph.by_node.get(current)
             if node is None:
-                # 引用损坏（生成期已校验；教师手改包兜底）——收敛到主线结局，不崩
+                # 引用损坏——收敛到主线结局，不崩
+                logger.warning("replay_unknown_node", extra={"node_id": current})
                 return self._mainline_ending(cues)
             if isinstance(node, ReplayEnding):
                 cues.append(self._ending_cue(node))
@@ -335,6 +361,15 @@ class ReplayDirector:
                 current = f"ending:{node.ending_id}"
                 continue
             if node.return_mode == "choice":
+                # 珊瑚回边：写父场景的 node_entered（不重播其内容），决策点由
+                # `options()` 重新给出「回到刚才的选择」；**不建事件分支**。
+                parent = self.graph.by_node.get(f"scene:{node.parent_scene_id}")
+                if isinstance(parent, ReplayScene):
+                    cues.append(self._enter_cue(parent, returned_from=node.node_id))
+                    return (
+                        ReplayState(node_id=parent.node_id, returned_from=node.node_id),
+                        cues,
+                    )
                 return ReplayState(node_id=node.node_id), cues
             current = self._branch_return(node)
         return self._mainline_ending(cues)
@@ -379,18 +414,23 @@ class ReplayDirector:
             )
         return cues
 
-    def _enter_cue(self, node: ReplayScene | ReplayBranch) -> ReplayCue:
+    def _enter_cue(
+        self,
+        node: ReplayScene | ReplayBranch,
+        *,
+        returned_from: str | None = None,
+    ) -> ReplayCue:
         asset = node.background_asset
-        return ReplayCue(
-            evt.EVENT_REPLAY_NODE_ENTERED,
-            {
-                "node_id": node.node_id,
-                "node_kind": "scene" if isinstance(node, ReplayScene) else "branch",
-                "scene_key": node.node_id,
-                "scene_title": node.title,
-                "current_asset": asset.model_dump(mode="json") if asset is not None else None,
-            },
-        )
+        payload: dict[str, Any] = {
+            "node_id": node.node_id,
+            "node_kind": "scene" if isinstance(node, ReplayScene) else "branch",
+            "scene_key": node.node_id,
+            "scene_title": node.title,
+            "current_asset": asset.model_dump(mode="json") if asset is not None else None,
+        }
+        if returned_from is not None:
+            payload["returned_from"] = returned_from
+        return ReplayCue(evt.EVENT_REPLAY_NODE_ENTERED, payload)
 
     def _narration_cue(self, node_id: str, text: str) -> ReplayCue:
         return ReplayCue(

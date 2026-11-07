@@ -158,15 +158,20 @@ scripts（content_version/format/replay_ready）
   `ReplayDirector.start/enter/choose/options/resolve` 产出事件序列，零 LLM。
   旧剧本（无 options/endings）返回 None，运行时保持 agent 线性路径。
 - 事件与投影：节点进入/旁白按 narrative 消息、选择/结局按 system 消息下发；
-  `replay_node_entered` 带 scene_key/title/current_asset，时间线沿它累积场景。
+  `replay_node_entered` 带 `node_id/node_kind/scene_key/scene_title/current_asset`
+  （结局由 `replay_ending_reached` 单独宣布，不在节点事件里），时间线沿它累积场景。
+  分支播完回决策点时再写一条父场景的 `replay_node_entered`（带
+  `returned_from`），**不建事件分支**。
 - 对话：`Beat.dialogue` 与 `BranchScene.dialogue` 落 `character_speech`
   （`source=replay`）；`speaker=null` 的台词转 `replay_narration`；玩家所选
   角色的台词跳过。
 - 决策点：选项 id 即 `option_id` 字符串；上下文取介入点的
   `what_player_can_do`（契约介入点没有 `context` 字段）。
-- `return_mode=choice` 的分支停在父场景决策点（文案「回到刚才的选择」），
-  不建事件分支；`continue` 续接 `return_scene_id` 或主干下一场；主干播完且
-  没有显式结局时用第一个 canonical 结局。
+- `return_mode=choice` 的分支停在父场景决策点（再写一条父场景的
+  `replay_node_entered` 表示回边，文案「回到刚才的选择」），不建事件分支；
+  `continue` 续接 `return_scene_id` 或主干下一场；主干播完且没有显式结局时
+  用第一个 canonical 结局。图上有环/未知节点（教师手改包）时收敛到主线结局
+  并打警告，不无限播放。
 - 回溯按 `replay_node_entered` 定位「拍」：回退到节点开始前，新分支整节点重演。
 - **与草案/前序注记的差异**：珊瑚图仍从 `scripts.script_data` 派生（表仓储后置，
   见 §D2 修正）；**Stage3 未改动**——到达结局选 0 进入续写仍是旧的 3 轮 agent

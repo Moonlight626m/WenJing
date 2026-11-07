@@ -159,18 +159,23 @@ class GameRuntime:
 
     # ===== 显式状态导出 / 恢复 =====
 
-    def _current_background(self, scene: Scene | None) -> AssetRef | None:
+    def _current_background(
+        self, scene: Scene | None, node_asset: AssetRef | None = None
+    ) -> AssetRef | None:
         """当前场景的背景稳定引用：**事件索引优先，脚本槽位兜底**。
 
         ADR-0005 §9：事件是资产继承的唯一权威——运行期 `asset_ready` 写下的资产
         必须压过剧本槽位，否则续写阶段的实时配图永远显示不出来；槽位兜底覆盖
-        Stage2 的离线预生成资产（那时还没有 asset_ready 事件）。在引擎内解析
-        （ADR-0005 §8）：这里同时有 events 与 script，投影层保持纯函数。
-        未开播（游标 0）或该场景无图 → None。
+        Stage2 的离线预生成资产（那时还没有 asset_ready 事件）。`node_asset` 是
+        珊瑚图播放节点的槽位（分支过场用 `scene:{id}::branch:{bid}`，游标解析
+        不到）。在引擎内解析（ADR-0005 §8）：这里同时有 events 与 script，
+        投影层保持纯函数。未开播（游标 0）或该场景无图 → None。
         """
         ref = RuntimeAssets.rebuild(self.event_store).current(self.state.scene_key)
         if ref is not None:
             return ref
+        if node_asset is not None:
+            return node_asset
         return scene.background_asset if scene is not None else None
 
     def _beat_ctx(self, cursor: int) -> Scene | None:
@@ -208,16 +213,16 @@ class GameRuntime:
         s = self.state
         # 当前场景只解析一次（#53）：背景与标题同源，且都在热路径上
         scene = self._beat_ctx(s.beat_cursor)
-        current_asset = self._current_background(scene)
+        node_asset = (
+            self.replay.background_of(self._replay_state)
+            if self.replay is not None and self._replay_state is not None
+            else None
+        )
+        current_asset = self._current_background(scene, node_asset)
         scene_title = scene.title if scene is not None else None
         if self.replay is not None and self._replay_state is not None:
-            # 珊瑚图播放不推 beat 游标（§A4）：场景键/标题/图从播放位置解析
+            # 珊瑚图播放不推 beat 游标（§A4）：标题从播放位置解析
             scene_title = self.replay.title_of(self._replay_state) or scene_title
-            current_asset = (
-                RuntimeAssets.rebuild(self.event_store).current(s.scene_key)
-                or self.replay.background_of(self._replay_state)
-                or current_asset
-            )
         return {
             "stage": s.stage,
             "phase": s.phase,
@@ -387,6 +392,8 @@ class GameRuntime:
             summary = f"结局：{payload.get('title', '')}".rstrip("：")
             self.state.plot_log.append(summary)
             self.characters.broadcast_plot_context(summary)
+            # 游标对齐末尾：无快照恢复时 Stage3 也从结局之后续写，而非从头复读
+            self.state.beat_cursor = total_beats(self.script)
 
     # ===== 生命周期 =====
 
@@ -607,6 +614,7 @@ class GameRuntime:
         """当前交互点是不是珊瑚图决策点（结局后的 0/1 出口不算）。"""
         return (
             self.replay is not None
+            and self.state.stage == StageValue.STAGE2_REENACTING.value
             and self._replay_state is not None
             and self._replay_state.ending_id is None
         )
@@ -629,6 +637,7 @@ class GameRuntime:
                 codes.ENG_PLAYER_ACTION_INVALID,
                 extra={"option_id": option_id, "node": self._replay_state.node_id},
             )
+        # 珊瑚图选项 id 是字符串（o1…），与旧路径的数字选项不同；事件只作审计
         self._append(
             evt.EVENT_PLAYER_ACTION,
             {"type": "choose_option", "option_id": option_id, "text": option.label},
@@ -664,6 +673,13 @@ class GameRuntime:
         assert self.replay is not None  # noqa: S101
         for cue in cues:
             self._append(cue.event_type, cue.payload, sink=sink)
+            # 与 `replay_from` 同构：实时推进也走同一折叠，避免 `_RState`
+            # （导出/快照的来源）要等下一次重建才对齐。
+            self._replay_event({"event_type": cue.event_type, "payload": cue.payload})
+        # 预写台词也进 NPC 工作记忆（与实时写入同一函数，防漂移）
+        self.characters.derive_memories(
+            {"event_type": cue.event_type, "payload": cue.payload} for cue in cues
+        )
         self._replay_state = state
         self.state.scene_key = self.replay.scene_key_of(state) or self.state.scene_key
         if state.ending_id is not None:

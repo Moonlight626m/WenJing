@@ -2,7 +2,7 @@
 
 > 状态：M0–M4 已落地（2026-11-07）。上游设计见
 > `docs/design/play-through-redesign.md`（v5，下称「设计」）。
-> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M4–M8）与排查时查阅；
+> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M5–M8）与排查时查阅；
 > 任务与进度仍以 GitHub Issues 为追踪源。
 
 ## 1. 什么时候查这份文档
@@ -101,14 +101,17 @@ divide_events(v4 大纲：beats + branches + options + endings)
   事件折叠播放位置（快照不含它）。
 - 节点编号：`scene:{id}`、`scene:{id}::branch:{id}`（与配图槽位同拼法）、
   `ending:{id}`。决策点选项 id 就是 `option_id` 字符串（`o1`…），前端无需改动。
-- 事件：`replay_node_entered`（场景/分支，带 scene_key/title/current_asset）、
-  `replay_narration`、`replay_choice`、`replay_ending_reached`；预写台词落
-  `character_speech`（`source=replay`），Stage3 的 `speech_log` 因此有上下文。
+- 事件：`replay_node_entered`（场景/分支，带 node_kind/scene_key/scene_title/
+  current_asset；回决策点时带 `returned_from`）、`replay_narration`、
+  `replay_choice`、`replay_ending_reached`；预写台词落 `character_speech`
+  （`source=replay`），Stage3 的 `speech_log` 因此有上下文。
   节点进入与旁白按 narrative 消息下发，选择/结局按 system 消息下发。
 - 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。
-- 回主干：`return_mode=choice` 的分支播完停在父场景决策点，交互文案
-  「回到刚才的选择」；`continue` 续接 return_scene / 主干下一场；带
-  `ending_id` 的分支是终点。主干播完没有显式结局时用第一个 canonical 结局。
+- 回主干：`return_mode=choice` 的分支播完回到父场景决策点（写一条父场景
+  `replay_node_entered` 表示珊瑚回边，交互文案「回到刚才的选择」）；
+  `continue` 续接 return_scene / 主干下一场；带 `ending_id` 的分支是终点。
+  主干播完没有显式结局时用第一个 canonical 结局。图上有环/未知引用
+  （教师手改包）时收敛到主线结局并打警告，不无限播放。
 - 回溯的「拍」变成 `replay_node_entered`：回退后整节点重演（新分支继承前缀）。
 - 到达结局：`beat_cursor` 对齐 `total_beats`，交互复用 0=续写 / 1=结束。
 - **Stage2 不允许自由输入**（见 6.1）；Stage3 仍是旧的 3 轮 agent 路径，
@@ -217,7 +220,8 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 - `rollback_to_event` 新建活动分支，**继承前缀止于目标所属叙事拍之前**；
   目标拍由新分支整拍重演。这样「从 DB 恢复时的『快照 + 增量重放』」与
   「回溯命令结束时的现场」严格一致，不会把同一拍计两次。
-- 目标解析为「路径上 id ≤ target 的最后一个 `plot_advancement`」；落在回合中段
+- 目标解析为「路径上 id ≤ target 的最后一个叙事事件」——旧剧本是
+  `plot_advancement`，珊瑚图剧本是 `replay_node_entered`（M4）；落在回合中段
   的目标回到该回合起点；首拍之前没有合法目标（`ENG_ROLLBACK_TARGET_MISSING`，
   且不切分支）。
 - 阶段、`beat_cursor`、`plot_log`、`direction`、角色记忆**全部随事件回退**。

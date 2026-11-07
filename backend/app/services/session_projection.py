@@ -33,6 +33,10 @@ from app.contracts.runtime import (
 from app.contracts.script import AssetRef
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.event import (
+    EVENT_REPLAY_CHOICE,
+    EVENT_REPLAY_ENDING_REACHED,
+    EVENT_REPLAY_NARRATION,
+    EVENT_REPLAY_NODE_ENTERED,
     EVENT_ROLLBACK,
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
@@ -225,10 +229,10 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     "proposal": "system",
     "direction": "system",
     # 珊瑚图纯 IO 播放（M4）：节点进入与旁白是叙事，选择与结局是系统提示
-    "replay_node_entered": "narrative",
-    "replay_narration": "narrative",
-    "replay_choice": "system",
-    "replay_ending_reached": "system",
+    EVENT_REPLAY_NODE_ENTERED: "narrative",
+    EVENT_REPLAY_NARRATION: "narrative",
+    EVENT_REPLAY_CHOICE: "system",
+    EVENT_REPLAY_ENDING_REACHED: "system",
     # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
     "stage3_goals_set": "system",
     "stage3_goal_achieved": "system",
@@ -250,9 +254,9 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return f"{p.get('proposed_by')} 提议：{p.get('description', '')}"
     if event_type == "direction":
         return str(p.get("conflict", ""))
-    if event_type == "replay_choice":
+    if event_type == EVENT_REPLAY_CHOICE:
         return f"你选择了：{p.get('label', '')}"
-    if event_type == "replay_ending_reached":
+    if event_type == EVENT_REPLAY_ENDING_REACHED:
         return f"到达结局：{p.get('title', '')}"
     if event_type == EVENT_STAGE3_GOALS_SET:
         descs = [str(g.get("description", "")) for g in p.get("goals", []) if isinstance(g, dict)]
