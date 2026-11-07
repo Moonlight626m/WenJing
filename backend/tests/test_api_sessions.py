@@ -22,13 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.contracts.enums import UserRole
 from app.domain.access import Actor
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.llm.fake import DeterministicAgentLLM
 from app.main import create_app
 from app.services.script_library import ScriptLibrary
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 _MATERIAL_TEXT = (

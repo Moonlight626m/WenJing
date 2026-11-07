@@ -19,11 +19,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command as alembic_command
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 _BASELINE_TABLES = {
@@ -100,7 +101,10 @@ async def test_upgrade_head_creates_baseline_tables(migrated: Config):
 
 
 async def test_upgrade_head_covers_model_metadata(migrated: Config):
-    """v2 基线 == 模型元数据：新增模型表必须同步进基线/增量迁移。"""
+    """v2 基线覆盖模型元数据的表与列（新增表/列必须同步进基线或增量迁移）。
+
+    只比对表/列名：索引与约束的形状由各自的迁移测试覆盖。
+    """
     import app.infrastructure.models  # noqa: F401
     from app.infrastructure.db.session import Base
 
@@ -108,11 +112,20 @@ async def test_upgrade_head_covers_model_metadata(migrated: Config):
     try:
         async with engine.connect() as conn:
             rows = await conn.execute(
-                text("select tablename from pg_tables where schemaname = 'public'")
+                text(
+                    "select table_name, column_name from information_schema.columns "
+                    "where table_schema = 'public'"
+                )
             )
-            tables = {r[0] for r in rows}
-        expected = set(Base.metadata.tables)
-        assert expected <= tables, f"基线缺模型表: {expected - tables}"
+            actual: dict[str, set[str]] = {}
+            for table_name, column_name in rows:
+                actual.setdefault(table_name, set()).add(column_name)
+        for name, table in Base.metadata.tables.items():
+            assert name in actual, f"基线缺模型表: {name}"
+            expected_cols = {c.name for c in table.columns}
+            assert expected_cols <= actual[name], (
+                f"{name} 缺列: {expected_cols - actual[name]}"
+            )
     finally:
         await engine.dispose()
 

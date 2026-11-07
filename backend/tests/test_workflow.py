@@ -21,7 +21,7 @@ from app.domain.generation.stage1 import synthesize_script_package
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
 from app.domain.generation.workflow.nodes import _format_issue
 from app.domain.prompts import character_design, collect_materials, divide_events
-from app.infrastructure.config import get_settings
+from app.infrastructure.config import DEFAULT_DATABASE_URL, get_settings
 from app.infrastructure.errx import Error
 
 MATERIAL_TEXT = (
@@ -332,8 +332,7 @@ async def test_dossier_with_web_claims_survives_checkpoint_write() -> None:
     from app.infrastructure.checkpoint import saver_pool
 
     db_url = os.environ.get(
-        "WENJING_DATABASE_URL",
-        "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2",
+        "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL,
     )
     engine = create_async_engine(db_url, pool_timeout=5, connect_args={"timeout": 5})
     try:

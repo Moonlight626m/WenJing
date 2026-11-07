@@ -649,6 +649,7 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_scripts_owner_user_id"), table_name="scripts")
     op.drop_index(op.f("ix_scripts_org_id"), table_name="scripts")
     op.drop_index(op.f("ix_scripts_material_id"), table_name="scripts")
+    op.drop_index("ix_scripts_status", table_name="scripts")
     op.drop_table("scripts")
     op.drop_index("idx_event_branches_session", table_name="event_branches")
     op.drop_table("event_branches")

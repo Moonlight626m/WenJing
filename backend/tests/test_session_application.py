@@ -20,11 +20,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.domain.access import Actor
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.errx import Error as WJError
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 

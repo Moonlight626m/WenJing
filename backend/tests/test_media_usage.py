@@ -16,11 +16,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.infrastructure.models  # noqa: F401
 from app.domain.game.media import MediaKind, MediaUsage
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.media import MediaQuotaService, MediaUsageRecorder
 from app.infrastructure.models.media_usage import MediaUsage as MediaUsageRow
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 

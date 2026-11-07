@@ -17,10 +17,9 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # 默认从应用 Settings 解析数据库 URL（.env / WENJING_DATABASE_URL）；
-# 若调用方显式注入了真实 URL（如迁移测试的临时库），则不覆盖。
+# 调用方在 Config 里显式注入的真实 URL（迁移测试）优先。
 _url = config.get_main_option("sqlalchemy.url")
 if not _url or _url.startswith("driver://"):
-    # 显式注入的真实 URL（迁移测试的临时库）优先；占位符才回落到应用配置
     config.set_main_option(
         "sqlalchemy.url", get_settings().database_url.replace("%", "%%")
     )

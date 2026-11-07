@@ -60,6 +60,7 @@ def _assert_legal(pkg: ScriptPackage, analysis: TextAnalysis) -> None:
         "event_order": [],
         "teaching": [],
         "branches": [],
+        "replay": [],
     }
     key_beats = [b for s in pkg.scenes for b in s.beats if b.is_key_event]
     assert key_beats, "Stage2 关键 beat 不得为空"

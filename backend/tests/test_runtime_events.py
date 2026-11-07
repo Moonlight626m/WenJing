@@ -32,6 +32,7 @@ from app.domain.game.media import (
     AssetStatus,
     SceneAssetRequest,
 )
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.errx import codes, new
 from app.infrastructure.media import SqlAssetJobStore, SqlAssetRepository
 from app.infrastructure.models.asset_job import AssetJob as AssetJobRow
@@ -42,7 +43,7 @@ from app.services.session_events import SessionEventHub
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 

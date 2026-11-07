@@ -70,13 +70,16 @@ make dev         # 一键：起 PostgreSQL + 跑迁移 + 起后端(:8000) + 起�
 ```bash
 make install     # 安装 backend (uv sync) 与 frontend (npm install) 依赖
 make db-up       # 启动本地 PostgreSQL (docker compose)
+make db-create-v2  # 既有数据卷补建 wenjing_v2（新卷由 POSTGRES_DB 默认为 wenjing_v2，可跳过）
 cp backend/.env.example backend/.env   # 配置环境变量，按需修改
 make migrate     # 运行 Alembic 迁移，初始化数据库表
 make seed        # 写入默认 org「文境演示学校」与 super_admin/教师/学生测试账号
 ```
 
-> 账号基线为破坏式重建（多用户化改造，历史决策见 git 记录）：旧匿名数据不再兼容。若本地库是旧 schema,
-> 用 `make db-reset`（删卷 → 起库 → 迁移 → seed，**数据不可恢复**）。
+> 2026-11 起应用只连新库 `wenjing_v2`（合并后的单一基线，不做数据迁移）。旧库
+> `wenjing` 只读保留；旧 schema 的本地卷不会自动升级，按上面的 `make db-create-v2`
+> 建新库并重新生成剧本即可。若想彻底重置开发环境用 `make db-reset`（删卷 → 迁移 →
+> seed，**数据不可恢复**）。
 > seed 账号：`admin` / `teacher` / `student`，
 > 密码默认 `123456`（可用 `WENJING_SEED_PASSWORD` 覆盖）。
 
@@ -107,6 +110,7 @@ make dev-frontend   # frontend: http://localhost:3000 (next dev)
 |------|------|
 | `make dev` / `make dev-stop` / `make dev-status` | 一键后台启动/停止/查看开发服务（日志在 `.run/logs/`） |
 | `make db-up` / `make db-down` | 启动/停止本地 PostgreSQL (docker compose) |
+| `make db-create-v2` | 既有数据卷上补建 `wenjing_v2`（幂等；新卷可跳过） |
 | `make migrate` | 运行 Alembic 迁移 (backend) |
 | `make seed` | 写入默认 org 与测试账号（幂等） |
 | `make db-reset` | 破坏式重建本地库（删卷 → 迁移 → seed，数据不可恢复） |
@@ -153,7 +157,10 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
   密码默认 `123456`（`WENJING_SEED_PASSWORD` 覆盖）。
   **生产环境必须改掉默认密码或部署后立即修改**，测试账号仅用于验证。
 - **迁移**：入口脚本默认执行 `alembic upgrade head`（`WENJING_RUN_MIGRATIONS=0` 可关闭）。
-- **数据库**：仅绑定 `127.0.0.1:5432`，不直接暴露公网；生产请设置强密码。
+  应用连 `wenjing_v2`；**既有数据卷**需先 `make db-create-v2`，否则启动时迁移会报
+  「database "wenjing_v2" does not exist」。
+- **数据库**：仅绑定 `127.0.0.1:5432`，不直接暴露公网；生产请设置强密码。`POSTGRES_DB`
+  默认 `wenjing_v2`（新卷直接创建）；旧库 `wenjing` 只读保留。
 - **CI**：`.github/workflows/ci.yml` 覆盖后端 lint + PG 集成测试 + 契约测试、前端
   lint/tsc/build，以及对真实 REST/WS 的浏览器 E2E。
 

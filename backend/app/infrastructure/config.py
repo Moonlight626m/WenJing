@@ -15,6 +15,10 @@ _ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT = 900
 
 
+#: 本地默认数据库（服务与集成测试共用；测试在 WENJING_DATABASE_URL 未设置时回落到它）
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ENV_FILE, env_prefix="WENJING_", extra="ignore")
 
@@ -27,7 +31,7 @@ class Settings(BaseSettings):
     # CORS 允许来源（逗号分隔）；默认本地前端 dev server
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
-    database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    database_url: str = DEFAULT_DATABASE_URL
 
     # 账号会话（issue #17 / ADR-0002）。生产走 HTTPS 时应置 WENJING_AUTH_COOKIE_SECURE=1。
     auth_cookie_secure: bool = False

@@ -13,6 +13,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.infrastructure.models  # noqa: F401
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.db.branch import commit_rollback_branch
 from app.infrastructure.db.event_store import EVENTS_SCHEMA_VERSION, main_branch_id
 from app.infrastructure.models.event import GameEventRecord
@@ -21,7 +22,7 @@ from app.infrastructure.models.session import Session
 from app.infrastructure.models.snapshot import Snapshot
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 _SID = uuid.uuid4()

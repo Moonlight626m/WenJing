@@ -25,6 +25,7 @@ import app.infrastructure.models  # noqa: F401
 from app.contracts.commands import CommandKind, PlayerCommand
 from app.contracts.material import MaterialInput, MaterialSource
 from app.domain.access import Actor
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.db.event_store import PersistentEventStore
 from app.infrastructure.diagnostics.errors import envelope_for
 from app.infrastructure.errx import Error as WJError
@@ -36,7 +37,7 @@ from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 

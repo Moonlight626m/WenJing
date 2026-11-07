@@ -16,12 +16,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.main import create_app
 from app.services.auth import DEFAULT_ORG_NAME
 from app.services.auth_seed import seed
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 _REGISTER = {

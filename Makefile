@@ -43,8 +43,14 @@ db-down:
 	docker compose down
 
 # 既有 pgdata 卷不会因 POSTGRES_DB 改动而新建库：显式补建（幂等）。
+# 用户从容器环境读取（compose 的 .env），不依赖宿主 shell 变量。
 db-create-v2:
-	@docker compose exec -T db psql -U $${POSTGRES_USER:-wenjing} -tAc "select 1 from pg_database where datname='wenjing_v2'" | grep -q 1 || docker compose exec -T db psql -U $${POSTGRES_USER:-wenjing} -c "create database wenjing_v2"
+	@user=$$(docker compose exec -T db printenv POSTGRES_USER); \
+	if docker compose exec -T db psql -U "$$user" -d postgres -tAc "select 1 from pg_database where datname='wenjing_v2'" | grep -q 1; then \
+		echo "wenjing_v2 已存在"; \
+	else \
+		docker compose exec -T db psql -U "$$user" -d postgres -c "create database wenjing_v2"; \
+	fi
 
 # 破坏式重建（ADR-0002）：旧匿名数据无保留价值。会删除 pgdata 卷。
 db-reset:

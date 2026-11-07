@@ -32,11 +32,12 @@ from app.contracts.review import AssetOp, GateEdits
 from app.contracts.script import ScriptPackage
 from app.contracts.script_library import GenerationResumeRequest
 from app.domain.access import Actor
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.main import create_app
 from app.services.script_library import ScriptLibrary
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 _MATERIAL_TEXT = (

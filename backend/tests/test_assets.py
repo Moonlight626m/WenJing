@@ -21,12 +21,13 @@ import app.infrastructure.models  # noqa: F401
 from app.contracts.enums import UserRole
 from app.domain.access import Actor
 from app.domain.game.media import AssetKind, AssetRecord, AssetStatus
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.errx import Error, codes, match_code
 from app.infrastructure.media import ImageProcessor, SqlAssetRepository
 from app.services.assets import AssetAccessService
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 _REGISTER = {"schema_version": "2.4.0", "phone": None, "password": "supersecret1"}
 

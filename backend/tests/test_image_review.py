@@ -22,10 +22,11 @@ from app.domain.game.image_review import (
     evaluate_license,
 )
 from app.domain.game.media import AssetCredit, AssetKind, ImageCandidate
+from app.infrastructure.config import DEFAULT_DATABASE_URL
 from app.infrastructure.usage import UsageContext, UsageRecorder, UsageRecordingLLM
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+    "WENJING_DATABASE_URL", DEFAULT_DATABASE_URL
 )
 
 
