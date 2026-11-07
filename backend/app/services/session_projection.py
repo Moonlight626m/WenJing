@@ -61,7 +61,15 @@ _EVENT_TYPE_MAP: dict[str, EventType] = {
 def _contract_event_type(event_type: str, payload: dict[str, Any]) -> EventType:
     if event_type == "system":
         return EventType.ROLE_SELECTED if "selected_role" in payload else EventType.SESSION_STARTED
-    return _EVENT_TYPE_MAP.get(event_type, EventType.NARRATIVE_ADVANCED)
+    mapped = _EVENT_TYPE_MAP.get(event_type)
+    if mapped is not None:
+        return mapped
+    # 新事件（replay_* / scene_* / intervention_* 等）与契约 EventType 值 1:1：
+    # 直接按值构造，避免每加一个事件就要在这张表里补一行、漏了会静默降级成叙事。
+    try:
+        return EventType(event_type)
+    except ValueError:
+        return EventType.NARRATIVE_ADVANCED
 
 
 def _flatten_memory(snapshot: dict[str, Any]) -> list[str]:

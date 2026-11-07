@@ -366,7 +366,7 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
 | M0 回溯修复 | 目标前快照 + 重放到目标；`derive_memories`；生产路径测试 | 重建 runtime 后回溯状态正确 |
-| M1 契约波 | `DialogueLine/Ending/SceneOption/ExplorationMap` + 事件/命令/DTO；2.9.0 同步 | contracts 全绿；旧 fixture 兼容 |
+| M1 契约波 | `DialogueLine/Ending/SceneOption/ExplorationMap` + 事件/命令/DTO；**3.0.0**（见下） | contracts 全绿；旧 fixture 兼容 |
 | M2 新库 | `wenjing_v2` + v2 baseline + seed；不迁数据 | 新库可跑；剧本可重新生成入表 |
 | M3 Stage2 生成期 | `divide_events` v4 + `write_dialogue` + `validate_replay` + gate 校验 + 预生成图 | 生成带选项/分支/结局/台词/图 |
 | M4 Stage2 运行期 | `ReplayDirector` 珊瑚播放 + 事件/投影 + 前端；删 Stage2 free_input | 纯 IO 可玩；旧剧本不变 |
@@ -376,6 +376,11 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
 | M8 回溯/快照 | 快照列 + 坐标统一 + 回溯页 + 入口 | 存档点/回跳正确 |
 
 （M2 可与 M0/M1 并行；M3/M4 与 M5/M6 可并行；M7/M8 后置。）
+
+**契约版本注记（M1）**：草案写 2.9.0，但 §A4 从 Stage2 允许列表删除
+`free_input` 属于 `docs/contract-change-process.md` 定义的**收紧校验
+（breaking）**，按流程升 **3.0.0**（旧客户端在 Stage2 提交自由输入会被
+拒绝）。新增字段/枚举本身是 minor，breaking 的只有这一条。
 
 ---
 

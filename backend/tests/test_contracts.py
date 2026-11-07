@@ -210,6 +210,34 @@ def test_allowed_commands_semantics() -> None:
     assert CommandKind.INTERVENE not in stage3
 
 
+def test_new_domain_events_have_matching_contract_event_types() -> None:
+    """事件登记表：M1 新增领域事件与契约 EventType 值 1:1。
+
+    投影对未显式映射的事件按值直构（`session_projection._contract_event_type`），
+    所以两边取值必须一致；漏登记会静默降级成 narrative_advanced。
+    """
+    from app.contracts.enums import EventType
+    from app.domain.game import event as evt
+
+    for name in (
+        "EVENT_REPLAY_NODE_ENTERED",
+        "EVENT_REPLAY_NARRATION",
+        "EVENT_REPLAY_CHOICE",
+        "EVENT_REPLAY_ENDING_REACHED",
+        "EVENT_EXPLORATION_SETTLE",
+        "EVENT_SCENE_CREATED",
+        "EVENT_SCENE_SWITCH",
+        "EVENT_SCENE_UNLOCK_REJECTED",
+        "EVENT_CHARACTER_CREATED",
+        "EVENT_PULL_IN_CHARACTER",
+        "EVENT_INTERVENTION_REQUESTED",
+        "EVENT_INTERVENTION_REJECTED",
+        "EVENT_WORLD_FACT",
+        "EVENT_OFFLINE_HINT",
+    ):
+        assert EventType(getattr(evt, name)), f"{name} 未登记契约 EventType"
+
+
 # ===== 3. PlayerCommand payload 判别校验 =====
 
 
@@ -259,7 +287,10 @@ def test_script_package_coral_graph_fields() -> None:
     assert {e.kind for e in pkg.endings} == {"canonical", "distractor"}
     assert pkg.exploration is not None
     assert pkg.exploration.start_location_key == "station"
-    assert [loc.key for loc in pkg.exploration.locations] == ["station", "platform_end"]
+    assert [loc.location_key for loc in pkg.exploration.locations] == [
+        "station",
+        "platform_end",
+    ]
 
 
 # ===== 4. ErrorEnvelope 规则 =====

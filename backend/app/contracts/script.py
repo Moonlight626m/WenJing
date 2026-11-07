@@ -112,8 +112,8 @@ class CharacterProfile(VersionedContract):
 class DialogueLine(VersionedContract):
     """一句预写台词。`speaker=None` 表示旁白。"""
 
-    speaker: str | None = None
     text: str
+    speaker: str | None = None
     stage_direction: str = ""
 
 
@@ -123,16 +123,16 @@ class Ending(VersionedContract):
 
     ending_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    description: str = ""
     kind: Literal["canonical", "alternate", "distractor"]
+    description: str = ""
 
 
 class SceneOption(VersionedContract):
     """珊瑚图决策点的玩家选项：指向分支 / 目标场景 / 结局之一。
 
     `branch_id` 指向本场景 `branches` 里的内容；`target_scene_id` 直接跳到某
-    场景；`ending_id` 表示这是终局选项。三者按优先级 branch → target → ending
-    解释，其余为 None。
+    场景；`ending_id` 表示这是终局选项。三者最多填一个；全为 None 表示续接
+    主干下一场。
     """
 
     option_id: str = Field(min_length=1)
@@ -157,10 +157,12 @@ class Beat(VersionedContract):
 class ExplorationLocation(VersionedContract):
     """Stage3 探索地图上的一个地点（在场角色 + 视觉摘要）。"""
 
-    key: str = Field(min_length=1)
+    location_key: str = Field(min_length=1)
     title: str = Field(min_length=1)
     participants: list[str] = Field(default_factory=list)
     visual_summary: str = ""
+    # 离线 tick 可在此地点发生的事实（§B6 的数据源；D2 的 script_locations 列）。
+    scheduled_facts: list[str] = Field(default_factory=list)
 
 
 class ExplorationMap(VersionedContract):

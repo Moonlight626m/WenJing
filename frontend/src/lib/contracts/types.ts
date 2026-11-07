@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "2.9.0";
+export const CONTRACTS_SCHEMA_VERSION = "3.0.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -72,12 +72,12 @@ export type EventType =
   | "replay_narration"
   | "replay_choice"
   | "replay_ending_reached"
-  | "exploration_settled"
+  | "exploration_settle"
   | "scene_created"
-  | "scene_switched"
+  | "scene_switch"
   | "scene_unlock_rejected"
   | "character_created"
-  | "character_pulled_in"
+  | "pull_in_character"
   | "intervention_requested"
   | "intervention_rejected"
   | "world_fact"
@@ -485,8 +485,8 @@ export interface CharacterProfile {
 
 /** 预写台词：speaker 为 null 表示旁白。 */
 export interface DialogueLine {
-  speaker: string | null;
   text: string;
+  speaker?: string | null;
   stage_direction: string;
 }
 
@@ -502,8 +502,8 @@ export interface Beat {
 export interface Ending {
   ending_id: string;
   title: string;
-  description: string;
   kind: "canonical" | "alternate" | "distractor";
+  description: string;
 }
 
 /** 珊瑚图决策点的玩家选项：指向分支 / 目标场景 / 结局之一。 */
@@ -511,17 +511,18 @@ export interface SceneOption {
   option_id: string;
   label: string;
   kind: "canonical" | "distractor";
-  branch_id: string | null;
-  target_scene_id: number | null;
-  ending_id: string | null;
+  branch_id?: string | null;
+  target_scene_id?: number | null;
+  ending_id?: string | null;
 }
 
 /** Stage3 探索地图上的一个地点。 */
 export interface ExplorationLocation {
-  key: string;
+  location_key: string;
   title: string;
   participants: string[];
   visual_summary: string;
+  scheduled_facts: string[];
 }
 
 export interface ExplorationMap {
@@ -558,9 +559,9 @@ export interface BranchScene {
   background_asset?: AssetRef | null;
   background_credit?: AssetCredit | null;
   dialogue: DialogueLine[];
-  ending_id: string | null;
+  ending_id?: string | null;
   return_mode: "choice" | "continue";
-  return_scene_id: number | null;
+  return_scene_id?: number | null;
 }
 
 export interface Scene {

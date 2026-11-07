@@ -116,7 +116,8 @@ Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC�
 ### 干涉（Intervene）
 
 Stage3 玩家用自然语言改变世界的命令（`intervene` + `IntervenePayload`）：
-建场景、从角色池拉人、新增角色。`ProducerAgent` 解析为结构化意图并做 canon/预算
+建场景、从角色池拉人、新增角色（契约已就位；`ProducerAgent` 落地后该命令才进入
+Stage3 允许列表）。`ProducerAgent` 解析为结构化意图并做 canon/预算
 校验，应用结果全部事件化（`scene_created`/`character_created` 等），因此**可回溯**——
 回到创建之前，该场景/角色等于从未存在。离线期间 NPC 自主行动（§B6），回来只给
 `offline_hint` 提示并指路时间线。

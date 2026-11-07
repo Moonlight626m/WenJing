@@ -27,14 +27,18 @@ class ChooseOptionPayload(CommandPayload):
     option_id: str = Field(min_length=1)
 
 
-class FreeInputPayload(CommandPayload):
-    text: str = Field(min_length=1, max_length=2000)
-
-
-class IntervenePayload(CommandPayload):
-    """玩家干涉世界：自然语言（建场景 / 拉入或新增角色），由 ProducerAgent 解析。"""
+class TextPayload(CommandPayload):
+    """自然语言 payload：自由发言与玩家干涉共用同一条长度约束。"""
 
     text: str = Field(min_length=1, max_length=2000)
+
+
+class FreeInputPayload(TextPayload):
+    """玩家自由发言（Stage3）。"""
+
+
+class IntervenePayload(TextPayload):
+    """玩家干涉世界：建场景 / 拉入或新增角色，由 ProducerAgent 解析。"""
 
 
 class RollbackToEventPayload(CommandPayload):

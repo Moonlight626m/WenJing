@@ -66,8 +66,8 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
             CommandKind.ROLLBACK_TO_EVENT,
             CommandKind.CONFIRM_ENDING,
             CommandKind.EXIT_GAME,
-            # CommandKind.INTERVENE 由 M6 接线（ProducerAgent 就绪后才允许，
-            # 否则「允许的命令」会落到引擎的非法命令兜底）
+            # INTERVENE 契约已就位，M6 接入 ProducerAgent 处理器后才加进这里
+            # （提前允许会落到引擎的非法命令兜底）
         }
     ),
     StageValue.ENDED: frozenset(),
@@ -103,12 +103,13 @@ class EventType(StrEnum):
     REPLAY_CHOICE = "replay_choice"
     REPLAY_ENDING_REACHED = "replay_ending_reached"
     # Stage3 探索/场景/干涉（§B3–B5）
-    EXPLORATION_SETTLED = "exploration_settled"
+    # 新事件与领域常量 1:1（值相同），投影对未显式映射的事件直接按值构造
+    EXPLORATION_SETTLE = "exploration_settle"
     SCENE_CREATED = "scene_created"
-    SCENE_SWITCHED = "scene_switched"
+    SCENE_SWITCH = "scene_switch"
     SCENE_UNLOCK_REJECTED = "scene_unlock_rejected"
     CHARACTER_CREATED = "character_created"
-    CHARACTER_PULLED_IN = "character_pulled_in"
+    PULL_IN_CHARACTER = "pull_in_character"
     INTERVENTION_REQUESTED = "intervention_requested"
     INTERVENTION_REJECTED = "intervention_rejected"
     WORLD_FACT = "world_fact"
