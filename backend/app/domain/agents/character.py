@@ -22,6 +22,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 from app.domain.agents.chat_model import WenjingChatModel
 from app.domain.agents.tools import WorldView, build_character_tools
+from app.domain.game.event import EVENT_CHARACTER_SPEECH, EVENT_PROPOSAL
 from app.domain.game.types import CharacterSetting, PlayerAction, Proposal
 from app.domain.llm import LLMService
 from app.infrastructure.errx import Error, codes, exc_reason, new, wrap
@@ -133,13 +134,23 @@ class CharacterAgent:
             system_prompt=self.identity.to_system_prompt(),
         )
 
+    def record_proposal(self, description: str) -> None:
+        """记一次提议到私有记忆。实时提案与事件重放共用，防两处写法漂移。"""
+        self.memory.personal_log.append(f"提议：{description}")
+        self.memory.rejected.append(description)  # 记录提出过，避免重复
+
+    def record_speech(self, text: str) -> None:
+        """记一次发言到工作记忆（实时回应与事件重放共用）。"""
+        self.memory.working_memory.append(
+            {"role": self.identity.name, "content": text}
+        )
+
     async def propose_action(self, stage: str) -> Proposal:
         """按当前世界状态提出一个行动提议（工具调用 Agent 跑一轮）。"""
         text = await self._run(stage, instruction="propose_action")
         self._proposal_seq += 1
         description = text or "（无提议）"
-        self.memory.personal_log.append(f"提议：{description}")
-        self.memory.rejected.append(description)  # 记录提出过，避免重复
+        self.record_proposal(description)
         return Proposal(
             proposal_id=self._proposal_seq,
             proposed_by=self.identity.name,
@@ -168,7 +179,7 @@ class CharacterAgent:
                 stage, instruction="react", extra=extra, on_delta=on_delta
             )
         if text:
-            self.memory.working_memory.append({"role": self.identity.name, "content": text})
+            self.record_speech(text)
         logger.debug(
             "character_react",
             extra={"wj_extra": {"name": self.identity.name, "text": text}},
@@ -190,8 +201,7 @@ class CharacterAgent:
         text = await self._run(stage, instruction="propose_action", extra=feedback)
         self._proposal_seq += 1
         description = text or "（无提议）"
-        self.memory.personal_log.append(f"提议：{description}")
-        self.memory.rejected.append(description)  # 记录提出过，避免重复
+        self.record_proposal(description)
         return Proposal(
             proposal_id=self._proposal_seq,
             proposed_by=self.identity.name,
@@ -344,41 +354,32 @@ class CharacterAgentManager:
         for agent in self.agents.values():
             agent.memory.clear()
 
-    def derive_memories(self, events: Iterable[Any]) -> None:
+    def derive_memories(self, events: Iterable[dict[str, Any]]) -> None:
         """把一段事件折叠进角色记忆（M0：记忆由事件重建，快照只是兼容缓存）。
 
-        与实时路径逐条同构：
-        - `proposal {proposed_by, description}` → 该角色 personal_log/rejected 追加
-          （同 `propose_action` / `revise_proposal` 的实时写入，含「提议：」前缀）；
-        - `character_speech {speaker, text}` → 该角色 working_memory 追加
-          （同 `react_to` 的实时写入，空文本不记）。
+        与实时路径**同一写入函数**（`record_proposal` / `record_speech`），
+        不在重放侧另写一份：
+        - `proposal {proposed_by, description}` → 该角色 personal_log/rejected；
+        - `character_speech {speaker, text}` → 该角色 working_memory。
 
         plot/direction 广播不在其列——`_replay_event` 已按事件顺序重放（赋值幂等）。
         调用方契约：events 必须是记忆基线（快照缓存）**之后**的事件段；
         与基线重叠会重复追加。只折叠本运行时已创建的角色，其余静默跳过。
         """
         for ev in events:
-            if isinstance(ev, dict):
-                etype = ev.get("event_type") or ev.get("type") or ""
-                payload = ev.get("payload") or {}
-            else:
-                etype = ev.event_type
-                payload = ev.payload or {}
-            if etype == "proposal":
+            etype = ev.get("event_type") or ev.get("type") or ""
+            payload = ev.get("payload") or {}
+            if etype == EVENT_PROPOSAL:
                 name = payload.get("proposed_by")
                 agent = self.agents.get(str(name)) if name else None
                 if agent is None:
                     continue
-                description = str(payload.get("description", "")) or "（无提议）"
-                agent.memory.personal_log.append(f"提议：{description}")
-                agent.memory.rejected.append(description)
-            elif etype == "character_speech":
+                agent.record_proposal(str(payload.get("description", "")) or "（无提议）")
+            elif etype == EVENT_CHARACTER_SPEECH:
                 speaker = payload.get("speaker")
                 agent = self.agents.get(str(speaker)) if speaker else None
                 if agent is None:
                     continue
                 text = str(payload.get("text", ""))
                 if text:
-                    agent.memory.working_memory.append(
-                        {"role": agent.identity.name, "content": text}
-                    )
+                    agent.record_speech(text)

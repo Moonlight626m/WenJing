@@ -800,7 +800,10 @@ class SessionApplication:
                     extra={"session_id": str(session_id)},
                 )
         cutoff = int((base or {}).get("latest_event_id", 0))
-        replay = [e.to_dict() for e in loaded.events if e.event_id > cutoff]
+        # 只能重放**活动分支**路径：`loaded.events` 还含被回溯放弃的分支，
+        # 折进去会让游标/剧情/角色记忆停在已放弃的回合上。
+        active = loaded.store.active_events()
+        replay = [e.to_dict() for e in active if e.event_id > cutoff]
         try:
             runtime.replay_from(base, replay)
         except Exception as exc:
@@ -808,7 +811,7 @@ class SessionApplication:
                 "snapshot_replay_failed_rebuild",
                 extra={"session_id": str(session_id), "reason": str(exc)},
             )
-            runtime.replay_from(None, [e.to_dict() for e in loaded.events])
+            runtime.replay_from(None, [e.to_dict() for e in active])
 
         return runtime, store, loaded.version
 

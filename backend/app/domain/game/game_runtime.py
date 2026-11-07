@@ -4,7 +4,7 @@
 - `start()` 初始化会话（剧本在构造时注入），停在选角点。
 - `submit(...)` 是唯一输入入口；每次提交从当前稳定交互点推进到下一个
   稳定交互点或终态，返回 StepResult（#5 Session 层映射为契约 RuntimeUpdate）。
-- `rollback(...)` 回退保留旧历史事件（分支语义由 #8 扩展）。
+- `rollback(...)` 回退保留旧历史事件（新分支继承前缀，目标拍重演）。
 - 进度游标、阶段、玩家角色、剧情上下文与角色记忆全部位于显式 `_RState`
   及其序列化投影 `export_state()` / `restore()` —— 不依赖隐藏对象字段即可重建。
 - 引擎不 import FastAPI/WebSocket/SQLAlchemy/DB；LLM 仅经构造注入的 gateway。
@@ -232,7 +232,7 @@ class GameRuntime:
         return derive_goals(self.event_store.active_events())
 
     def restore(self, state_dump: dict) -> None:
-        """从显式状态快照重建运行时（快照 + 重放基线；分支重放语义在 #8 完善）。"""
+        """从显式状态快照重建运行时（快照 + 重放前缀；记忆由事件折叠）。"""
         s = self.state
         s.stage = state_dump.get("stage", StageValue.INIT.value)
         s.phase = state_dump.get("phase")
@@ -277,28 +277,34 @@ class GameRuntime:
         - proposal / character_speech → 角色记忆折叠（见 `derive_memories`）
 
         事件形如 `GameEvent.to_dict()`（含 event_type + payload）。快照里的
-        `character_memories` 只是兼容缓存：每次重放**额外**折叠进个人记忆，
-        快照损坏/缺失时调用 `replay_from(None, 全量事件)` 即可完整重建。
+        `character_memories` 只是兼容缓存：每次重放**额外**折叠进个人记忆。
+        快照损坏/缺失时用 `replay_from(None, store.active_events())` 完整重建——
+        必须传**活动分支**事件；全量历史里的被放弃分支会被一并折回。
         """
         if snapshot_state is not None:
             self.restore(snapshot_state)
             # 记忆折叠只作用于基线之后的事件：快照缓存已含此前的个人记忆，
             # 对全量事件再折叠会双计（快照位于 head 时折叠为空，天然兼容）
-            cutoff = int(snapshot_state.get("latest_event_id", 0) or 0)
+            memory_base_event_id = int(
+                snapshot_state.get("latest_event_id", 0) or 0
+            )
         else:
             self.state = _RState()
             self.screenwriter.beat_index = 0
+            self.active_interaction = None
             # 原地清空（保持对象身份）：工具闭包持有 memory 引用，换对象会让
             # view_my_memory 读到旧记忆
             self.characters.clear_memories()
-            cutoff = 0
+            memory_base_event_id = 0
 
         for ev in events:
             self._replay_event(ev)
         # 角色记忆由事件重建（M0：快照记忆只是兼容缓存）——与实时写入同构
         # （proposal→personal_log/rejected、character_speech→working_memory）
         self.characters.derive_memories(
-            ev for ev in events if int(ev.get("event_id", 0) or 0) > cutoff
+            ev
+            for ev in events
+            if int(ev.get("event_id", 0) or 0) > memory_base_event_id
         )
 
         # 使 state_machine / screenwriter 与重放结果一致
@@ -709,6 +715,17 @@ class GameRuntime:
                         stage,
                         res.rejections[0].suggestion if res.rejections else None,
                     )
+                    # 重提也是提议：不落事件的话，重放/回溯后这份记忆会消失，
+                    # `rejected` 去重语义也随之弱于回溯前。
+                    self._append(
+                        evt.EVENT_PROPOSAL,
+                        {
+                            "proposed_by": revised.proposed_by,
+                            "description": revised.description,
+                            "revised": True,
+                        },
+                        sink=sink,
+                    )
                     still_pending.append(revised)
                 elif res.verdict != "reject":
                     valid.append(prop)
@@ -760,7 +777,7 @@ class GameRuntime:
         finally:
             sink.end(stream_id)
 
-    # ===== 回溯（保留旧历史；分支语义由 #8 扩展）=====
+    # ===== 回溯（保留旧历史；新分支继承前缀、目标拍重演）=====
 
     async def rollback(self, *, command_id: str, target_event_id: int) -> StepResult:
         key = str(command_id)
@@ -796,12 +813,12 @@ class GameRuntime:
             )
 
         # 回溯点语义（回溯页口径：目标总是 narrative 事件）：回到该拍**开始前**。
-        # 截止事件 = 路径上 id ≤ target 的最后一个叙事事件；重放它之前的全部前缀
-        # （含此前各回合的 direction/proposal/发言），目标拍由随后的
+        # 目标所属拍 = 路径上 id ≤ target 的最后一个叙事事件；重放它之前的全部前缀
+        # （含此前各回合的 direction/proposal/发言），该拍由随后的
         # `_drive_until_interaction` 整拍重演。目标落在同回合后续事件上时同一规则
         # 仍回到该回合起点（防御：UI 只提供 narrative 目标）。
         # 目标之前没有任何叙事事件（如开局阶段事件）→ 不是合法回溯点，切分支前拒绝。
-        cutoff = max(
+        target_beat_id = max(
             (
                 e.event_id
                 for e in self.event_store.active_events()
@@ -810,12 +827,14 @@ class GameRuntime:
             ),
             default=0,
         )
-        if cutoff == 0:
+        if target_beat_id == 0:
             raise new(
                 codes.ENG_ROLLBACK_TARGET_MISSING,
                 extra={"event_id": target_event_id},
             )
-        prefix = [e for e in self.event_store.active_events() if e.event_id < cutoff]
+        prefix = [
+            e for e in self.event_store.active_events() if e.event_id < target_beat_id
+        ]
 
         # 分支继承终点 = 前缀最后一个事件（含）：新分支路径恰好等于「重放前缀 +
         # 重演事件」，不与重放双计。若 root 含目标拍，下一次从 DB 恢复时目标拍与

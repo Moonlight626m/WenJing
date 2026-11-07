@@ -178,6 +178,23 @@ async def test_stage1_to_stage3_full_flow(factory, actor):
     # （旧语义「保留当前阶段」会让状态停在 Stage3 而事件流退到 Stage2，两者不一致。）
     assert upd.state.stage.value == "stage2_reenacting"
     assert upd.state.active_interaction is not None
+    # M0 生产路径验收（design/play-through-redesign.md §C0）：从 DB 重建 runtime
+    # （生产每命令的真实路径）后，投影状态必须与回溯命令现场一致——旧实现只切
+    # 事件分支，记忆/游标/剧情不会回退。
+    from app.services.session_projection import project_state
+
+    runtime, store, _ = await app._restore_runtime(sid)
+    rebuilt = project_state(sid, store, runtime.export_state())
+    for key in (
+        "stage",
+        "beat_cursor",
+        "scene_key",
+        "plot_context",
+        "character_memories",
+    ):
+        assert getattr(rebuilt, key) == getattr(upd.state, key), (
+            f"重建 runtime 后 {key} 与回溯现场不一致"
+        )
     # 历史保留：事件总数只增不减（旧分支事件仍在库中）
     all_events = await _count_all_events(factory, sid)
     assert all_events >= before_events

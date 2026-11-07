@@ -264,8 +264,18 @@ scripts（content_version/format/replay_ready）
   `GameRuntime.rollback` 内完成（replay 到目标拍之前，代价 O(前缀事件)），
   Session 层无感；按目标选快照的优化留给 M8（快照带 `branch_id/sequence` 后做，
   届时 `_restore_runtime(until)` 才有可靠的定位依据）。
+- **回溯目标收窄**：目标解析为「路径上 id ≤ target 的最后一个叙事事件」，即落在回合
+  中段的目标回到该回合起点；首拍之前没有合法目标（`ENG_ROLLBACK_TARGET_MISSING`，
+  不切分支）。UI 只提供叙事节点，行为与回溯页口径一致。
+- **重放只喂活动分支**：`_restore_runtime` 原先在无快照/兜底时把
+  `loaded.events`（含被放弃分支）整段重放，游标/记忆会停在被放弃的回合上；
+  现统一取 `store.active_events()`（有快照时再按 `latest_event_id` 截断）。
+- **重提提议落事件**：`revise_proposal` 原先只写记忆不产事件，重放后这份记忆消失、
+  `rejected` 去重弱于回溯前；现在驳回重提同样写 `proposal {revised: true}`，
+  保证「重放记忆 == 实时记忆」。
 - 语义变更：回溯后**阶段随事件回退**（旧行为「保留当前阶段」会让状态停在 Stage3
-  而事件流退到 Stage2）；`test_full_flow.py` 的断言已按新语义更新。
+  而事件流退到 Stage2）；`test_full_flow.py` 的断言已按新语义更新，并在 PG 用例里
+  加了「重建 runtime 后状态 == 回溯现场」的生产路径断言。
 
 原始方案：- `SessionStore.restore(session_id, *, until: RestorePoint | None)`：按「目标之前最近快照」
   （`plot_context.latest_event_id <= target`）恢复后重放到目标。

@@ -19,6 +19,15 @@ def _active_branch_ids(rt) -> list[int]:
     return [e.branch_id for e in rt.event_store.active_events()]
 
 
+def _narrative_ids(rt, branch_id: int | None = None) -> list[int]:
+    events = (
+        rt.event_store.active_events()
+        if branch_id is None
+        else rt.event_store.events_in_branch(branch_id)
+    )
+    return [e.event_id for e in events if e.event_type == "plot_advancement"]
+
+
 # ===== 1. 快照 + 事件重放 =====
 
 
@@ -140,12 +149,11 @@ async def test_branch_history_is_auditable(make_runtime):
     # M0 语义：分支继承止于目标拍叙事事件**之前**——目标拍由新分支重演
     # （继承它会让 DB 恢复重放把同一拍计两次、beat 游标漂移一拍）。
     # 目标拍叙事事件本身不在新分支路径里，重演的那一拍是新事件。
-    target_beat = max(
-        e.event_id
-        for e in rt.event_store.events_in_branch(MAIN_BRANCH_ID)
-        if e.event_id <= target and e.event_type == "plot_advancement"
-    )
-    assert new_meta.root_event_id == target_beat - 1
+    target_beat = max(i for i in _narrative_ids(rt, MAIN_BRANCH_ID) if i <= target)
+    main_path = [e.event_id for e in rt.event_store.events_in_branch(MAIN_BRANCH_ID)]
+    beat_pos = main_path.index(target_beat)
+    assert beat_pos > 0
+    assert new_meta.root_event_id == main_path[beat_pos - 1]
     path = rt.event_store.branch_path(new_meta.branch_id)
     path_ids = [e.event_id for e in path]
     assert path_ids == sorted(path_ids), "分支历史必须有序"
@@ -181,6 +189,27 @@ async def test_rollback_target_not_on_active_path_rejected(make_runtime):
             payload={"target_event_id": stale_target},
         )
     assert excinfo.value.code == 2002  # ENG_ROLLBACK_TARGET_MISSING
+
+
+async def test_rollback_before_first_narrative_rejected(make_runtime):
+    """首拍之前没有叙事事件可回：目标解析为空 → 拒绝，且不切分支。"""
+    rt = make_runtime()
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "李白"})
+    select_role_id = next(
+        e.event_id
+        for e in rt.event_store.active_events()
+        if e.event_type == "system" and "selected_role" in e.payload
+    )
+    before_branch = rt.event_store.active_branch_id
+    with pytest.raises(WJError) as excinfo:
+        await rt.submit(
+            command_id="rb1",
+            kind="rollback_to_event",
+            payload={"target_event_id": select_role_id},
+        )
+    assert excinfo.value.code == 2002  # ENG_ROLLBACK_TARGET_MISSING
+    assert rt.event_store.active_branch_id == before_branch, "拒绝时不得切分支"
 
 
 # ===== 3. 端到端：回溯 → 重新选择 → 新分支状态一致且历史可审计 =====

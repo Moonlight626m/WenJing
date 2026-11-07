@@ -21,6 +21,14 @@ from __future__ import annotations
 from app.domain.game.game_runtime import GameRuntime
 
 
+def _narrative_ids(p: _RebuiltRuntime) -> list[int]:
+    return [
+        e.event_id
+        for e in p.store.active_events()
+        if e.event_type == "plot_advancement"
+    ]
+
+
 class _RebuiltRuntime:
     """生产路径模拟器：每条命令一个全新 runtime 实例，从「快照 + 事件」重建。
 
@@ -34,24 +42,21 @@ class _RebuiltRuntime:
         self.store = None
         self.snapshot: dict | None = None
 
-    def _build(self, *, keep_store: bool) -> GameRuntime:
-        rt = self._make()
-        if keep_store:
-            rt.event_store = self.store
-        return rt
+    def _build(self) -> GameRuntime:
+        return self._make(event_store=self.store)
 
     async def start(self):
-        rt = self._build(keep_store=False)
+        rt = self._build()
         result = await rt.start()
         self.store = rt.event_store
         self.snapshot = result.state
         return result
 
     async def submit(self, *, command_id: str, kind: str, payload: dict):
-        rt = self._build(keep_store=True)
+        rt = self._build()
         # 生产路径：快照基线 + 增量重放（快照是每命令落库的 export_state）
         base = self.snapshot
-        cutoff = int((base or {}).get("latest_event_id", 0) or 0) if base else 0
+        cutoff = int((base or {}).get("latest_event_id", 0) or 0)
         events = [e.to_dict() for e in self.store.active_events() if e.event_id > cutoff]
         rt.replay_from(base, events)
         result = await rt.submit(command_id=command_id, kind=kind, payload=payload)
@@ -61,18 +66,20 @@ class _RebuiltRuntime:
 
     def export_state(self) -> dict:
         """纯事件全量重建（快照缺失/损坏时的兜底路径）并导出。"""
-        rt = self._build(keep_store=True)
+        rt = self._build()
         rt.replay_from(None, [e.to_dict() for e in self.store.active_events()])
         return rt.export_state()
 
     def runtime_at_head(self) -> GameRuntime:
-        rt = self._build(keep_store=True)
+        rt = self._build()
         rt.replay_from(None, [e.to_dict() for e in self.store.active_events()])
         return rt
 
 
-async def _advance_one_beat(p: _RebuiltRuntime, n: int) -> None:
-    await p.submit(command_id=f"cmd-{n}", kind="choose_option", payload={"option_id": "0"})
+async def _advance_one_beat(p: _RebuiltRuntime, seq: int) -> None:
+    await p.submit(
+        command_id=f"cmd-{seq}", kind="choose_option", payload={"option_id": "0"}
+    )
 
 
 async def test_rollback_rewinds_everything_on_production_path(make_runtime):
@@ -89,11 +96,9 @@ async def test_rollback_rewinds_everything_on_production_path(make_runtime):
     assert state_later["plot_log"] > state_after_beat1["plot_log"]
 
     # 目标 = 第二拍的叙事事件（回到它开始前 = 第一拍后）
-    narratives = [
-        e for e in p.store.active_events() if e.event_type == "plot_advancement"
-    ]
+    narratives = _narrative_ids(p)
     assert len(narratives) >= 2
-    target = narratives[1].event_id
+    target = narratives[1]
 
     rolled = await p.submit(
         command_id="rb1",
@@ -131,10 +136,7 @@ async def test_rollback_rewinds_character_memories(make_runtime):
     memories = p.export_state()["character_memories"]
     assert any(mem["personal_log"] or mem["working_memory"] for mem in memories.values())
 
-    narratives = [
-        e for e in p.store.active_events() if e.event_type == "plot_advancement"
-    ]
-    target = narratives[1].event_id
+    target = _narrative_ids(p)[1]
     await p.submit(
         command_id="rb1",
         kind="rollback_to_event",
@@ -151,11 +153,12 @@ async def test_rollback_rewinds_character_memories(make_runtime):
         for entry in mem["personal_log"]
     }
     assert all("提议：" in entry for entry in proposals_in_log)
-    # 重演回合里每个 NPC 各重提一次（personal_log 只记提议，不含被回退回合的重复）
+    # 重演回合里每个 NPC 恰好重提一次：前缀一拍 + 重演一拍 = 2 条（确定性 LLM
+    # 每回合各提一次，且重演回合不重复计入被回退回合）
     for name, mem in rebuilt_memories.items():
         if name == "李白":
             continue
-        assert len([e for e in mem["personal_log"] if e.startswith("提议：")]) <= 2
+        assert len([e for e in mem["personal_log"] if e.startswith("提议：")]) == 2
 
 
 async def test_rollback_target_beat_is_replayed_not_inherited(make_runtime):
@@ -166,10 +169,7 @@ async def test_rollback_target_beat_is_replayed_not_inherited(make_runtime):
     await _advance_one_beat(p, 2)
     await _advance_one_beat(p, 3)
 
-    narratives = [
-        e for e in p.store.active_events() if e.event_type == "plot_advancement"
-    ]
-    target = narratives[1].event_id
+    target = _narrative_ids(p)[1]
     await p.submit(
         command_id="rb1",
         kind="rollback_to_event",
@@ -180,10 +180,7 @@ async def test_rollback_target_beat_is_replayed_not_inherited(make_runtime):
     path_ids = [e.event_id for e in p.store.active_events()]
     assert target not in path_ids
     # 但重演产生了新的叙事事件（同一拍内容）
-    new_narratives = [
-        e for e in p.store.active_events() if e.event_type == "plot_advancement"
-    ]
-    assert len(new_narratives) == 2, "重演一拍：前缀一拍 + 重演一拍"
+    assert len(_narrative_ids(p)) == 2, "重演一拍：前缀一拍 + 重演一拍"
 
 
 async def test_rollback_replay_equals_live_state(make_runtime):
@@ -194,10 +191,7 @@ async def test_rollback_replay_equals_live_state(make_runtime):
     await _advance_one_beat(p, 2)
     await _advance_one_beat(p, 3)
 
-    narratives = [
-        e for e in p.store.active_events() if e.event_type == "plot_advancement"
-    ]
-    target = narratives[1].event_id
+    target = _narrative_ids(p)[1]
     rolled = await p.submit(
         command_id="rb1",
         kind="rollback_to_event",
@@ -215,3 +209,29 @@ async def test_rollback_replay_equals_live_state(make_runtime):
         "character_memories",
     ):
         assert rebuilt[key] == live[key], f"全量重放后 {key} 与回溯命令现场不一致"
+
+
+async def test_revised_proposals_survive_replay(minimal_script, engine_config):
+    """被驳回后重提的提议也落事件：重放记忆与实时一致（否则兜底重建会丢记忆）。"""
+    from conftest import FakeLLMService
+
+    llm = FakeLLMService(verifier_output="reject")
+    rt = GameRuntime(
+        session_id="revise-session", script=minimal_script, llm=llm, config=engine_config
+    )
+    await rt.start()
+    await rt.submit(command_id="c1", kind="select_role", payload={"role_name": "李白"})
+
+    live = rt.export_state()["character_memories"]
+    assert any(mem["personal_log"] for mem in live.values())
+    assert [
+        e
+        for e in rt.event_store.active_events()
+        if e.event_type == "proposal" and e.payload.get("revised")
+    ], "重提必须落 proposal 事件（否则事件流不完整）"
+
+    rebuilt = GameRuntime(
+        session_id="revise-session", script=minimal_script, llm=llm, config=engine_config
+    )
+    rebuilt.replay_from(None, [e.to_dict() for e in rt.event_store.active_events()])
+    assert rebuilt.export_state()["character_memories"] == live

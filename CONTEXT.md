@@ -99,8 +99,12 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 ### 回溯（Rollback）与回溯页
 
 回溯是**保留历史的分支切换**：`rollback_to_event`（payload 为目标事件在活动分支上的
-`sequence`）让引擎新建活动分支并从目标节点继承前缀，旧事件仍可审计（`EventStore.rollback_to`）。
-可回溯的粒度是**叙事节拍**（回溯按 beat 游标恢复，台词/系统提示不是目标）。
+`sequence`）让引擎新建活动分支，继承前缀**止于目标所属叙事拍之前**——目标拍由新分支
+整拍重演（继承它会让恢复时的重放把同一拍计两次）；旧事件仍可审计
+（`EventStore.rollback_to`）。可回溯的目标是含有叙事拍的节点（台词/系统提示等中途事件
+按其所属拍处理；首拍之前没有合法目标）。回溯后阶段、beat 游标、剧情日志与角色记忆
+全部随事件回退——记忆由事件折叠重建（`CharacterAgentManager.derive_memories`），
+不受进程内状态影响。
 
 回溯页（`/game/rollback`）数据源是 `GET /api/sessions/{id}/timeline`，只投影
 `active_events()`——剧本里**尚未演到**的场景与被放弃分支的进度都不会出现；每一幕带

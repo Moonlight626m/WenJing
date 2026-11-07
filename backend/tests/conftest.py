@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from app.domain.game.engine_config import EngineConfig
+from app.domain.game.event import EventStore
 from app.domain.game.game_runtime import GameRuntime
 from app.domain.game.types import Beat, CharacterSetting, Scene, Script
 
@@ -130,9 +131,12 @@ class FakeLLMService:
     async def chat(self, messages, *, session_id: str = "", purpose=None):
         self.call_count += 1
         self.calls.append(messages)
-        user = messages[-1]["content"] if messages else ""
-        if "验证 Agent" in user or "你是验证" in user:
+        # 验证 Agent 的 system 提示不在最后一条里（system + user 两条），必须扫全文；
+        # 只看 messages[-1] 会让 `verifier_output` 形同虚设。
+        joined = "\n".join(str(m.get("content", "")) for m in messages)
+        if "验证 Agent" in joined or "你是验证" in joined:
             return self._verifier_output
+        user = messages[-1]["content"] if messages else ""
         if "react" in user:
             return self._react_text
         return self._proposal_text
@@ -186,12 +190,17 @@ def engine_config() -> EngineConfig:
 
 @pytest.fixture
 def make_runtime(minimal_script, fake_llm, engine_config):
-    def _make(session_id: str = "test-session") -> GameRuntime:
+    def _make(
+        session_id: str = "test-session",
+        *,
+        event_store: EventStore | None = None,
+    ) -> GameRuntime:
         return GameRuntime(
             session_id=session_id,
             script=minimal_script,
             llm=fake_llm,
             config=engine_config,
+            event_store=event_store,
         )
 
     return _make
