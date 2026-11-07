@@ -14,7 +14,7 @@ app/
 └── schemas/   # 消息协议 Pydantic schema
 ```
 
-> 现行决策见 `docs/adr/`；MVP 期设计见 `docs/archive/design/`（历史参考，非现行规格）。
+> 现行规格见根目录 `AGENTS.md` 与 `CONTEXT.md`。
 
 ## 开发命令
 

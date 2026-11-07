@@ -1,7 +1,6 @@
 # 文境 — 领域术语表（CONTEXT.md）
 
-> 单上下文布局（见 `docs/agents/domain.md`）。术语以本表为准；与 `docs/archive/design/`
-> 旧文档冲突时，以 ADR（`docs/adr/`）与本表为准。ADR-0002 引入的多用户术语见文末参考。
+> 单上下文布局（见 `docs/agents/domain.md`）。术语以本表为准；多用户相关术语见文末参考。
 
 ## 产品域
 
@@ -14,7 +13,7 @@
 ### 剧本（Script）
 
 **可复用的创作实体**，由课文素材经 Stage1 生成（`ScriptPackage`），落 `scripts` 表。
-不再绑定游玩会话（ADR-0002 移除 `session_id` 必填），可被多局「剧情世界」引用。
+不再绑定游玩会话（多用户化改造移除 `session_id` 必填），可被多局「剧情世界」引用。
 归属 `owner_user_id` / `org_id`，引用 `material_id`。
 生命周期状态：`draft`（草稿）→ `published`（已发布）→ `unpublished`（已下架）。
 **发布后核心剧本内容不可变**；修改 = 重新生成新剧本（改可见性除外）。
@@ -68,9 +67,9 @@
 （provider / model / tokens / purpose: stage1|agent|verify / org / user / script / session）。
 供 super_admin 运营后台按 org / 时间 / 用途聚合。
 媒体（图片/TTS/ASR）另记 `media_usage`（kind / provider / units / org / script / session），
-与 token 语义的 `llm_usage` 分离（见 ADR-0005）。
+与 token 语义的 `llm_usage` 分离。
 
-## 媒体与场景表现（ADR-0005）
+## 媒体与场景表现
 
 ### 资产（Asset）
 
@@ -105,9 +104,9 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 
 回溯页（`/game/rollback`）数据源是 `GET /api/sessions/{id}/timeline`，只投影
 `active_events()`——剧本里**尚未演到**的场景与被放弃分支的进度都不会出现；每一幕带
-场景图与一句节拍描述（ADR-0005 §9：事件溯源是资产与进度的唯一权威）。
+场景图与一句节拍描述（事件溯源是资产与进度的唯一权威）。
 
 ### 流式（Streaming）
 
 运行期角色发言采用真 token 流式以降低 TTFT；`stream_*` 为 WS 瞬态消息，事件溯源只存
-最终完整文本，断线用 `resync` 补全（ADR-0005 §10）。
+最终完整文本，断线用 `resync` 补全。

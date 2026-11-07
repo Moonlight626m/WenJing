@@ -81,6 +81,10 @@ class ArkImageGen(OpenAIImageGen):
         )
         # AI 生成内容标识合规默认：不显式关闭就保持官方水印。
         self._watermark = watermark
+        # `sequential_image_generation` 只被部分 seedream 档支持（组图参数），
+        # flash 单图档直接 400 InvalidParameter——只在该模型上报错时才免发，
+        # 初始发一次探明，此后记住（一次 400 换后续所有请求干净）。
+        self._send_sequential = True
 
     def _provider_size(
         self, width: int, height: int, *, kind: AssetKind | None = None
@@ -98,14 +102,20 @@ class ArkImageGen(OpenAIImageGen):
         return f"{lift[0]}x{lift[1]}"
 
     def _build_payload(self, prompt: str, size: str) -> dict[str, object]:
-        """Ark 请求体：无 `n` 字段（官方 SDK 类型无此参数）；显式控水印。"""
+        """Ark 请求体：无 `n` 字段（官方 SDK 类型无此参数）；显式控水印。
+
+        `sequential_image_generation`（组图开关）不是所有 seedream 档都收：
+        flash 单图档 400 InvalidParameter。首次命中该错误就记下来不再发
+        （并发下可能多张各探一次，各自收敛到同一结论，无害）。
+        """
         payload: dict[str, object] = {
             "model": self._model,
             "prompt": prompt,
             "size": size,
             "watermark": self._watermark,
-            "sequential_image_generation": "disabled",
         }
+        if self._send_sequential:
+            payload["sequential_image_generation"] = "disabled"
         if self._response_format:
             payload["response_format"] = self._response_format
         return payload
@@ -157,11 +167,23 @@ class ArkImageGen(OpenAIImageGen):
                     width=actual_w or w,
                     height=actual_h or h,
                 )
+            # 组图参数不被当前模型支持：去掉该参数立即重试本条请求。
+            # 该兜底在 4xx 语义化映射**之前**——InvalidParameter 是「参数
+            # 与模型不配」，去掉参数后本条请求仍有希望成功。
+            reason_now = _status_reason(resp) or f"http {resp.status_code}"
+            if (
+                self._send_sequential
+                and "sequential_image_generation" in reason_now
+            ):
+                self._send_sequential = False
+                payload.pop("sequential_image_generation", None)
+                logger.info(
+                    "ark_sequential_param_dropped model=%s", self._model
+                )
+                continue
             if resp.status_code not in (408, 429) and resp.status_code < 500:
                 self._raise_non_retryable(resp)
-            last_reason = (
-                _status_reason(resp) or f"http {resp.status_code}"
-            )
+            last_reason = reason_now
             if attempt < _MAX_RETRIES:
                 delay = min(2.0 * (2**attempt), 8.0)  # 指数退避 2s/4s，封顶 8s
                 retry_after = resp.headers.get("retry-after")

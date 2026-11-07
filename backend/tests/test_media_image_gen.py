@@ -482,6 +482,46 @@ async def test_ark_retries_5xx_then_recovers():
     assert image.content_type == "image/png"
 
 
+async def test_ark_drops_sequential_param_on_invalid_parameter():
+    """flash 单图档不收 sequential_image_generation：首次 400 后免发并重试。
+
+    真实跑《背影》验证过：该参数带上即 InvalidParameter，19 张全部失败
+    （降级正确但全程无图）。修复 = 命中即去掉参数重试本条请求。
+    """
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        if "sequential_image_generation" in payload:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "code": "InvalidParameter",
+                        "message": "the parameter `sequential_image_generation`"
+                        " is not supported by the current model",
+                    }
+                },
+            )
+        return httpx.Response(
+            200, json={"data": [{"b64_json": base64.b64encode(_PNG).decode()}]}
+        )
+
+    adapter = _ark(handler)
+    image = await adapter.generate(prompt="黄昏", kind=AssetKind.BACKGROUND)
+    assert len(calls) == 2
+    assert "sequential_image_generation" in calls[0]
+    assert "sequential_image_generation" not in calls[1]
+    assert image.content_type == "image/png"
+
+    # 同一实例的后续请求直接免发（不再多付一次 400）
+    calls.clear()
+    await adapter.generate(prompt="黄昏", kind=AssetKind.AVATAR)
+    assert len(calls) == 1
+    assert "sequential_image_generation" not in calls[0]
+
+
 async def test_ark_settings_build_via_factory():
     settings = Settings(
         media_image_gen_provider="ark",

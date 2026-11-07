@@ -132,8 +132,15 @@ def _branch_prompt(
     spec: BranchSpec,
     characters: list[CharacterProfile],
     bundle: PromptBundle | None = None,
+    *,
+    audit_feedback: str | None = None,
 ) -> str:
-    """分支补写 prompt（write_script v3 第二遍调用）：单分支规格 → BranchScene。"""
+    """分支补写 prompt（write_script v3 第二遍调用）：单分支规格 → BranchScene。
+
+    `audit_feedback`：doubter 总审打回意见（重写轮才携带）。主干的每轮重写
+    都带意见，分支第二遍同样必须带上——否则打回只改主干、分支按原姿势
+    重编，doubter 反复拒绝同一处直到预算耗尽（真实跑《背影》验证过）。
+    """
     b = bundle if bundle is not None else default_bundle(
         SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION, write_script.DEFAULTS
     )
@@ -149,13 +156,21 @@ def _branch_prompt(
         "【硬性约束】",
         "- branch_id 只输出规格给定值；beat 的 is_key_event 一律 false、evidence_refs 空数组；",
         "- 分支不得包含关键事件、不得改变课文结局；末拍要能自然接回主线下一场；",
+        "- 若分支规格的 beat_outline 复述了主线关键事件或结局性画面"
+        "（如结局场景的人物/动作），**以本红线为准裁剪**：跳过该拍或改写为"
+        "分支内人物的所见/所感，不改写主线事件本身；",
         "- 人物名只能取自下方【登场人物】与规格的参与者名单。",
+        "- visual_notes 以主场景锚点为基线：原文未交代的字段一律写空串，",
+        "  严禁为画面丰富补编时代年号/天气/时段/地名（参考主场景里“原文未交代”的标记）。",
         "",
         b.text("checklist"),
         "",
         "【所在主场景】",
         f"scene_id={scene.scene_id}：{scene.title}",
         "主场景节拍：" + "；".join(beat.description for beat in scene.beats),
+        "主场景视觉锚点：" + (
+            scene.visual_notes.model_dump_json() if scene.visual_notes is not None else "（无）"
+        ),
         "",
         "【分支规格】",
         spec.model_dump_json(exclude={"schema_version"}, by_alias=True),
@@ -164,6 +179,12 @@ def _branch_prompt(
     ]
     for c in characters:
         lines.append(f"- {c.name}：{c.public_background}")
+    if audit_feedback:
+        lines.append("")
+        lines.append(
+            "【doubter 总审打回意见（必须逐条修正，尤其涉及分支的部分）】\n"
+            + audit_feedback
+        )
     return "\n".join(lines)
 
 
@@ -1513,10 +1534,14 @@ class WorkflowNodes:
         if not work:
             return package
         written: dict[tuple[int, str], BranchScene] = {}
+        # 重写轮的打回意见同样要约束分支补写：主干按意见修正，分支若不带
+        # 意见会按原姿势重编同类问题（visual_notes 编造/事件顺序越界），
+        # doubter 反复拒绝同一处直到预算耗尽。
+        feedback = state.get("audit_feedback")
         for scene_no, spec in work:
             try:
                 branch = await self._write_one_branch(
-                    scene_by_id[scene_no], spec, state
+                    scene_by_id[scene_no], spec, state, audit_feedback=feedback
                 )
                 if branch.branch_id == spec.branch_id:
                     written[(scene_no, spec.branch_id)] = branch
@@ -1549,11 +1574,16 @@ class WorkflowNodes:
         return package.model_copy(update={"scenes": new_scenes})
 
     async def _write_one_branch(
-        self, scene: Scene, spec: BranchSpec, state: WorkflowState
+        self, scene: Scene, spec: BranchSpec, state: WorkflowState,
+        *,
+        audit_feedback: str | None = None,
     ) -> BranchScene:
         """单个分支规格 → BranchScene；解析重试沿用 _chat_parsed 机制。"""
         characters = state.get("merged_profiles") or []
-        prompt = _branch_prompt(scene, spec, characters, await self._bundle(write_script))
+        prompt = _branch_prompt(
+            scene, spec, characters, await self._bundle(write_script),
+            audit_feedback=audit_feedback,
+        )
 
         def _parse(raw: str) -> BranchScene:
             data = json.loads(extract_json(raw))

@@ -2,8 +2,7 @@
 
 面向学生的语文课文情景演绎 multi-agent 角色扮演平台。基于课文由编剧 Agent 生成剧本，玩家与角色 Agents 共同演绎剧情，还原课文后进入同人续写。
 
-> 现行决策见 [`docs/adr/`](docs/adr/)（ADR），文档地图见 [`docs/README.md`](docs/README.md)；
-> MVP 期设计文档已归档到 [`docs/archive/design/`](docs/archive/design/)（历史参考，非现行规格）。
+> 术语见 [`CONTEXT.md`](CONTEXT.md)（现行规格），文档地图见 [`docs/README.md`](docs/README.md)。
 
 ## 技术栈
 
@@ -19,9 +18,8 @@
 ```
 backend/            # FastAPI 服务（app: composition/controllers/services/domain/infrastructure/contracts）
 frontend/           # Next.js 应用（app/components/stores/lib）
-docs/               # ADR、专题设计、调研、agent 配置（见 docs/README.md）
-docs/archive/design/# 已归档的 MVP 期系统设计（历史参考，非现行规格）
-CONTEXT.md          # 领域术语表
+docs/               # 文档：规格说明、调研快照、agent 配置（见 docs/README.md）
+CONTEXT.md          # 领域术语表（现行规格）
 AGENTS.md           # 仓库协作与命令约定
 ```
 
@@ -77,7 +75,7 @@ make migrate     # 运行 Alembic 迁移，初始化数据库表
 make seed        # 写入默认 org「文境演示学校」与 super_admin/教师/学生测试账号
 ```
 
-> 账号基线为破坏式重建（ADR-0002）：旧匿名数据不再兼容。若本地库是旧 schema，
+> 账号基线为破坏式重建（多用户化改造，历史决策见 git 记录）：旧匿名数据不再兼容。若本地库是旧 schema,
 > 用 `make db-reset`（删卷 → 起库 → 迁移 → seed，**数据不可恢复**）。
 > seed 账号：`admin` / `teacher` / `student`，
 > 密码默认 `123456`（可用 `WENJING_SEED_PASSWORD` 覆盖）。
@@ -163,10 +161,10 @@ docker compose up -d --build  # 构建并启动，backend 入口自动执行 Ale
 
 核心 MVP 已完成（规划 #2–#13）：契约、诊断基建、持久化、GameRuntime command/step、
 导入/体裁/证据、安全开放网络搜索、Schema-first Stage1、fake-backed 竖切、真实端到端集成、
-前端全流程与生产化加固。多用户化（ADR-0002 / #16）已完成（#17–#26）：账号后端、
+前端全流程与生产化加固。多用户化（#16）已完成（#17–#26）：账号后端、
 鉴权隔离、教师创作 API、学生游玩 API、用量计量、账号/教师/学生端 UI、运营后台 UI、
-文档收尾。剧本生成 workflow（ADR-0003，#27–#36）与**场景视觉化与多媒体**
-（ADR-0005，epic #38 / 子任务 #39–#64）已推进到 M6：媒体端口与对象存储、开放版权
+文档收尾。剧本生成 workflow（#27–#36）与**场景视觉化与多媒体**
+（epic #38 / 子任务 #39–#64）已推进到 M6：媒体端口与对象存储、开放版权
 检索 + 审核 + 回退生成、配图审批、事件为权威的资产继承、运行期配图与崩溃恢复、
 真 token 流式字幕（WS 瞬态 + 事件只存最终文本）、TTS 配音与 ASR 语音输入均已落地。
 

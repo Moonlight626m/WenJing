@@ -1,7 +1,7 @@
 # 提示词目录（prompts/）
 
 > 本目录是**提示词工程的知识库**：课文场景划分、角色设定 agent 的提示词研究笔记，\
-> 以及文生图（`ImageGenPort`，ADR-0005 §6）所需的图像 prompt 模板。
+> 以及文生图（`ImageGenPort`）所需的图像 prompt 模板。
 > **代码内单源不受影响**：LLM agent 提示词的事实源仍是 `backend/app/domain/prompts/`
 > （经 `prompts` 表 DB 覆盖层生效），本目录的 LLM 提示词文件是**研究/版本草稿**，
 > 迁回代码前不构成规格。

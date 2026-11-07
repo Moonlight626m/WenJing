@@ -1,7 +1,7 @@
 # 场景划分提示词精读（divide_events）
 
 > 研究对象：`backend/app/domain/prompts/divide_events.py`（VERSION v2）。
-> 该节点在剧本生成 workflow（ADR-0003）中位于 `verify_materials` 之后、
+> 该节点在剧本生成 workflow 中位于 `verify_materials` 之后、
 > `design_characters` 之前，输入是 `TextAnalysis`（人物列表 + 关键事件）与
 > `dossier`（素材集结论），输出场景/节拍草稿供 `write_script` 遵守。
 

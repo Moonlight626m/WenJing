@@ -1,6 +1,6 @@
 # 文生图 prompt 体系（imagegen/）
 
-> 目标：为 `ImageGenPort`（ADR-0005 §6）准备结构化、可版本化的图像 prompt 模板，
+> 目标：为 `ImageGenPort` 准备结构化、可版本化的图像 prompt 模板，
 > 替代现行「代码内即时拼装」的裸规则。本目录文件目前是**草稿**，接入即把模板
 > 转为代码常量并让 `build_generation_prompt` 消费结构化字段。
 

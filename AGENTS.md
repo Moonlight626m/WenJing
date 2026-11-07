@@ -1,6 +1,6 @@
 # Wenjing — Agent Instructions
 
-语文课文情景演绎 multi-agent 平台（FastAPI + Next.js），ADR 驱动。**规格优先级**：`docs/adr/`（最新）> GitHub Issue/spec > `docs/archive/design/`（MVP 期归档背景，**不是现行规格**）。文档地图见 `docs/README.md`，术语以 `CONTEXT.md` 为准——动手前先读相关 ADR。
+语文课文情景演绎 multi-agent 平台（FastAPI + Next.js）。**规格优先级**：GitHub Issue/spec > 代码与 `CONTEXT.md`（术语）。文档地图见 `docs/README.md`，术语以 `CONTEXT.md` 为准。历史上的架构决策（多用户化、LangGraph 生成 workflow、运行期 Agent 工具化、媒体/流式、组合根）已落地为代码，细节可查 git 历史（曾存于 `docs/adr/`，2026-11 删除）。
 
 ## 实现工作流
 
@@ -49,7 +49,7 @@
 
 运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
 
-### 运行期流式与音频（ADR-0005 §10/§11）
+### 运行期流式与音频
 
 事件流里**只有最终完整文本**；`stream_*` 与 `audio_*` 是 WS 瞬态消息，没有 `seq`、不进 outbox，断线重连靠 `resync` 补完整消息而非逐字回放。
 
@@ -73,9 +73,9 @@ LLM token 流 ──StreamTee──┬─ StreamChannel → JSON 帧 `stream_*`�
 
 **ASR 只转文本、不落音频**：`POST /api/sessions/{id}/transcribe` 在请求内用完即弃，不写对象存储、不进事件流，日志里只有字节数；识别结果由前端当普通 `free_input` 提交——命令端点仍是唯一游戏输入入口，语音不开旁路。
 
-ADR-0005 §10/§11 末尾带 2026-10-01 的「实现注记」，记着决策落地时澄清的地方（与正文措辞有出入时先读注记）。
+流式与音频决策的「实现注记」（2026-10-01）记着决策落地时澄清的地方，相关措辞与正文有出入时以注记为准（原始 ADR 已删除，见 git 历史）。
 
-### 剧本生成 workflow（ADR-0003）
+### 剧本生成 workflow
 
 ```
 collect_materials → verify_materials → [materials_gate] → divide_events
@@ -126,4 +126,4 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 
 - Issue tracker：GitHub Issues，用 `gh` CLI。见 `docs/agents/issue-tracker.md`。
 - Triage labels：`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`。见 `docs/agents/triage-labels.md`。
-- Domain docs：单上下文布局，`CONTEXT.md` 在仓库根、ADR 在 `docs/adr/`。见 `docs/agents/domain.md`。
+- Domain docs：单上下文布局，`CONTEXT.md` 在仓库根。见 `docs/agents/domain.md`。
