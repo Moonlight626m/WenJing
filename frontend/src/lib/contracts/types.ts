@@ -31,7 +31,8 @@ export type CommandKind =
   | "enter_stage3"
   | "confirm_ending"
   | "exit_game"
-  | "intervene";
+  | "intervene"
+  | "switch_scene";
 
 export const ALLOWED_COMMANDS: Record<StageValue, readonly CommandKind[]> = {
   init: [],
@@ -46,6 +47,7 @@ export const ALLOWED_COMMANDS: Record<StageValue, readonly CommandKind[]> = {
     "rollback_to_event",
     "confirm_ending",
     "exit_game",
+    "switch_scene",
   ],
   ended: [],
 };
@@ -736,6 +738,7 @@ export type SelectRolePayload = { role_name: string };
 export type ChooseOptionPayload = { option_id: string };
 export type FreeInputPayload = { text: string };
 export type IntervenePayload = { text: string };
+export type SwitchScenePayload = { scene_key: string };
 export type RollbackToEventPayload = { target_sequence: number };
 export type EmptyPayload = Record<string, never>;
 
@@ -744,6 +747,7 @@ export interface CommandPayloadByKind {
   choose_option: ChooseOptionPayload;
   free_input: FreeInputPayload;
   intervene: IntervenePayload;
+  switch_scene: SwitchScenePayload;
   rollback_to_event: RollbackToEventPayload;
   enter_stage3: EmptyPayload;
   confirm_ending: EmptyPayload;
@@ -772,12 +776,22 @@ export interface OptionItem {
   proposed_by?: string | null;
 }
 
+/** Stage3 换景选项（桌面地点/场景）；`is_current` 为玩家所在处。 */
+export interface SceneOptionItem {
+  scene_key: string;
+  title: string;
+  participants: string[];
+  is_current: boolean;
+}
+
 export interface ActiveInteraction {
   interaction_id: string;
   mode: InteractionMode;
   prompt: string;
   options: OptionItem[];
   hint: string;
+  /** Stage3 换景列表（M5）：旧剧本/Stage2 为空 */
+  scene_options: SceneOptionItem[];
 }
 
 export interface Stage3Goal {

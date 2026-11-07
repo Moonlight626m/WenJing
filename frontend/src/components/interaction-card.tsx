@@ -186,6 +186,7 @@ function InteractionBody({
   const busy = pending !== null || connection !== "connected";
   const canChoose = allowedCommands.includes("choose_option");
   const canFree = allowedCommands.includes("free_input");
+  const canSwitch = allowedCommands.includes("switch_scene");
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
 
@@ -263,6 +264,46 @@ function InteractionBody({
           )}
         </div>
       </div>
+
+      {/* Stage3 换景（M5）：已解锁地点的前进式切换；当前地点置灰 */}
+      {canSwitch && interaction.scene_options.length > 0 && (
+        <div className="mt-3">
+          <p className="font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+            前往
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {interaction.scene_options.map((scene) => (
+              <button
+                key={scene.scene_key}
+                type="button"
+                disabled={busy || scene.is_current}
+                onClick={() =>
+                  submit(
+                    "switch_scene",
+                    { scene_key: scene.scene_key },
+                    `前往 ${scene.title}`,
+                  )
+                }
+                title={
+                  scene.participants.length > 0
+                    ? `在场：${scene.participants.join("、")}`
+                    : undefined
+                }
+                className={[
+                  "rounded-full border px-3 py-1 font-serif text-sm transition-colors",
+                  scene.is_current
+                    ? "border-glass-edge/60 text-ink-faint"
+                    : "border-glass-edge text-ink hover:border-glow-jade/60 hover:text-glow-jade",
+                  busy && !scene.is_current ? "opacity-40" : "opacity-100",
+                ].join(" ")}
+              >
+                {scene.title}
+                {scene.is_current && <span className="ml-1">（当前）</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 抉择按整行排：选项往往是整句中文，左对齐的条目比一排药丸好读 */}
       {canChoose && options.length > 0 && (

@@ -28,16 +28,19 @@ from app.contracts.runtime import (
     OptionItem,
     RuntimeState,
     RuntimeUpdate,
+    SceneOptionItem,
     Stage3Goal,
 )
 from app.contracts.script import AssetRef
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.event import (
+    EVENT_EXPLORATION_SETTLE,
     EVENT_REPLAY_CHOICE,
     EVENT_REPLAY_ENDING_REACHED,
     EVENT_REPLAY_NARRATION,
     EVENT_REPLAY_NODE_ENTERED,
     EVENT_ROLLBACK,
+    EVENT_SCENE_SWITCH,
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
 )
@@ -88,7 +91,10 @@ def _flatten_memory(snapshot: dict[str, Any]) -> list[str]:
 
 
 def project_interaction(
-    ix: dict[str, Any] | None, *, latest_event_id: int
+    ix: dict[str, Any] | None,
+    *,
+    latest_event_id: int,
+    scene_options: list[dict[str, Any]] | None = None,
 ) -> ActiveInteraction | None:
     """引擎交互点 payload → 契约 ActiveInteraction。"""
     if not ix:
@@ -106,6 +112,7 @@ def project_interaction(
             for o in ix.get("options", [])
         ],
         hint=str(ix.get("hint", "") or ""),
+        scene_options=[SceneOptionItem(**item) for item in (scene_options or [])],
     )
 
 
@@ -149,6 +156,7 @@ def project_state(
         active_interaction=project_interaction(
             export.get("active_interaction"),
             latest_event_id=int(export.get("latest_event_id", 0)),
+            scene_options=export.get("scene_options"),
         ),
         stage3_goals=project_goals(export.get("stage3_goals") or []),
     )
@@ -233,6 +241,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     EVENT_REPLAY_NARRATION: "narrative",
     EVENT_REPLAY_CHOICE: "system",
     EVENT_REPLAY_ENDING_REACHED: "system",
+    # Stage3 确定性探索（M5）：结算摘要进叙事流，换景是系统提示
+    EVENT_EXPLORATION_SETTLE: "narrative",
+    EVENT_SCENE_SWITCH: "system",
     # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
     "stage3_goals_set": "system",
     "stage3_goal_achieved": "system",
@@ -258,6 +269,10 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return f"你选择了：{p.get('label', '')}"
     if event_type == EVENT_REPLAY_ENDING_REACHED:
         return f"到达结局：{p.get('title', '')}"
+    if event_type == EVENT_SCENE_SWITCH:
+        present = "、".join(str(n) for n in p.get("participants", []) if n)
+        suffix = f"（在场：{present}）" if present else ""
+        return f"你来到了「{p.get('scene_title', '')}」{suffix}"
     if event_type == EVENT_STAGE3_GOALS_SET:
         descs = [str(g.get("description", "")) for g in p.get("goals", []) if isinstance(g, dict)]
         return "续写目标：" + "；".join(descs)
@@ -376,7 +391,12 @@ def project_timeline(
     plot_asset: AssetRef | None = None
     for seq, ev in enumerate(path):
         p = ev.payload or {}
-        if ev.event_type in ("plot_advancement", "replay_node_entered"):
+        if ev.event_type in (
+            "plot_advancement",
+            EVENT_REPLAY_NODE_ENTERED,
+            EVENT_EXPLORATION_SETTLE,
+            EVENT_SCENE_SWITCH,
+        ):
             next_key = p.get("scene_key")
             if next_key and next_key != scene_key:
                 # 换场必须清掉上一场的图：新场还没有图时（current_asset 为空），

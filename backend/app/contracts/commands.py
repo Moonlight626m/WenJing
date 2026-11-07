@@ -47,6 +47,12 @@ class RollbackToEventPayload(CommandPayload):
     target_sequence: int = Field(ge=0)
 
 
+class SwitchScenePayload(CommandPayload):
+    """换景目标：交互点 `scene_options` 里的 `scene_key`（如 `loc:harbor`）。"""
+
+    scene_key: str = Field(min_length=1)
+
+
 class EmptyPayload(CommandPayload):
     """无参命令（enter_stage3 / confirm_ending / exit_game）。"""
 
@@ -56,6 +62,7 @@ _PAYLOAD_BY_KIND: dict[CommandKind, type[CommandPayload]] = {
     CommandKind.CHOOSE_OPTION: ChooseOptionPayload,
     CommandKind.FREE_INPUT: FreeInputPayload,
     CommandKind.INTERVENE: IntervenePayload,
+    CommandKind.SWITCH_SCENE: SwitchScenePayload,
     CommandKind.ROLLBACK_TO_EVENT: RollbackToEventPayload,
     CommandKind.ENTER_STAGE3: EmptyPayload,
     CommandKind.CONFIRM_ENDING: EmptyPayload,

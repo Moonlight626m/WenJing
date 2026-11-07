@@ -106,6 +106,17 @@ Stage2 是**纯 IO 的珊瑚形还原**（设计见 `docs/design/play-through-re
 无 `options/dialogue` 的旧剧本走运行期 agent 的线性路径。**还原期禁用自由输入**
 （`free_input` 只属于续写阶段）。
 
+### 探索（Exploration / Stage3 地图）
+
+续写阶段的地点抽象（设计 §B3）：`ExplorationMap` 给出起点与地点表
+（`ExplorationLocation`：`location_key`/`title`/`participants`/`visual_summary`/
+`scheduled_facts`），运行时用 `loc:{location_key}` 作场景键。**在场是唯一事实源**：
+地点的 `participants` ∩ 已创建角色 = 此刻在场的人，只有他们提议/回应。
+每轮玩家动作先做**确定性结算**（`exploration_settle`：地点化摘要 + 处境，零 LLM），
+再由在场 NPC 反应；**换景**用 `switch_scene` 命令前进式切换
+（`scene_switch` 事件，不建事件分支，交互点带 `scene_options`）。旧剧本没有地图，
+维持原 3 轮 agent 行为。解锁新场景 / 未连通地点随 M6 的 Producer 落地。
+
 ### 参演与工作人员（Cast / Staff）
 
 Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC）与人类玩家，

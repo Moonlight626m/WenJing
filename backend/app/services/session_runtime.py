@@ -840,6 +840,8 @@ class SessionApplication:
             speech_sink=speech_sink,
             # 珊瑚图剧本走确定性播放；旧剧本（无 options/endings）为 None = agent 路径
             replay_graph=build_replay_graph(package),
+            # Stage3 探索地图（M5）：旧剧本无 exploration = 原 3 轮行为
+            exploration_map=package.exploration,
         )
         return runtime, store
 

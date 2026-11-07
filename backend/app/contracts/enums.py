@@ -40,6 +40,8 @@ class CommandKind(StrEnum):
     EXIT_GAME = "exit_game"
     # Stage3 玩家干涉世界（建场景/拉入角色）：自然语言 → ProducerAgent 解析。
     INTERVENE = "intervene"
+    # Stage3 换景：在已解锁的地点之间前进式切换（不回溯）。
+    SWITCH_SCENE = "switch_scene"
 
 
 # 每阶段允许的命令（allowed_commands 约束，runtime 校验依据）
@@ -66,6 +68,8 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
             CommandKind.ROLLBACK_TO_EVENT,
             CommandKind.CONFIRM_ENDING,
             CommandKind.EXIT_GAME,
+            # 换景（M5）：只切到已存在的地点的；解锁新场景走 INTERVENE（M6）
+            CommandKind.SWITCH_SCENE,
             # INTERVENE 契约已就位，M6 接入 ProducerAgent 处理器后才加进这里
             # （提前允许会落到引擎的非法命令兜底）
         }

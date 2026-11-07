@@ -1,6 +1,6 @@
 # 游玩链路说明（现行）
 
-> 状态：M0–M4 已落地（2026-11-07）。上游设计见
+> 状态：M0–M5 已落地（2026-11-07）。上游设计见
 > `docs/design/play-through-redesign.md`（v5，下称「设计」）。
 > 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M5–M8）与排查时查阅；
 > 任务与进度仍以 GitHub Issues 为追踪源。
@@ -26,9 +26,10 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 ```
 
 当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2）、回溯修复（M0）、
-Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线），以及 Stage2 运行期
-（M4：珊瑚图纯 IO 播放，旧剧本走原 agent 路径）。
-Stage3 探索/工作人员（M5/M6）、离线 tick（M7）、快照新列与回溯页（M8）仍按设计
+Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线）、Stage2 运行期
+（M4：珊瑚图纯 IO 播放，旧剧本走原 agent 路径），以及 Stage3 确定性探索骨架
+（M5：地点/在场/结算/换景）。
+Stage3 导演与制作人（M6）、离线 tick（M7）、快照新列与回溯页（M8）仍按设计
 推进——它们依赖的契约与事件名已经就位，见第 4 节。
 
 ---
@@ -114,8 +115,8 @@ divide_events(v4 大纲：beats + branches + options + endings)
   （教师手改包）时收敛到主线结局并打警告，不无限播放。
 - 回溯的「拍」变成 `replay_node_entered`：回退后整节点重演（新分支继承前缀）。
 - 到达结局：`beat_cursor` 对齐 `total_beats`，交互复用 0=续写 / 1=结束。
-- **Stage2 不允许自由输入**（见 6.1）；Stage3 仍是旧的 3 轮 agent 路径，
-  探索/换景/工作人员在 M5/M6。
+- **Stage2 不允许自由输入**（见 6.1）；Stage3 探索骨架（M5）见第 7 节，
+  导演/制作人（M6）与离线 tick（M7）尚未落地。
 
 运行期不推 `beat_cursor`；场景键/标题/背景由播放位置解析（`export_state`）。
 旧剧本（无 options/endings）不派生图，运行时保持原 agent 线性路径。
@@ -126,8 +127,9 @@ divide_events(v4 大纲：beats + branches + options + endings)
 
 ### 4.1 版本与同步
 
-当前 `CONTRACTS_SCHEMA_VERSION = 3.1.0`（`backend/app/contracts/base.py`）。
-3.0.0 是 Stage2 删除自由输入的 breaking；3.1.0 是 M3 给生成草稿加可选字段（minor）。
+当前 `CONTRACTS_SCHEMA_VERSION = 3.2.0`（`backend/app/contracts/base.py`）。
+3.0.0 是 Stage2 删除自由输入的 breaking；3.1.0 是 M3 给生成草稿加可选字段；
+3.2.0 是 M5 的 `switch_scene` 命令与交互点 `scene_options`（都是加法，minor）。
 
 改契约必须同步四处，缺一处都不会报错：
 
@@ -144,13 +146,14 @@ divide_events(v4 大纲：beats + branches + options + endings)
 ### 4.2 命令
 
 `CommandKind`：`select_role / choose_option / free_input / rollback_to_event /
-enter_stage3 / confirm_ending / exit_game / intervene`。
+enter_stage3 / confirm_ending / exit_game / intervene / switch_scene`。
 
 - **Stage2 允许**：`choose_option / rollback_to_event / exit_game`（无 free_input）。
 - **Stage3 允许**：`choose_option / free_input / rollback_to_event /
-  confirm_ending / exit_game`；`intervene` 契约已声明，但**尚未**进允许列表——
-  M6 接上 ProducerAgent 处理器时再加，否则会落到引擎的非法命令兜底。
-- `IntervenePayload` 与 `FreeInputPayload` 共用 `TextPayload`（1–2000 字）。
+  confirm_ending / exit_game / switch_scene`；`intervene` 契约已声明，但**尚未**
+  进允许列表——M6 接上 ProducerAgent 处理器时再加，否则会落到引擎的非法命令兜底。
+- `IntervenePayload` 与 `FreeInputPayload` 共用 `TextPayload`（1–2000 字）；
+  `SwitchScenePayload.scene_key` 是交互点 `scene_options[].scene_key`（`loc:{key}`）。
 
 ### 4.3 领域事件登记表
 
@@ -247,14 +250,30 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 
 ---
 
-## 7. Stage3 设计要点（M5–M7，尚未落地）
+## 7. Stage3：探索已落地（M5），导演/制作人未落地（M6）
 
-只列后续实现必须遵守、容易踩的点（细节见设计 §B）：
+### 7.1 已落地：确定性探索骨架
+
+- `domain/game/exploration.py`：`LocationRegistry`（地点表，场景键 `loc:{key}`）、
+  `derive_exploration`（从 `scene_switch` / `exploration_settle` 折叠当前地点与
+  已访问）、`ExplorationDirector.settle`（地点化摘要，确定性）、`present_names`。
+- **在场是唯一事实源**：`present_names = 地点 participants ∩ 已创建角色`；
+  Stage3 的提议与反应都只取在场者（旧剧本无地图 = 全部参演，行为不变）。
+- 每轮玩家动作先写 `exploration_settle {location_key, scene_key, scene_title,
+  summary, conflict, context, present}`：摘要进 `plot_log`、处境进 `direction`；
+  Stage3 回合头不再 `advance_plot/confirm_direction`。
+- 换景：`switch_scene` 命令（payload `scene_key`）→ 校验地点存在且非当前 →
+  写 `scene_switch {from, to, scene_key, scene_title, participants}` → 目标在场者
+  反应；换景是前进式，不建事件分支。交互点带 `scene_options`（当前地点置灰）。
+- 回溯的「拍」在 Stage3 探索下是 `exploration_settle`：回退后地点进度与
+  `scene_key` 一起回退（`_sync_exploration_scene_key` 兜底纠正）。
+- M5 的地图是**平铺地点表**（无地点间连边）：地图里的地点都可前往；
+  「解锁新场景 / 未连通地点不可见」随 M6 的 Producer 落地。
+
+### 7.2 未落地（M6/M7）的实现约束
 
 - **参演 vs 工作人员**：NPC 与玩家出场、写台词、进 `speech_log`；Director（选项）、
   Producer（干涉解析）、Painter、Verifier、Screenwriter 不出场、不写角色台词。
-- **在场是唯一事实源**：`participants` 成员集合 + `scene_switch` 事件；
-  运行时按事件重建动态场景/角色，因此建场景/拉人/新增角色都可回溯。
 - **干涉全部事件化**：`scene_created` / `character_created` / `pull_in_character`；
   回溯到创建之前 = 该场景/角色从未存在。预算：新场景 ≤3/会话、新角色 ≤2/会话、
   每轮 ≤1 次干涉。
@@ -274,6 +293,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 事件常量 | `backend/app/domain/game/event.py` |
 | 运行时（重放/回溯/推进） | `backend/app/domain/game/game_runtime.py` |
 | 珊瑚图派生与纯 IO 播放 | `backend/app/domain/game/replay.py` |
+| Stage3 探索（地点/在场/结算/换景） | `backend/app/domain/game/exploration.py` |
 | 角色记忆折叠 | `backend/app/domain/agents/character.py` |
 | 恢复与命令事务 | `backend/app/services/session_runtime.py`、`session_store.py` |
 | 投影（事件→消息/状态） | `backend/app/services/session_projection.py` |
@@ -282,6 +302,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 前端契约镜像 | `frontend/src/lib/contracts/types.ts` |
 | 回溯验收测试 | `backend/tests/test_rollback_memory.py`、`test_branch_replay.py`、`test_full_flow.py` |
 | 珊瑚图播放测试 | `backend/tests/test_replay_director.py` |
+| 探索/换景测试 | `backend/tests/test_exploration.py` |
 
 ## 9. 验证口径
 

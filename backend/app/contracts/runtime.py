@@ -27,6 +27,19 @@ class OptionItem(VersionedContract):
     proposed_by: str | None = None
 
 
+class SceneOptionItem(VersionedContract):
+    """Stage3 换景选项：交互点可前往的已存在场景/地点。
+
+    `scene_key` 与事件、配图槽位同拼法（`loc:{location_key}`）；`is_current`
+    标记玩家所在处（前端置灰，不重复切换）。
+    """
+
+    scene_key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    participants: list[str] = Field(default_factory=list)
+    is_current: bool = False
+
+
 class ActiveInteraction(VersionedContract):
     """当前等待玩家响应的交互点（稳定交互点语义）。"""
 
@@ -35,6 +48,8 @@ class ActiveInteraction(VersionedContract):
     prompt: str
     options: list[OptionItem] = Field(default_factory=list)
     hint: str = ""
+    # Stage3 换景列表（M5）：旧剧本/Stage2 为空
+    scene_options: list[SceneOptionItem] = Field(default_factory=list)
 
     def allowed_command_kinds(self) -> list[CommandKind]:
         """按模式推导当前允许的输入命令。"""

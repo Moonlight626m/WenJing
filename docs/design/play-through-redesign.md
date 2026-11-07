@@ -231,6 +231,21 @@ scripts（content_version/format/replay_ready）
   `advance_plot/confirm_direction/broadcast`。
 - 旧剧本 `exploration=None` → 现有 3 轮行为不变。
 
+**实现注记（2026-11-07，M5 已落地）**：
+- `domain/game/exploration.py`：地点表（`loc:{key}` 场景键）、`derive_exploration`
+  从 `scene_switch`/`exploration_settle` 折叠当前地点与已访问、`ExplorationDirector.settle`
+  产出地点化摘要、`present_names = 地点 participants ∩ 已创建角色`。
+- 运行时：Stage3 每轮动作先写 `exploration_settle`（摘要进 `plot_log`、处境进
+  `direction`），再只让在场 NPC 回应；回合头不再 `advance_plot/confirm_direction`。
+- 换景：新命令 `switch_scene {scene_key}`（契约加法，**3.2.0**）；写
+  `scene_switch {from, to, scene_key, scene_title, participants}`，换景是前进式、
+  不建事件分支；交互点带 `scene_options`（当前地点置灰），前端在交互卡里渲染「前往」。
+- **与草案的差异**：M5 的地图是**平铺地点表**，没有地点间连边——地图里的地点
+  都可前往；「解锁新场景 / 未连通地点不可见」与固定项「解锁新场景」随 M6 的
+  Producer 落地。换景的「人物到场衔接」文案也归 M6（当前由目标在场者直接反应）。
+- Stage3 的目标判定（goals）沿用原逻辑；回溯的「拍」在探索下是
+  `exploration_settle`，回退后地点与 `scene_key` 一起回退。
+
 ### B4. 场景切换/选择（新增）
 
 - 交互点携带 `scene_options`：
@@ -482,6 +497,9 @@ M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询
 `free_input` 属于 `docs/contract-change-process.md` 定义的**收紧校验
 （breaking）**，按流程升 **3.0.0**（旧客户端在 Stage2 提交自由输入会被
 拒绝）。新增字段/枚举本身是 minor，breaking 的只有这一条。
+
+**契约版本注记（M5）**：新增 `switch_scene` 命令与交互点 `scene_options` 都是
+加法（旧客户端不认识就不发/不显示），按流程升 **3.2.0**；3.1.0 是 M3 的草稿字段。
 
 ---
 

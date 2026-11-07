@@ -338,6 +338,7 @@ export const INTERACTION: ActiveInteraction = {
     { option_id: "o2", label: "说起自己在城里见过的热闹", proposed_by: "母亲" },
   ],
   hint: "选一项，或自己写下要说的话。",
+  scene_options: [],
 };
 
 /** 续写目标：一条已达成、两条未达成，摆出追踪卡与结局卡的进度。 */

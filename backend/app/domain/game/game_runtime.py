@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.contracts.enums import ALLOWED_COMMANDS, StageValue
-from app.contracts.script import AssetRef
+from app.contracts.script import AssetRef, ExplorationMap
 from app.domain.agents.character import CharacterAgentManager
 from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
 from app.domain.agents.verifier import VerifierAgent
@@ -30,6 +30,11 @@ from app.domain.game import event as evt
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
+from app.domain.game.exploration import (
+    ExplorationDirector,
+    ExplorationProgress,
+    build_location_registry,
+)
 from app.domain.game.goals import GoalState, derive_goals
 from app.domain.game.media import scene_visual_description
 from app.domain.game.replay import ReplayCue, ReplayDirector, ReplayGraph, ReplayState
@@ -123,6 +128,7 @@ class GameRuntime:
         on_flush: Callable[[], Awaitable[None]] | None = None,
         speech_sink: SpeechStreamSink | None = None,
         replay_graph: ReplayGraph | None = None,
+        exploration_map: ExplorationMap | None = None,
     ) -> None:
         self.session_id = session_id
         self.script = script
@@ -150,6 +156,12 @@ class GameRuntime:
         # 珊瑚图纯 IO 播放（M4）：有图就走确定性路径，不建 agent、不调 LLM
         self.replay = ReplayDirector(replay_graph) if replay_graph is not None else None
         self._replay_state: ReplayState | None = None
+        # Stage3 确定性探索（M5）：无地图（旧剧本）时保持原 3 轮行为
+        registry = build_location_registry(exploration_map)
+        self.exploration = ExplorationDirector(registry) if registry is not None else None
+        self._exploration_progress: ExplorationProgress | None = (
+            self.exploration.start_progress() if self.exploration is not None else None
+        )
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
@@ -223,6 +235,12 @@ class GameRuntime:
         if self.replay is not None and self._replay_state is not None:
             # 珊瑚图播放不推 beat 游标（§A4）：标题从播放位置解析
             scene_title = self.replay.title_of(self._replay_state) or scene_title
+        if self.exploration is not None and self._exploration_progress is not None:
+            location = self.exploration.registry.get(
+                self._exploration_progress.current_location_key
+            )
+            if location is not None:
+                scene_title = location.title
         return {
             "stage": s.stage,
             "phase": s.phase,
@@ -239,6 +257,8 @@ class GameRuntime:
             "latest_event_id": self.event_store.latest_event_id,
             "active_branch_id": self.event_store.active_branch_id,
             "active_interaction": _interaction_payload(self.active_interaction),
+            # Stage3 换景列表（M5）：只在探索地图存在且已进入续写时给出
+            "scene_options": self._scene_options(),
             # 当前背景稳定引用在导出时解析（#53）：快照/投影都从这里拿
             "current_asset": (
                 current_asset.model_dump(mode="json") if current_asset is not None else None
@@ -334,6 +354,14 @@ class GameRuntime:
         if self.replay is not None:
             # 播放位置从**活动分支**事件折叠（快照不含它；只折重放切片会漏前缀）
             self._replay_state = self.replay.resolve(self.event_store.active_events())
+        if self.exploration is not None:
+            self._exploration_progress = self.exploration.progress(
+                self.event_store.active_events()
+            )
+            if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+                # 回溯到第一次 settle 之前时，前缀里没有 settle/switch，
+                # scene_key 还停在 Stage2 的场景上；按地点进度纠正。
+                self._sync_exploration_scene_key()
 
     def _replay_event(self, ev: dict) -> None:
         etype = ev.get("event_type") or ev.get("type")
@@ -394,6 +422,55 @@ class GameRuntime:
             self.characters.broadcast_plot_context(summary)
             # 游标对齐末尾：无快照恢复时 Stage3 也从结局之后续写，而非从头复读
             self.state.beat_cursor = total_beats(self.script)
+        elif etype == evt.EVENT_EXPLORATION_SETTLE:
+            self._apply_settle_event(payload)
+        elif etype == evt.EVENT_SCENE_SWITCH:
+            self._apply_switch_event(payload)
+
+    def _apply_settle_event(self, payload: dict) -> None:
+        """`exploration_settle` 折叠：地点进度 + 场景键 + 剧情/处境（幂等）。"""
+        key = payload.get("location_key")
+        if isinstance(key, str):
+            self._move_exploration(key)
+        scene_key = payload.get("scene_key")
+        if isinstance(scene_key, str):
+            self.state.scene_key = scene_key
+        summary = str(payload.get("summary", ""))
+        if summary:
+            self.state.plot_log.append(summary)
+            self.characters.broadcast_plot_context(summary)
+        conflict = str(payload.get("conflict", "") or "")
+        context = str(payload.get("context", "") or "")
+        if conflict or context:
+            direction = {"conflict": conflict, "context": context}
+            self.state.direction = direction
+            self.characters.broadcast_direction(direction)
+
+    def _apply_switch_event(self, payload: dict) -> None:
+        """`scene_switch` 折叠：换景是前进式，不回溯事件分支。"""
+        key = payload.get("to")
+        if not isinstance(key, str):
+            return
+        self._move_exploration(key)
+        scene_key = payload.get("scene_key")
+        if isinstance(scene_key, str):
+            self.state.scene_key = scene_key
+        title = str(payload.get("scene_title") or key)
+        summary = f"来到「{title}」"
+        self.state.plot_log.append(summary)
+        self.characters.broadcast_plot_context(summary)
+
+    def _move_exploration(self, location_key: str) -> None:
+        if self.exploration is None or self._exploration_progress is None:
+            return
+        if self.exploration.registry.get(location_key) is None:
+            return
+        visited = self._exploration_progress.visited
+        if location_key not in visited:
+            visited = (*visited, location_key)
+        self._exploration_progress = ExplorationProgress(
+            current_location_key=location_key, visited=visited
+        )
 
     # ===== 生命周期 =====
 
@@ -459,6 +536,8 @@ class GameRuntime:
             case "rollback_to_event":
                 target = int(payload.get("target_event_id", 0))
                 return await self.rollback(command_id=cid, target_event_id=target)
+            case "switch_scene":
+                return await self._on_switch_scene(cid, payload)
             case "enter_stage3":
                 return await self._on_enter_stage3()
             case "confirm_ending":
@@ -580,7 +659,12 @@ class GameRuntime:
             self._transition_to(StageValue.STAGE2_COMPLETE.value)
             return await self._result_at_point(new_events=[])
 
-        reactions = await self._collect_reactions(action, current_stage)
+        # Stage3 探索：先确定性结算（地点化摘要/处境），再只让**在场** NPC 回应
+        present_names: list[str] | None = None
+        if current_stage == "stage3" and self.exploration is not None:
+            present_names = list(self._exploration_present())
+            self._settle_stage3(action_text)
+        reactions = await self._collect_reactions(action, current_stage, names=present_names)
         await self._flush_events()
 
         if self.state.stage == StageValue.STAGE3_EXTENDING.value:
@@ -692,6 +776,111 @@ class GameRuntime:
         self.state_machine.enter_phase(InteractionPhase.PLAYER_TURN)
         return await self._result_at_point(new_events=sink or [])
 
+    # ===== Stage3 确定性探索（M5；design play-through-redesign §B3）=====
+
+    def _exploration_present(self) -> tuple[str, ...]:
+        """在场角色 = 当前地点 participants ∩ 已创建角色（无地图 = 全部参演）。"""
+        active = tuple(self.characters.active_names())
+        if self.exploration is None or self._exploration_progress is None:
+            return active
+        return self.exploration.present_names(self._exploration_progress, active)
+
+    def _scene_options(self) -> list[dict]:
+        """交互点的换景列表（只在探索地图 + 续写阶段给出）。"""
+        if (
+            self.exploration is None
+            or self._exploration_progress is None
+            or self.state.stage != StageValue.STAGE3_EXTENDING.value
+        ):
+            return []
+        return self.exploration.scene_options(self._exploration_progress)
+
+    def _settle_stage3(self, action_text: str) -> None:
+        """把本轮动作结算成地点化摘要（`exploration_settle`），并同步 `_RState`。"""
+        if self.exploration is None or self._exploration_progress is None:
+            return
+        settlement = self.exploration.settle(
+            self._exploration_progress, action_text, self._exploration_present()
+        )
+        if settlement is None:
+            return
+        payload = {
+            "location_key": settlement.location_key,
+            "scene_key": settlement.scene_key,
+            "scene_title": settlement.title,
+            "summary": settlement.summary,
+            "conflict": settlement.conflict,
+            "context": settlement.context,
+            "present": list(settlement.present),
+        }
+        self._append(evt.EVENT_EXPLORATION_SETTLE, payload)
+        self._apply_settle_event(payload)
+
+    def _sync_exploration_scene_key(self) -> None:
+        """让 `scene_key` 与探索进度一致（重放后/回合头兜底）。"""
+        if self.exploration is None or self._exploration_progress is None:
+            return
+        location = self.exploration.registry.get(
+            self._exploration_progress.current_location_key
+        )
+        if location is not None:
+            self.state.scene_key = location.scene_key
+
+    async def _stage3_exploration_head(self, stage: str, sink: list[dict]) -> None:
+        """探索回合头部：不再 advance_plot/confirm_direction。
+
+        剧情摘要与处境由 `exploration_settle` 产出（`_on_input` 已写入）；
+        这里只收集**在场** NPC 的提议并送审，供交互点使用。
+        """
+        self._sync_exploration_scene_key()
+        self.state.phase = InteractionPhase.NARRATIVE.value
+        proposals = await self._collect_proposals(
+            stage, sink, names=list(self._exploration_present())
+        )
+        self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
+
+    async def _on_switch_scene(self, cid: str, payload: dict) -> StepResult:
+        """换景（前进式）：校验目标 → 写 `scene_switch` → 目标在场 NPC 反应。"""
+        if self.exploration is None or self._exploration_progress is None:
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID, extra={"reason": "no_exploration"}
+            )
+        if self.active_interaction is None:
+            raise new(codes.ENG_NOT_RUNNING, extra={"reason": "no_active_interaction"})
+        target_key = str(payload.get("scene_key") or "")
+        location = self.exploration.registry.by_scene_key(target_key)
+        if location is None:
+            raise new(codes.ENG_PLAYER_ACTION_INVALID, extra={"scene_key": target_key})
+        previous = self._exploration_progress.current_location_key
+        if location.location_key == previous:
+            raise new(codes.ENG_PLAYER_ACTION_INVALID, extra={"reason": "already_there"})
+
+        self._append(
+            evt.EVENT_PLAYER_ACTION, {"type": "switch_scene", "text": location.title}
+        )
+        self.active_interaction = None
+        switch_payload = {
+            "from": previous,
+            "to": location.location_key,
+            "scene_key": location.scene_key,
+            "scene_title": location.title,
+            "participants": list(location.participants),
+        }
+        self._append(evt.EVENT_SCENE_SWITCH, switch_payload)
+        self._apply_switch_event(switch_payload)
+        # 到场反应：只有新地点的在场 NPC 说话（不广播给全场）
+        action = PlayerAction(
+            type="switch_scene", text=f"你走进了「{location.title}」"
+        )
+        await self._collect_reactions(
+            action, "stage3", names=list(self._exploration_present())
+        )
+        await self._flush_events()
+        self._log.info(
+            "scene_switch", extra={"from": previous, "to": location.location_key}
+        )
+        return await self._drive_until_interaction()
+
     # ===== 推进引擎：跑到下一个稳定交互点 =====
 
     async def _drive_until_interaction(
@@ -722,6 +911,9 @@ class GameRuntime:
             return await self._result_at_point(new_events=sink)
 
     async def _run_cycle_head(self, stage: str, sink: list[dict]) -> None:
+        if stage == "stage3" and self.exploration is not None:
+            await self._stage3_exploration_head(stage, sink)
+            return
         self.state.phase = InteractionPhase.NARRATIVE.value
         adv = self.screenwriter.advance_plot(self.script, stage)
         # 进度游标显式同步：state 是权威，screenwriter 游标是派生
@@ -790,15 +982,17 @@ class GameRuntime:
             )
         )
 
-    async def _collect_proposals(self, stage: str, sink: list[dict]) -> list[Proposal]:
-        names = self.characters.active_names()
+    async def _collect_proposals(
+        self, stage: str, sink: list[dict], *, names: list[str] | None = None
+    ) -> list[Proposal]:
+        active = names if names is not None else self.characters.active_names()
 
         async def _one(name: str) -> Proposal:
             return await self.characters.get(name).propose_action(stage)
 
-        results = await asyncio.gather(*[_one(n) for n in names], return_exceptions=True)
+        results = await asyncio.gather(*[_one(n) for n in active], return_exceptions=True)
         proposals: list[Proposal] = []
-        for name, res in zip(names, results):
+        for name, res in zip(active, results):
             if isinstance(res, BaseException):
                 self._log.error(
                     "propose_failed",
@@ -863,16 +1057,20 @@ class GameRuntime:
         return valid
 
     async def _collect_reactions(
-        self, action: PlayerAction, stage: str
+        self, action: PlayerAction, stage: str, *, names: list[str] | None = None
     ) -> list[tuple[str, str]]:
-        """各角色并发回应；返回成功的 (角色名, 回应) 供续写目标判定。"""
-        names = self.characters.active_names()
+        """各角色并发回应；返回成功的 (角色名, 回应) 供续写目标判定。
+
+        `names` 缺省 = 全部参演角色；Stage3 探索模式传**在场**角色（地点
+        participants ∩ 已创建角色），不在场的人不会凭空回应。
+        """
+        active = names if names is not None else self.characters.active_names()
         results = await asyncio.gather(
-            *[self._react(name, action, stage) for name in names],
+            *[self._react(name, action, stage) for name in active],
             return_exceptions=True,
         )
         reactions: list[tuple[str, str]] = []
-        for name, res in zip(names, results):
+        for name, res in zip(active, results):
             if isinstance(res, BaseException):
                 self._log.error(
                     "react_failed",
@@ -945,13 +1143,18 @@ class GameRuntime:
         # （含此前各回合的 direction/proposal/发言），该拍由随后的
         # `_drive_until_interaction` 整拍重演。目标落在同回合后续事件上时同一规则
         # 仍回到该回合起点（防御：UI 只提供 narrative 目标）。
-        # 珊瑚图播放的「拍」是 `replay_node_entered`（M4），旧路径是 plot_advancement。
+        # 珊瑚图播放的「拍」是 `replay_node_entered`（M4），Stage3 探索是
+        # `exploration_settle`（M5），旧路径是 plot_advancement。
         # 目标之前没有任何叙事事件（如开局阶段事件）→ 不是合法回溯点，切分支前拒绝。
-        beat_type = (
-            evt.EVENT_REPLAY_NODE_ENTERED
-            if self.replay is not None
-            else evt.EVENT_PLOT_ADVANCEMENT
-        )
+        if (
+            self.state.stage == StageValue.STAGE3_EXTENDING.value
+            and self.exploration is not None
+        ):
+            beat_type = evt.EVENT_EXPLORATION_SETTLE
+        elif self.replay is not None:
+            beat_type = evt.EVENT_REPLAY_NODE_ENTERED
+        else:
+            beat_type = evt.EVENT_PLOT_ADVANCEMENT
         beat_events = [
             e
             for e in self.event_store.active_events()
