@@ -202,3 +202,130 @@ def test_graph_requires_canonical_ending():
     )
     issues = validate_replay(_pkg([scene], []))
     assert any("requires endings" in i for i in issues)
+
+
+def test_linear_scene_continues_mainline():
+    """没有 interaction_point 的场景不产 options，必须隐式续接下一场。"""
+    scenes = [
+        _scene(1),
+        _scene(
+            2,
+            options=[
+                {"option_id": "o1", "label": "收束", "kind": "canonical", "ending_id": "e1"}
+            ],
+        ),
+    ]
+    assert validate_replay(_pkg(scenes, _CANONICAL)) == []
+
+
+def test_empty_target_option_continues_mainline():
+    """全空目标的 canonical 选项 = 续接主干下一场（非最后一场也合法）。"""
+    scenes = [
+        _scene(
+            1,
+            options=[{"option_id": "o1", "label": "继续", "kind": "canonical"}],
+        ),
+        _scene(
+            2,
+            options=[
+                {"option_id": "o2", "label": "收束", "kind": "canonical", "ending_id": "e1"}
+            ],
+        ),
+    ]
+    assert validate_replay(_pkg(scenes, _CANONICAL)) == []
+
+
+def test_terminal_branch_with_alternate_ending_does_not_advance_mainline():
+    """指向 alternate 终局的分支是终点，不能当成主干推进继续往下走。"""
+    branch = {
+        "branch_id": "b1",
+        "label": "分支",
+        "title": "分支",
+        "beats": [{"beat_id": 1, "description": "d"}],
+        "ending_id": "e2",
+    }
+    scenes = [
+        _scene(
+            1,
+            options=[
+                {"option_id": "o1", "label": "分支", "kind": "canonical", "branch_id": "b1"}
+            ],
+            branches=[branch],
+        ),
+        _scene(
+            2,
+            options=[
+                {"option_id": "o2", "label": "收束", "kind": "canonical", "ending_id": "e1"}
+            ],
+        ),
+    ]
+    endings = _CANONICAL + [
+        {"ending_id": "e2", "title": "歧路", "kind": "alternate", "description": ""}
+    ]
+    issues = validate_replay(_pkg(scenes, endings))
+    assert any("canonical path does not reach" in i for i in issues)
+
+
+def test_cycle_through_linear_scene_rejected():
+    """线性场景的隐式主干边也要参与环检测：3 的 continue 回边 → 1 → 2 → 3。"""
+    branch = {
+        "branch_id": "b1",
+        "label": "分支",
+        "title": "分支",
+        "beats": [{"beat_id": 1, "description": "d"}],
+        "return_mode": "continue",
+        "return_scene_id": 1,
+    }
+    scenes = [
+        _scene(1),
+        _scene(2),
+        _scene(
+            3,
+            options=[
+                {"option_id": "o1", "label": "回一", "kind": "canonical", "branch_id": "b1"}
+            ],
+            branches=[branch],
+        ),
+    ]
+    issues = validate_replay(_pkg(scenes, _CANONICAL))
+    assert any("implicit cycle" in i for i in issues)
+
+
+def test_canonical_jump_skipping_key_event_rejected():
+    key = {"beat_id": 2, "description": "关键事件", "is_key_event": True}
+    scenes = [
+        _scene(
+            1,
+            options=[
+                {"option_id": "o1", "label": "跳三", "kind": "canonical", "target_scene_id": 3}
+            ],
+        ),
+        _scene(2, beats=[key]),
+        _scene(
+            3,
+            options=[
+                {"option_id": "o2", "label": "收束", "kind": "canonical", "ending_id": "e1"}
+            ],
+        ),
+    ]
+    issues = validate_replay(_pkg(scenes, _CANONICAL))
+    assert any("skips key event scene 2" in i for i in issues)
+
+
+def test_canonical_backward_jump_rejected():
+    scenes = [
+        _scene(
+            1,
+            options=[
+                {"option_id": "o1", "label": "去二", "kind": "canonical", "target_scene_id": 2}
+            ],
+        ),
+        _scene(
+            2,
+            options=[
+                {"option_id": "o2", "label": "回一", "kind": "canonical", "target_scene_id": 1}
+            ],
+        ),
+    ]
+    issues = validate_replay(_pkg(scenes, _CANONICAL))
+    assert any("jumps backward" in i for i in issues)

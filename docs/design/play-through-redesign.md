@@ -105,19 +105,37 @@ scripts（content_version/format/replay_ready）
   选项目标（分支/场景序号/结局）与分支返回引用。
 - `write_script` 经 `_backfill_scenes` 把 `options`/`endings` 回填进剧本包；
   分支的返回方式以划分草稿为准（不由分支文本决定）。
-- 新节点 `write_dialogue`：逐场景一次 LLM 调用，填 `Beat.dialogue` 与
+- 新节点 `write_dialogue`（prompt v2）：逐场景一次 LLM 调用，填 `Beat.dialogue` 与
   `BranchScene.dialogue`（`SceneDialogueDraft`）；单场景失败降级为空台词。
   注册在 graph / runner `_NODE_MAP`·`_NODE_ORDER` / `GenerationNode` /
-  `types.ts` / `labels.ts` / prompts defaults 六处。
+  `types.ts` / `labels.ts` / prompts defaults+seed 六处。
+  v2 起**可扮演角色也写台词**（v1 让模型回避玩家角色，但玩家开局才选角色、
+  其余可扮演角色由系统扮演，回避会让他们整场沉默）；播放期只跳过玩家所选
+  角色的台词。
 - `validate_replay` 三处接线：`final_audit`（先于 doubter，失败直接打回重写）、
   `final_gate`（教师编辑/配图后重跑 `validate_all`，不合法即报错不落库）、
   `_persist_package`（落库前再跑一次）。
+- `validate_replay` 的走向判定按珊瑚语义：没有 `options` 的场景是线性播放、
+  隐式续接主干下一场；「全空目标」的选项同样续接主干；带 `ending_id` 的分支
+  是终点，即使 `return_mode=continue` 也不把主线往下带。环检测把线性场景的
+  隐式主干边算进去；关键事件顺序靠「canonical 只能向前跳、不得跳过含关键事件的
+  场景」保证（场景顺序即原文顺序）。
 - 契约版本：M3 新增的草稿字段（`SceneDraft.options` / `EventDivisionDraft.endings` /
   `BranchSpec` 返回字段）是可选增量，按流程升 **3.1.0**（四处同步）。
-- **与草案的差异**：§A2 的「解析成 `script_*` 关系表 + `replay_ready`」
-  仍未落地（与 M2 的延期一致）；剧本继续整包存 `scripts.script_data`，
-  表解析与 `replay_ready` 列留给表仓储里程碑。台词按**场景**一次生成
-  （含该场景全部分支），不是每分支单独调用——成本与前后连贯性的权衡。
+- **与草案的差异**：
+  - §A2 的「解析成 `script_*` 关系表 + `replay_ready`」仍未落地（M2 的注记曾把它
+    排给 M3，实际后移；见 §D2 说明）。剧本继续整包存 `scripts.script_data`，
+    M4 从整包派生珊瑚图。
+  - `write_script` 仍是 **v3**（草案写 v4）：主干文本的写法没有变化，改的是上游
+    划分草稿与新增的台词节点；空升版本只会让已 seed 的库重新落一份同内容默认。
+  - 分支台词 ≤4 句/分支，**对所有分支**生效（草案只写干扰分支）：防包体膨胀，
+    且与 `write_dialogue` 的输出约束一致。
+  - 台词按**场景**一次生成（含该场景全部分支），不是每分支单独调用——成本与
+    前后连贯性的权衡。
+  - 选项直指 `ending_id`（不经分支）时没有独立场景，故没有配图槽位；M4 用当前
+    场景背景兜底。`design_assets` 本身未改。
+  - `_persist_package` 只跑 `validate_replay`：`validate_all` 需要原文
+    `TextAnalysis`，而落库入口拿不到；闸门路径在 `final_gate` 已经跑过全量校验。
 
 ### A4. 运行时：纯 IO（`domain/game/replay.py`）
 
@@ -401,10 +419,11 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
   §D2/§D1 的下列内容随各自里程碑以 0002+ 增量迁移落地，**不是**被丢弃：
   `script_characters/script_scenes/script_scene_options/script_branches/
   script_endings/script_locations` 与 `scripts` 的 `content_version/format/
-  replay_ready`（M3）、`session_character_states`、`session_ticks`（M5/M7）、
-  `snapshots` 与 `sessions` 的新列（M8）、`assets.subject_type/subject_key`（M3
-  资产归属细化）、以及「`ScriptRepository` 只读写表」。等表仓储（M3/M4）接管
-  读写后再删 `script_data`——否则 M2→M3 之间应用无法启动，违背「每个里程碑可运行」。
+  replay_ready`（**表仓储里程碑**——草案曾写 M3，M3 实际只做生成期，未拆表）、
+  `session_character_states`、`session_ticks`（M5/M7）、`snapshots` 与
+  `sessions` 的新列（M8）、`assets.subject_type/subject_key`（资产归属细化，
+  未排期）、以及「`ScriptRepository` 只读写表」。M4 运行期先继续从
+  `scripts.script_data` 整包派生珊瑚图；等表仓储接管读写后再删 `script_data`。
 
 ---
 

@@ -80,7 +80,7 @@ LLM token 流 ──StreamTee──┬─ StreamChannel → JSON 帧 `stream_*`�
 ```
 collect_materials → verify_materials → [materials_gate] → divide_events
   → design_characters ⇉ Send 扇出 N → design_one_character×N → merge_characters(join)
-  → [pre_write_gate] → write_script → final_audit → design_assets → [final_gate] → END
+  → [pre_write_gate] → write_script → write_dialogue → final_audit → design_assets → [final_gate] → END
   （reject 按重试预算打回；耗尽 → fail）
 ```
 

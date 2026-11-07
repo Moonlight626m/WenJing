@@ -71,7 +71,7 @@ from app.domain.prompts import (
 from app.domain.prompts.bundle import PromptBundle, default_bundle
 from app.domain.prompts.defaults import STAGE as SCRIPT_GEN_STAGE
 from app.domain.prompts.manager import PromptManager
-from app.infrastructure.errx import codes, new
+from app.infrastructure.errx import codes, exc_reason, new
 
 logger = logging.getLogger("wenjing.generation.workflow")
 
@@ -1345,6 +1345,27 @@ class WorkflowNodes:
         """机器校验：关键 beat 的 key_event_order 必须指向真实关键事件。"""
         known_orders = {ke.order for ke in analysis.key_events}
         known_names = {c.name for c in analysis.characters}
+        # 珊瑚图（divide_events v4）：结局表是场景无关的，先校验一次引用完整性。
+        scene_count = len(division.scenes)
+        ending_ids = [e.ending_id for e in division.endings]
+        if len(set(ending_ids)) != len(ending_ids):
+            raise new(
+                codes.LLM_OUTPUT_PARSE_FAILED,
+                extra={"target": "EventDivisionDraft", "reason": "ending_id 重复"},
+            )
+        if len(ending_ids) > 4:
+            raise new(
+                codes.LLM_OUTPUT_PARSE_FAILED,
+                extra={"target": "EventDivisionDraft", "reason": "结局超过 4 个"},
+            )
+        if ending_ids and not any(e.kind == "canonical" for e in division.endings):
+            raise new(
+                codes.LLM_OUTPUT_PARSE_FAILED,
+                extra={
+                    "target": "EventDivisionDraft",
+                    "reason": "结局表缺少 canonical 结局",
+                },
+            )
         for scene in division.scenes:
             ghosts = [p for p in scene.participants if p not in known_names]
             if ghosts:
@@ -1411,29 +1432,7 @@ class WorkflowNodes:
                             "reason": f"分支 {spec.branch_id} beat_outline 为空",
                         },
                     )
-            # 珊瑚图（divide_events v4）：选项目标与结局表必须是可解析的引用。
-            scene_count = len(division.scenes)
-            ending_ids = [e.ending_id for e in division.endings]
-            if len(set(ending_ids)) != len(ending_ids):
-                raise new(
-                    codes.LLM_OUTPUT_PARSE_FAILED,
-                    extra={"target": "EventDivisionDraft", "reason": "ending_id 重复"},
-                )
-            if len(ending_ids) > 4:
-                raise new(
-                    codes.LLM_OUTPUT_PARSE_FAILED,
-                    extra={"target": "EventDivisionDraft", "reason": "结局超过 4 个"},
-                )
-            if ending_ids and not any(
-                e.kind == "canonical" for e in division.endings
-            ):
-                raise new(
-                    codes.LLM_OUTPUT_PARSE_FAILED,
-                    extra={
-                        "target": "EventDivisionDraft",
-                        "reason": "结局表缺少 canonical 结局",
-                    },
-                )
+            # 珊瑚图（divide_events v4）：选项目标必须是可解析的引用。
             branch_ids = {b.branch_id for b in scene.branches}
             for option in scene.options:
                 if option.ending_id is not None and option.ending_id not in ending_ids:
@@ -1687,7 +1686,7 @@ class WorkflowNodes:
                     update={
                         "return_mode": spec.return_mode,
                         "return_scene_id": spec.return_scene_id,
-                        "ending_id": spec.ending_id or branch.ending_id,
+                        "ending_id": spec.ending_id,
                     }
                 )
                 if branch.branch_id == spec.branch_id:
@@ -1743,7 +1742,7 @@ class WorkflowNodes:
                     "[script-gen][write_dialogue] scene_dialogue_failed scene=%s"
                     " reason=%s",
                     scene.scene_id,
-                    str(exc).replace("\n", " ")[:200],
+                    exc_reason(exc),
                 )
                 updated = scene
             if updated is not scene:

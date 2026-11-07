@@ -1,8 +1,8 @@
 # 游玩链路说明（现行）
 
-> 状态：M0–M2 已落地（2026-11-07）。上游设计见
+> 状态：M0–M3 已落地（2026-11-07）。上游设计见
 > `docs/design/play-through-redesign.md`（v5，下称「设计」）。
-> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M3–M8）与排查时查阅；
+> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M4–M8）与排查时查阅；
 > 任务与进度仍以 GitHub Issues 为追踪源。
 
 ## 1. 什么时候查这份文档
@@ -72,11 +72,15 @@ divide_events(v4 大纲：beats + branches + options + endings)
   （不由分支文本决定）。
 - `write_dialogue` 逐场景一次 LLM 调用，把 `Beat.dialogue` 与
   `BranchScene.dialogue` 填进剧本包；单场景失败只降级为空台词（运行时回退
-  agent 路径），不阻塞整包。
+  agent 路径），不阻塞整包。**可扮演角色也写台词**——玩家开局才选角色，
+  其余可扮演角色由系统扮演；播放期只跳过玩家所选角色的台词（M4）。
 - `validate_replay`（`domain/generation/validators.py`）把关珊瑚图：选项目标存在、
   canonical 可达 canonical 结局、分支返回合法、干扰项 ≤2/场景、分支台词 ≤4、
   结局 ≤4 且至少 1 个 canonical、speaker ∈ participants、无隐式环
-  （`choice` 回决策点不算环）。旧剧本恒通过。
+  （`choice` 回决策点不算环）。走向判定按珊瑚语义：没有 `options` 的场景
+  线性续接主干，「全空目标」的选项也是续接主干，带 `ending_id` 的分支是终点；
+  环检测把线性场景的隐式主干边算在内。关键事件顺序由「canonical 只能向前跳、
+  不得跳过含关键事件的场景」保证。旧剧本恒通过。
 - 校验时机三处：`final_audit` 先跑确定性校验（失败直接打回重写，不花 doubter
   的钱）、`final_gate` 在教师编辑/配图后重跑 `validate_all`、落库
   `_persist_package` 前再跑一次 `validate_replay`。
@@ -88,7 +92,8 @@ divide_events(v4 大纲：beats + branches + options + endings)
 
 `ReplayDirector` 零 LLM、零 agent，只读剧本 + 写事件；预写台词也落
 `character_speech`（`source=replay`），这样 Stage3 的 `speech_log` 有上下文。
-**Stage2 不允许自由输入**（见 6.1）。
+玩家所选角色的台词在播放时跳过（不替玩家说话），该拍的 action 由 beat 描述
+以旁白呈现。**Stage2 不允许自由输入**（见 6.1）。
 
 ---
 
@@ -162,7 +167,8 @@ enter_stage3 / confirm_ending / exit_game / intervene`。
 
 > 注意：v2 基线仍是**当前** schema（剧本整包 JSONB 在 `scripts.script_data`）。
 > 设计 §D2 的 `script_characters/scenes/...`、`session_ticks`、快照新列会随
-> M3/M5/M8 以增量迁移落地；等表仓储接管读写后再删 `script_data`。
+> 表仓储里程碑（M4 之后）、M5、M8 以增量迁移落地；等表仓储接管读写后再删
+> `script_data`。M4 运行期先从整包派生珊瑚图。
 
 ### 5.3 建库/迁移/seed
 

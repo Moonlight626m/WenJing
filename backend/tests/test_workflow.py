@@ -652,7 +652,7 @@ async def test_audit_reject_then_pass_reruns_writing() -> None:
     final = await runner.run(state, thread_id="t-audit-reject")
 
     assert final["package"] is not None
-    assert len(llm.writing_prompts) == 2  # 打回/重新通过各重写一次  # 打回后重写一次
+    assert len(llm.writing_prompts) == 2  # 打回后重写一次
     events = runner.snapshot().doubter_events
     assert [e.verdict for e in events] == ["pass", "reject", "pass"]
     assert events[1].round == 1  # 首轮书写被打回

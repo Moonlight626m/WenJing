@@ -95,6 +95,7 @@ def _prompt_versions() -> dict[str, str]:
         collect_materials,
         divide_events,
         doubter,
+        write_dialogue,
     )
 
     return {
@@ -103,6 +104,7 @@ def _prompt_versions() -> dict[str, str]:
         "divide_events": divide_events.PROMPT_VERSION,
         "character_design": character_design.PROMPT_VERSION,
         "write_script": write_script.PROMPT_VERSION,
+        "write_dialogue": write_dialogue.PROMPT_VERSION,
     }
 
 
@@ -129,6 +131,7 @@ def initial_progress() -> GenerationProgress:
                 GenerationNode.DIVIDE_EVENTS,
                 GenerationNode.DESIGN_CHARACTERS,
                 GenerationNode.WRITE_SCRIPT,
+                GenerationNode.WRITE_DIALOGUE,
                 GenerationNode.FINAL_AUDIT,
                 GenerationNode.DESIGN_ASSETS,
             )

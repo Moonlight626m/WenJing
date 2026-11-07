@@ -16,6 +16,7 @@ from app.domain.prompts import (
     collect_materials,
     divide_events,
     doubter,
+    write_dialogue,
     write_script,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "collect_materials",
     "divide_events",
     "doubter",
+    "write_dialogue",
     "write_script",
 ]

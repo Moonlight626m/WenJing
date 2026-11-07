@@ -643,6 +643,11 @@ export interface BranchSpec {
   value_turn: string;
   participants: string[];
   beat_outline: string[];
+  /** 珊瑚图返回方式（v4）：choice 回决策点 / continue 续接主干。 */
+  return_mode?: "choice" | "continue" | null;
+  return_scene_id?: number | null;
+  /** 非空表示该分支是终局，不回主干。 */
+  ending_id?: string | null;
 }
 
 export interface SceneDraft {
@@ -652,10 +657,14 @@ export interface SceneDraft {
   interaction_point?: InteractionPoint | null;
   visual_notes?: VisualNotes | null;
   branches?: BranchSpec[];
+  /** 珊瑚图决策点（v4）：目标为 branch / 场景序号 / 结局；全空 = 续接主干。 */
+  options?: SceneOption[];
 }
 
 export interface EventDivisionDraft {
   scenes: SceneDraft[];
+  /** 珊瑚图结局（v4）：空 = 旧式单一结局（stage2_ending_beat_id）。 */
+  endings?: Ending[];
 }
 
 export interface GateReview {

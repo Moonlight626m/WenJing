@@ -5,7 +5,8 @@
         ├ pass → divide_events
         │         → design_characters（条件边返回 Send，人物并行）
         │           → design_one_character×N → merge_characters(join)
-        │           → write_script → final_audit(doubter 总审)
+        │           → write_script → write_dialogue(逐场景预写台词)
+        │             → final_audit(doubter 总审)
         │             ├ pass → design_assets(配图，#48) → (final_gate) → END
         │             └ reject → write_script（≤MAX_WRITE_RETRIES）→ fail
         ├ reject → collect_materials（带打回意见，≤MAX_DOUBTER_ROUNDS）

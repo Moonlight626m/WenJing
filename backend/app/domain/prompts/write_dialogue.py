@@ -1,4 +1,4 @@
-"""逐场景预写台词节点 prompt v1（珊瑚图纯 IO 播放的数据源）。
+"""逐场景预写台词节点 prompt v2（珊瑚图纯 IO 播放的数据源）。
 
 段落构成（section）：
 - system：角色定位（台词作者，不是旁白改写者）；
@@ -9,6 +9,10 @@
 
 输出契约（`SceneDialogueDraft`）与 Pydantic 契约同步，留在代码不落库。
 改判据必须升 VERSION：DB 覆盖行按 version 匹配，旧行不会回退到新默认。
+
+v2 变更：可扮演角色也要写台词。v1 让模型回避「玩家可能扮演的角色」，
+但玩家开局才选定角色、其余可扮演角色由系统扮演，回避会让这些角色整场沉默。
+播放期只跳过玩家所选角色的台词（`source=replay` 的 `character_speech`）。
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "write_dialogue"
 STAGE = "script_gen"
-VERSION = "v1"
+VERSION = "v2"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -39,8 +43,10 @@ SPEAKER_RULES = """\
 【说话人约束】
 - speaker 只能取自该场景的 participants（或分支自带的 participants）；
 - 旁白/环境描写用 speaker=null；
-- 不预写玩家角色将要说的话：玩家可能扮演其中任何可扮演角色，\
-其台词由玩家在游玩时决定，你只写其余在场人物的台词与旁白。
+- 在场人物都要写台词，**包括可扮演角色**：玩家开局才选定扮演谁，其余可扮演\
+角色由系统扮演，漏写会让这些角色整场沉默；
+- 玩家所选角色的台词在播放时会被跳过，但你不因此回避——你写的是角色在各场景\
+本来会说的话。
 """
 
 BRANCH_RULES = """\

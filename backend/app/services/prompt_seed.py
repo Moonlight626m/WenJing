@@ -29,6 +29,8 @@ DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("divide_events", "interaction_rules"): "玩家介入点写法",
     ("divide_events", "visual_rules"): "场景视觉锚点（visual_notes，只写原文可推断）",
     ("divide_events", "branch_rules"): "伪分支规格（挂在介入点上的替代过场）",
+    ("divide_events", "option_rules"): "珊瑚图决策点（选项目标与 canonical 主线）",
+    ("divide_events", "ending_rules"): "珊瑚图结局表（canonical/alternate/distractor）",
     ("divide_events", "checklist"): "事件划分输出前自检清单",
     ("character_design", "system"): "角色定位与忠实性总纲",
     ("character_design", "trait_rules"): "性格标签「标签+证据+行为化」写作法",
@@ -49,6 +51,11 @@ DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("write_script", "beat_rules"): "beat 留白与戏剧目标",
     ("write_script", "branch_rules"): "伪分支补写判据（分支第二遍调用使用）",
     ("write_script", "checklist"): "剧本书写输出前自检清单",
+    ("write_dialogue", "system"): "台词作者定位（不改写节拍、不新增情节）",
+    ("write_dialogue", "dialogue_rules"): "台词粒度与信息增量判据",
+    ("write_dialogue", "speaker_rules"): "说话人约束（participants 内、旁白用 null）",
+    ("write_dialogue", "branch_rules"): "分支台词边界（不改写关键事件与结局）",
+    ("write_dialogue", "checklist"): "台词预写输出前自检清单",
 }
 
 
