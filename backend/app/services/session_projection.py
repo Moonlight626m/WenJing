@@ -241,9 +241,10 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     EVENT_REPLAY_NARRATION: "narrative",
     EVENT_REPLAY_CHOICE: "system",
     EVENT_REPLAY_ENDING_REACHED: "system",
-    # Stage3 确定性探索（M5）：结算摘要进叙事流，换景是系统提示
+    # Stage3 确定性探索（M5）：结算摘要与换景都进叙事流——换景必须带 scene 字段，
+    # 前端只在 narrative 消息上应用 scene_key/title/背景（system 消息不换景）
     EVENT_EXPLORATION_SETTLE: "narrative",
-    EVENT_SCENE_SWITCH: "system",
+    EVENT_SCENE_SWITCH: "narrative",
     # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
     "stage3_goals_set": "system",
     "stage3_goal_achieved": "system",
@@ -269,10 +270,6 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return f"你选择了：{p.get('label', '')}"
     if event_type == EVENT_REPLAY_ENDING_REACHED:
         return f"到达结局：{p.get('title', '')}"
-    if event_type == EVENT_SCENE_SWITCH:
-        present = "、".join(str(n) for n in p.get("participants", []) if n)
-        suffix = f"（在场：{present}）" if present else ""
-        return f"你来到了「{p.get('scene_title', '')}」{suffix}"
     if event_type == EVENT_STAGE3_GOALS_SET:
         descs = [str(g.get("description", "")) for g in p.get("goals", []) if isinstance(g, dict)]
         return "续写目标：" + "；".join(descs)
@@ -286,6 +283,10 @@ def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
     if event_type == "replay_node_entered":
         prefix = "分支" if p.get("node_kind") == "branch" else "场景"
         return f"{prefix}：{p.get('scene_title', '')}"
+    if event_type == EVENT_SCENE_SWITCH:
+        present = "、".join(str(n) for n in p.get("participants", []) if n)
+        suffix = f"（在场：{present}）" if present else ""
+        return f"你来到了「{p.get('scene_title', '')}」{suffix}"
     if category == "narrative":
         return str(p.get("summary") or p.get("text") or "")
     if category == "character_speech":

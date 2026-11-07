@@ -13,6 +13,7 @@ from conftest import FakeLLMService
 
 from app.contracts.script import ExplorationLocation, ExplorationMap
 from app.domain.game.event import (
+    EVENT_ASSET_READY,
     EVENT_CHARACTER_SPEECH,
     EVENT_EXPLORATION_SETTLE,
     EVENT_SCENE_SWITCH,
@@ -103,6 +104,7 @@ async def _to_stage3(rt: GameRuntime):
     n = 0
     while not _is_ending_confirm(result.active_interaction):
         n += 1
+        assert n < 10, "Stage2 在有限拍内必须到达结局确认"
         result = await rt.submit(
             command_id=f"c-stage2-{n}",
             kind="choose_option",
@@ -136,6 +138,18 @@ def test_derive_exploration_folds_events_and_ignores_unknown():
     progress = derive_exploration(events, registry)
     assert progress.current_location_key == "harbor"
     assert progress.visited == ("harbor", "inn")
+
+
+def test_derive_exploration_accepts_game_event_shape():
+    """生产路径传的是 `GameEvent`（不是 to_dict）：折叠结果必须一致。"""
+    registry = build_location_registry(_map())
+    assert registry is not None
+    store = EventStore()
+    store.append(EVENT_SCENE_SWITCH, {"from": "harbor", "to": "inn"})
+    store.append(EVENT_EXPLORATION_SETTLE, {"location_key": "market"})
+    progress = derive_exploration(store.active_events(), registry)
+    assert progress.current_location_key == "market"
+    assert progress.visited == ("harbor", "inn", "market")
 
 
 def test_present_names_is_locations_intersection():
@@ -259,6 +273,89 @@ async def test_rollback_in_stage3_restores_location_progress():
     assert result.state["scene_key"] == "loc:harbor"
     # 新分支上不再有那次换景
     assert not _events(rt, EVENT_SCENE_SWITCH)
+
+
+async def test_switch_does_not_consume_stage3_round_budget():
+    """换景不算续写回合：实时与重放同口径，否则回溯后轮次凭空多一拍。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
+    before = rt.state.stage3_round_taken
+    assert before == 1
+
+    await rt.submit(
+        command_id="c-switch", kind="switch_scene", payload={"scene_key": "loc:inn"}
+    )
+    assert rt.state.stage3_round_taken == before
+
+    events = [e.to_dict() for e in rt.event_store.active_events()]
+    restored = GameRuntime(
+        session_id="explore-session",
+        script=_script(),
+        llm=FakeLLMService(),
+        event_store=rt.event_store,
+        exploration_map=_map(),
+    )
+    restored.replay_from(None, events)
+    assert restored.state.stage3_round_taken == before
+
+
+async def test_scene_switch_message_is_narrative_with_scene_fields():
+    """换景必须走 narrative 消息，前端才会应用 scene_key/title（背景/标题刷新）。"""
+    import uuid
+
+    from app.services.session_projection import project_messages
+
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
+    await rt.submit(
+        command_id="c-switch", kind="switch_scene", payload={"scene_key": "loc:inn"}
+    )
+
+    sid = uuid.UUID("0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910")
+    msgs = project_messages(sid, rt.event_store)
+    moved = [m for m in msgs if m["payload"].get("scene_key") == "loc:inn"]
+    assert moved, "换景消息必须带目标 scene_key"
+    assert moved[0]["type"] == "narrative"
+    assert moved[0]["payload"]["scene_title"] == "客栈"
+    assert moved[0]["payload"]["text"].startswith("你来到了「客栈」")
+
+
+async def test_settle_carries_current_asset_from_event_index():
+    """地点已有事件索引资产时，结算叙事要带上它（否则前端会清空背景）。"""
+    import uuid
+
+    from app.services.session_projection import project_messages
+
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    rt.event_store.append(
+        EVENT_ASSET_READY,
+        {
+            "scene_key": "loc:harbor",
+            "asset_id": "8a1d5f2b-6c3e-4d90-a2b7-5e9f0c1d8a44",
+            "kind": "background",
+            "status": "ready",
+        },
+    )
+    await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
+
+    settle = _events(rt, EVENT_EXPLORATION_SETTLE)[-1]
+    assert settle["current_asset"]["asset_id"] == "8a1d5f2b-6c3e-4d90-a2b7-5e9f0c1d8a44"
+
+    sid = uuid.UUID("0d3f5a7b-9c8e-4f12-a3b4-c5d6e7f80910")
+    msgs = project_messages(sid, rt.event_store)
+    settle_msgs = [
+        m
+        for m in msgs
+        if m["type"] == "narrative" and "在「渡口」" in m["payload"]["text"]
+    ]
+    assert settle_msgs
+    assert (
+        settle_msgs[0]["payload"]["current_asset"]["asset_id"]
+        == "8a1d5f2b-6c3e-4d90-a2b7-5e9f0c1d8a44"
+    )
 
 
 async def test_legacy_script_keeps_all_characters_reacting():

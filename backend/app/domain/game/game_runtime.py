@@ -171,6 +171,16 @@ class GameRuntime:
 
     # ===== 显式状态导出 / 恢复 =====
 
+    def _asset_at(self, scene_key: str | None) -> AssetRef | None:
+        """事件索引里的场景资产（`RuntimeAssets.rebuild` 的唯一调用点）。"""
+        if not scene_key:
+            return None
+        return RuntimeAssets.rebuild(self.event_store).current(scene_key)
+
+    def _asset_json(self, scene_key: str | None) -> dict | None:
+        asset = self._asset_at(scene_key)
+        return asset.model_dump(mode="json") if asset is not None else None
+
     def _current_background(
         self, scene: Scene | None, node_asset: AssetRef | None = None
     ) -> AssetRef | None:
@@ -183,7 +193,7 @@ class GameRuntime:
         不到）。在引擎内解析（ADR-0005 §8）：这里同时有 events 与 script，
         投影层保持纯函数。未开播（游标 0）或该场景无图 → None。
         """
-        ref = RuntimeAssets.rebuild(self.event_store).current(self.state.scene_key)
+        ref = self._asset_at(self.state.scene_key)
         if ref is not None:
             return ref
         if node_asset is not None:
@@ -396,7 +406,12 @@ class GameRuntime:
                 self.state.player_role = role
                 self.characters.player_role = role
         elif etype == evt.EVENT_PLAYER_ACTION:
-            if self.state.stage == StageValue.STAGE3_EXTENDING.value:
+            # 换景不消耗续写回合预算（与实时 `_on_switch_scene` 同口径，
+            # 否则回溯重放后轮次会凭空多一拍、提前收束）
+            if (
+                self.state.stage == StageValue.STAGE3_EXTENDING.value
+                and payload.get("type") != "switch_scene"
+            ):
                 self.state.stage3_round_taken += 1
         elif etype == evt.EVENT_CHARACTER_SPEECH:
             # 公开发言台账重放（机制层知识边界）：重连/回溯后「谁在哪个场景说了
@@ -812,6 +827,8 @@ class GameRuntime:
             "conflict": settlement.conflict,
             "context": settlement.context,
             "present": list(settlement.present),
+            # 地点若已有事件索引资产（早期访问/教师上传），随叙事一起下发
+            "current_asset": self._asset_json(settlement.scene_key),
         }
         self._append(evt.EVENT_EXPLORATION_SETTLE, payload)
         self._apply_settle_event(payload)
@@ -865,6 +882,8 @@ class GameRuntime:
             "scene_key": location.scene_key,
             "scene_title": location.title,
             "participants": list(location.participants),
+            # 目标地点若已有事件索引资产（此前到过/教师上传），换景即换图
+            "current_asset": self._asset_json(location.scene_key),
         }
         self._append(evt.EVENT_SCENE_SWITCH, switch_payload)
         self._apply_switch_event(switch_payload)

@@ -52,7 +52,11 @@ class ActiveInteraction(VersionedContract):
     scene_options: list[SceneOptionItem] = Field(default_factory=list)
 
     def allowed_command_kinds(self) -> list[CommandKind]:
-        """按模式推导当前允许的输入命令。"""
+        """按模式推导当前允许的输入命令。
+
+        只覆盖「文本/选项」输入；换景等阶段级命令由 `allowed_commands` 提供，
+        不由此方法推导。
+        """
         base: set[CommandKind]
         if self.mode == InteractionMode.OPTIONS:
             base = {CommandKind.CHOOSE_OPTION}

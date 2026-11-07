@@ -274,6 +274,21 @@ def test_intervene_payload_requires_text() -> None:
         PlayerCommand(session_id=uuid4(), kind=CommandKind.INTERVENE, payload={})
 
 
+def test_switch_scene_payload_requires_scene_key() -> None:
+    from uuid import uuid4
+
+    from app.contracts.commands import SwitchScenePayload
+
+    cmd = PlayerCommand(
+        session_id=uuid4(),
+        kind=CommandKind.SWITCH_SCENE,
+        payload={"scene_key": "loc:inn"},
+    )
+    assert isinstance(cmd.payload_model, SwitchScenePayload)
+    with pytest.raises(Exception):
+        PlayerCommand(session_id=uuid4(), kind=CommandKind.SWITCH_SCENE, payload={})
+
+
 def test_script_package_coral_graph_fields() -> None:
     """M1 契约波：珊瑚图字段可解析（dialogue/options/endings/exploration）。"""
     from app.contracts.script import ScriptPackage

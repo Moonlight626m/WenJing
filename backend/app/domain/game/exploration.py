@@ -11,11 +11,15 @@ NPC 的提议/反应仍是 LLM（`CharacterAgent`），导演与制作人（选�
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
 from app.contracts.script import ExplorationLocation, ExplorationMap
 from app.domain.game import event as evt
+
+logger = logging.getLogger("wenjing.core.exploration")
 
 SCENE_KEY_PREFIX = "loc:"
 
@@ -85,11 +89,6 @@ class LocationRegistry:
     def start(self) -> Location | None:
         return self.get(self.start_key)
 
-    def available(self, progress: ExplorationProgress) -> tuple[Location, ...]:
-        """可前往的地点：M5 的地图是平铺地点表（无地点间连边），全部可达；
-        当前地点也在列表里，由调用方标 `is_current`。地点间解锁是 M6。"""
-        return self.ordered()
-
 
 def build_location_registry(map: ExplorationMap | None) -> LocationRegistry | None:
     """`exploration=None` 或起点缺失 → None（旧剧本/非法地图走原 3 轮路径）。"""
@@ -97,19 +96,23 @@ def build_location_registry(map: ExplorationMap | None) -> LocationRegistry | No
         return None
     locations = {raw.location_key: _to_location(raw) for raw in map.locations}
     if map.start_location_key not in locations:
+        logger.warning(
+            "exploration_start_location_missing",
+            extra={"start": map.start_location_key},
+        )
         return None
     return LocationRegistry(locations, map.start_location_key)
 
 
 def derive_exploration(
-    events: Any, registry: LocationRegistry
+    events: Iterable[Any], registry: LocationRegistry
 ) -> ExplorationProgress:
-    """从活动分支事件折叠探索进度（`GameEvent` 或 `to_dict()` 均可）。"""
+    """从活动分支事件折叠探索进度（接受 `GameEvent` 或 `to_dict()`）。"""
     current = registry.start_key
     visited: list[str] = [current]
     for ev in events:
         if isinstance(ev, dict):
-            etype = ev.get("event_type") or ev.get("type")
+            etype = ev.get("event_type")
             payload = ev.get("payload") or {}
         else:
             etype = getattr(ev, "event_type", None)
@@ -173,7 +176,10 @@ class ExplorationDirector:
         )
 
     def scene_options(self, progress: ExplorationProgress) -> list[dict[str, Any]]:
-        """交互点换景列表（契约投影前的普通 dict，当前地点标 is_current）。"""
+        """交互点换景列表（契约投影前的普通 dict，当前地点标 is_current）。
+
+        M5 的地图是平铺地点表（无地点间连边），全部可达；连通/解锁过滤随 M6。
+        """
         return [
             {
                 "scene_key": location.scene_key,
@@ -181,7 +187,7 @@ class ExplorationDirector:
                 "participants": list(location.participants),
                 "is_current": location.location_key == progress.current_location_key,
             }
-            for location in self.registry.available(progress)
+            for location in self.registry.ordered()
         ]
 
 

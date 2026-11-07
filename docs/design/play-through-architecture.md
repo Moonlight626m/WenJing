@@ -265,6 +265,10 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 - 换景：`switch_scene` 命令（payload `scene_key`）→ 校验地点存在且非当前 →
   写 `scene_switch {from, to, scene_key, scene_title, participants}` → 目标在场者
   反应；换景是前进式，不建事件分支。交互点带 `scene_options`（当前地点置灰）。
+  换景按 **narrative** 消息下发（前端只在 narrative 上应用场景键/标题），
+  不消耗续写回合预算。旧剧本没有地图：契约按阶段允许该命令，但引擎会拒绝。
+- 场景列表来源只有 `exploration_map.locations`；静态剧本场景、动态
+  `scene_created`、地点配图都随 M6 的 Producer/Painter 接入。
 - 回溯的「拍」在 Stage3 探索下是 `exploration_settle`：回退后地点进度与
   `scene_key` 一起回退（`_sync_exploration_scene_key` 兜底纠正）。
 - M5 的地图是**平铺地点表**（无地点间连边）：地图里的地点都可前往；

@@ -187,6 +187,7 @@ function InteractionBody({
   const canChoose = allowedCommands.includes("choose_option");
   const canFree = allowedCommands.includes("free_input");
   const canSwitch = allowedCommands.includes("switch_scene");
+  const sceneOptions = interaction.scene_options ?? [];
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
 
@@ -266,17 +267,29 @@ function InteractionBody({
       </div>
 
       {/* Stage3 换景（M5）：已解锁地点的前进式切换；当前地点置灰 */}
-      {canSwitch && interaction.scene_options.length > 0 && (
+      {canSwitch && sceneOptions.length > 0 && (
         <div className="mt-3">
           <p className="font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
             前往
           </p>
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {interaction.scene_options.map((scene) => (
+          <div
+            role="group"
+            aria-label="换景"
+            className="mt-1.5 flex flex-wrap gap-1.5"
+          >
+            {sceneOptions.map((scene) => (
               <button
                 key={scene.scene_key}
                 type="button"
                 disabled={busy || scene.is_current}
+                aria-current={scene.is_current || undefined}
+                aria-label={
+                  scene.is_current
+                    ? `${scene.title}（当前）`
+                    : scene.participants.length > 0
+                      ? `前往${scene.title}，在场：${scene.participants.join("、")}`
+                      : `前往${scene.title}`
+                }
                 onClick={() =>
                   submit(
                     "switch_scene",

@@ -243,10 +243,22 @@ scripts（content_version/format/replay_ready）
 - **与草案的差异**：M5 的地图是**平铺地点表**，没有地点间连边——地图里的地点
   都可前往；「解锁新场景 / 未连通地点不可见」与固定项「解锁新场景」随 M6 的
   Producer 落地。换景的「人物到场衔接」文案也归 M6（当前由目标在场者直接反应）。
+- 场景列表来源当前只有 `exploration_map.locations`；**静态剧本场景与运行期
+  `scene_created` 动态场景的接入归 M6**（与配图槽位、Producer 一起做）。
+  地点背景图也留到 M6 的画师接线：换景时前端按无图降级为渐变。
+- `switch_scene` 在契约里按**阶段**允许（Stage3 全局），但旧剧本没有地图，
+  引擎会以 `ENG_PLAYER_ACTION_INVALID` 拒绝；前端只在 `scene_options` 非空时
+  显示入口，行为不变。
+- 换景写 `scene_switch` 按 **narrative** 消息下发（不是 system）：前端只在
+  narrative 消息上应用 `scene_key/scene_title`，否则换景后背景/标题不刷新。
+- 换景不消耗续写回合预算（`stage3_round_taken` 不计 switch），实时与重放同口径。
 - Stage3 的目标判定（goals）沿用原逻辑；回溯的「拍」在探索下是
   `exploration_settle`，回退后地点与 `scene_key` 一起回退。
 
 ### B4. 场景切换/选择（新增）
+
+> M5 只落地「切到已存在地点」：平铺地点表、无「解锁新场景」固定项，其余随 M6。
+> 见 §B3 的实现注记。
 
 - 交互点携带 `scene_options`：
   - **已存在的场景**（静态剧本场景/地点 + 运行期 `scene_created` 动态场景），
