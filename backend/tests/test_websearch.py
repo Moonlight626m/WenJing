@@ -320,6 +320,19 @@ class _TwoHitSearch:
         return [SearchHit(url="https://example.com/a", title="a", snippet="")] * 2
 
 
+class _StubFetcher:
+    """离线抓取桩：正文由默认提取器从固定 HTML 中取（本测试不测抓取）。"""
+
+    async def fetch(self, url: str) -> FetchedPage:
+        return FetchedPage(
+            url=url,
+            final_url=url,
+            status_code=200,
+            content_type="text/html",
+            body_bytes="<html><head><title>a</title></head><body><p>正文</p></body></html>".encode(),
+        )
+
+
 def _patch_websearch_logger(monkeypatch, probe: _ProbeLogger):
     monkeypatch.setattr("app.infrastructure.websearch.service.logger", probe)
 
@@ -327,7 +340,7 @@ def _patch_websearch_logger(monkeypatch, probe: _ProbeLogger):
 async def test_research_logs_start_and_done_ok(monkeypatch):
     probe = _ProbeLogger()
     _patch_websearch_logger(monkeypatch, probe)
-    svc = WebSearchService(search_provider=_TwoHitSearch())
+    svc = WebSearchService(search_provider=_TwoHitSearch(), fetcher=_StubFetcher())
     evidence = await svc.research("背影")
     assert len(evidence) == 2
 
