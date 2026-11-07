@@ -24,6 +24,14 @@ from typing import Any
 from app.contracts.enums import ALLOWED_COMMANDS, StageValue
 from app.contracts.script import AssetRef, ExplorationMap
 from app.domain.agents.character import CharacterAgentManager
+from app.domain.agents.director import DirectorAgent
+from app.domain.agents.producer import (
+    KIND_ADD_CHARACTER,
+    KIND_CREATE_SCENE,
+    KIND_PULL_IN_CHARACTER,
+    InterventionIntent,
+    ProducerAgent,
+)
 from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
 from app.domain.agents.verifier import VerifierAgent
 from app.domain.game import event as evt
@@ -31,9 +39,13 @@ from app.domain.game.assets import RuntimeAssets
 from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import EventStore
 from app.domain.game.exploration import (
+    SCENE_KEY_PREFIX,
     ExplorationDirector,
     ExplorationProgress,
+    WorldState,
     build_location_registry,
+    derive_world,
+    location_scene_key,
 )
 from app.domain.game.goals import GoalState, derive_goals
 from app.domain.game.media import scene_visual_description
@@ -41,6 +53,7 @@ from app.domain.game.replay import ReplayCue, ReplayDirector, ReplayGraph, Repla
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.game.types import (
+    CharacterSetting,
     InteractionPoint,
     PlayerAction,
     Proposal,
@@ -60,6 +73,23 @@ _STAGE_ALIASES: dict[str, str] = {
     "stage2": StageValue.STAGE2_REENACTING.value,
     "stage3": StageValue.STAGE3_EXTENDING.value,
 }
+
+# 干涉预算（design §B5）：每会话新场景 ≤3、新角色 ≤2；每轮 ≤1 次由事件判定。
+MAX_DYNAMIC_SCENES = 3
+MAX_NEW_CHARACTERS = 2
+
+
+def _setting_from_payload(payload: dict) -> CharacterSetting:
+    """`character_created` 事件载荷 → 角色 Agent 的设定（新角色无知识边界）。"""
+    return CharacterSetting(
+        name=str(payload.get("name", "")),
+        public_background=str(payload.get("public_background", "")),
+        personality_traits=[str(t) for t in payload.get("personality_traits", [])],
+        speech_style=str(payload.get("speech_style", "")),
+        knows=[str(k) for k in payload.get("knows", [])],
+        not_knows=[str(k) for k in payload.get("not_knows", [])],
+        is_player_playable=False,
+    )
 
 
 @dataclass
@@ -151,6 +181,9 @@ class GameRuntime:
         self.world_view = RuntimeWorldView(self)
         self.screenwriter = ScreenwriterAgent(llm)
         self.verifier = VerifierAgent(llm)
+        # 工作人员（M6）：只设计选项/解析干涉，不出场、不写台词
+        self.director = DirectorAgent(llm)
+        self.producer = ProducerAgent(llm)
         self.characters = CharacterAgentManager(llm, self.world_view)
         self.characters.create_agents(script.characters)
         # 珊瑚图纯 IO 播放（M4）：有图就走确定性路径，不建 agent、不调 LLM
@@ -162,6 +195,10 @@ class GameRuntime:
         self._exploration_progress: ExplorationProgress | None = (
             self.exploration.start_progress() if self.exploration is not None else None
         )
+        # 运行期世界（M6）：动态场景/新角色/拉人/世界事实，全部由事件派生
+        self._world = WorldState()
+        # 本轮导演设计的选项（M6）；空 = 回退到已验证提议/默认项
+        self._director_options: list[str] = []
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
@@ -246,8 +283,8 @@ class GameRuntime:
             # 珊瑚图播放不推 beat 游标（§A4）：标题从播放位置解析
             scene_title = self.replay.title_of(self._replay_state) or scene_title
         if self.exploration is not None and self._exploration_progress is not None:
-            location = self.exploration.registry.get(
-                self._exploration_progress.current_location_key
+            location = self.exploration.location(
+                self._exploration_progress.current_location_key, self._world
             )
             if location is not None:
                 scene_title = location.title
@@ -330,6 +367,11 @@ class GameRuntime:
         快照损坏/缺失时用 `replay_from(None, store.active_events())` 完整重建——
         必须传**活动分支**事件；全量历史里的被放弃分支会被一并折回。
         """
+        # 运行期世界先于快照/记忆恢复：快照的 `character_memories` 可能含
+        # 动态角色的条目，agent 必须已经在 manager 里（否则恢复 KeyError）
+        if self.exploration is not None:
+            self._world = derive_world(self.event_store.active_events())
+            self._sync_world_characters()
         if snapshot_state is not None:
             self.restore(snapshot_state)
             # 记忆折叠只作用于基线之后的事件：快照缓存已含此前的个人记忆，
@@ -345,6 +387,9 @@ class GameRuntime:
             # view_my_memory 读到旧记忆
             self.characters.clear_memories()
             memory_base_event_id = 0
+            # 被回溯到创建之前的动态角色：「从未存在」——事件是唯一权威
+            if self.exploration is not None:
+                self._sync_world_characters()
 
         for ev in events:
             self._replay_event(ev)
@@ -441,6 +486,14 @@ class GameRuntime:
             self._apply_settle_event(payload)
         elif etype == evt.EVENT_SCENE_SWITCH:
             self._apply_switch_event(payload)
+        elif etype in (
+            evt.EVENT_SCENE_CREATED,
+            evt.EVENT_CHARACTER_CREATED,
+            evt.EVENT_PULL_IN_CHARACTER,
+            evt.EVENT_WORLD_FACT,
+        ):
+            # 运行期世界（M6）增量折叠：事件是唯一权威，实时/重放同一入口
+            self._refresh_world()
 
     def _apply_settle_event(self, payload: dict) -> None:
         """`exploration_settle` 折叠：地点进度 + 场景键 + 剧情/处境（幂等）。"""
@@ -478,7 +531,7 @@ class GameRuntime:
     def _move_exploration(self, location_key: str) -> None:
         if self.exploration is None or self._exploration_progress is None:
             return
-        if self.exploration.registry.get(location_key) is None:
+        if self.exploration.location(location_key, self._world) is None:
             return
         visited = self._exploration_progress.visited
         if location_key not in visited:
@@ -553,6 +606,8 @@ class GameRuntime:
                 return await self.rollback(command_id=cid, target_event_id=target)
             case "switch_scene":
                 return await self._on_switch_scene(cid, payload)
+            case "intervene":
+                return await self._on_intervene(cid, payload)
             case "enter_stage3":
                 return await self._on_enter_stage3()
             case "confirm_ending":
@@ -794,11 +849,27 @@ class GameRuntime:
     # ===== Stage3 确定性探索（M5；design play-through-redesign §B3）=====
 
     def _exploration_present(self) -> tuple[str, ...]:
-        """在场角色 = 当前地点 participants ∩ 已创建角色（无地图 = 全部参演）。"""
+        """在场角色 = 当前地点 participants（+ 拉入/新增）∩ 已创建角色。"""
         active = tuple(self.characters.active_names())
         if self.exploration is None or self._exploration_progress is None:
             return active
-        return self.exploration.present_names(self._exploration_progress, active)
+        return self.exploration.present_names(
+            self._exploration_progress, active, self._world
+        )
+
+    def _scene_participants(self, scene_key: str | None) -> set[str]:
+        """某场景/地点的在场角色集合（世界视图的知识边界用）。"""
+        if not scene_key:
+            return set()
+        if scene_key.startswith("scene:"):
+            scene = self._scene_by_key(scene_key)
+            return set(scene.participants) if scene is not None else set()
+        if scene_key.startswith(SCENE_KEY_PREFIX) and self.exploration is not None:
+            location = self.exploration.resolve_scene(scene_key, self._world)
+            if location is None:
+                return set()
+            return set(self.exploration.participants_at(location, self._world))
+        return set()
 
     def _scene_options(self) -> list[dict]:
         """交互点的换景列表（只在探索地图 + 续写阶段给出）。"""
@@ -808,17 +879,44 @@ class GameRuntime:
             or self.state.stage != StageValue.STAGE3_EXTENDING.value
         ):
             return []
-        return self.exploration.scene_options(self._exploration_progress)
+        return self.exploration.scene_options(
+            self._exploration_progress, self._world
+        )
+
+    def _request_location_asset(self, location) -> None:
+        """探索地点缺图时记一次 scene_montage 意图（M6 画师接线，§B3 注记）。
+
+        静态地点没有 Stage2 的离线槽位（`design_assets` 只覆盖剧本场景），
+        所以续写里第一次到访/结算时补一次运行期配图；去重由调度器负责
+        （同一 scene_key 在途/已失败会被拦下）。
+        """
+        if self._asset_at(location.scene_key) is not None:
+            return
+        self._asset_requests.append(
+            SceneAssetIntent(
+                scene_key=location.scene_key,
+                description=location.visual_summary or f"场景：{location.title}",
+                kind="scene_montage",
+            )
+        )
 
     def _settle_stage3(self, action_text: str) -> None:
         """把本轮动作结算成地点化摘要（`exploration_settle`），并同步 `_RState`。"""
         if self.exploration is None or self._exploration_progress is None:
             return
         settlement = self.exploration.settle(
-            self._exploration_progress, action_text, self._exploration_present()
+            self._exploration_progress,
+            action_text,
+            self._exploration_present(),
+            self._world,
         )
         if settlement is None:
             return
+        location = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
+        )
+        if location is not None:
+            self._request_location_asset(location)
         payload = {
             "location_key": settlement.location_key,
             "scene_key": settlement.scene_key,
@@ -837,8 +935,8 @@ class GameRuntime:
         """让 `scene_key` 与探索进度一致（重放后/回合头兜底）。"""
         if self.exploration is None or self._exploration_progress is None:
             return
-        location = self.exploration.registry.get(
-            self._exploration_progress.current_location_key
+        location = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
         )
         if location is not None:
             self.state.scene_key = location.scene_key
@@ -847,7 +945,7 @@ class GameRuntime:
         """探索回合头部：不再 advance_plot/confirm_direction。
 
         剧情摘要与处境由 `exploration_settle` 产出（`_on_input` 已写入）；
-        这里只收集**在场** NPC 的提议并送审，供交互点使用。
+        NPC 提议送审后交给导演设计玩家选项（M6），失败则由交互层回退。
         """
         self._sync_exploration_scene_key()
         self.state.phase = InteractionPhase.NARRATIVE.value
@@ -855,6 +953,53 @@ class GameRuntime:
             stage, sink, names=list(self._exploration_present())
         )
         self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
+        self._director_options = await self._design_director_options()
+
+    async def _design_director_options(self) -> list[str]:
+        """导演设计 2–4 条玩家行动；上下文由运行时装配（导演不挂工具）。"""
+        if self.exploration is None or self._exploration_progress is None:
+            return []
+        location = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
+        )
+        if location is None:
+            return []
+        present = [
+            (
+                name,
+                self.characters.agents[name].identity.public_background
+                if name in self.characters.agents
+                else "",
+            )
+            for name in self._exploration_present()
+        ]
+        return await self.director.design_options(
+            location_title=location.title,
+            visual_summary=location.visual_summary,
+            player_role=self.state.player_role,
+            present=present,
+            plot_log=self.state.plot_log,
+            direction=self.state.direction,
+            goals=[(g.description, g.achieved) for g in self._stage3_goals()],
+            teaching_focus=list(self.script.teaching_focus),
+        )
+
+    def _stage3_interaction(self) -> InteractionPoint:
+        """续写交互点：导演选项优先，其次已验证提议，最后给兜底行动。"""
+        labels = [text for text in self._director_options if text]
+        if not labels:
+            labels = [p.description for p in self._valid_proposals if p.description]
+        if not labels:
+            labels = ["环顾四周，看看这里有什么", "离开这里，去别处看看"]
+        context = self.state.direction.get("conflict") or "请选择你的行动，或自由发言"
+        return InteractionPoint(
+            mode="options_with_fallback",
+            context=context,
+            options=[
+                {"id": index, "text": label} for index, label in enumerate(labels)
+            ],
+            hint="可自定义输入，也可以用「干涉」改变世界",
+        )
 
     async def _on_switch_scene(self, cid: str, payload: dict) -> StepResult:
         """换景（前进式）：校验目标 → 写 `scene_switch` → 目标在场 NPC 反应。"""
@@ -865,7 +1010,7 @@ class GameRuntime:
         if self.active_interaction is None:
             raise new(codes.ENG_NOT_RUNNING, extra={"reason": "no_active_interaction"})
         target_key = str(payload.get("scene_key") or "")
-        location = self.exploration.registry.by_scene_key(target_key)
+        location = self.exploration.resolve_scene(target_key, self._world)
         if location is None:
             raise new(codes.ENG_PLAYER_ACTION_INVALID, extra={"scene_key": target_key})
         previous = self._exploration_progress.current_location_key
@@ -876,17 +1021,20 @@ class GameRuntime:
             evt.EVENT_PLAYER_ACTION, {"type": "switch_scene", "text": location.title}
         )
         self.active_interaction = None
+        # 在场 = 地点静态名单（保持原顺序）+ 运行期拉入/新增（排序保证可重放）
+        extra = sorted(self._scene_participants(location.scene_key) - set(location.participants))
         switch_payload = {
             "from": previous,
             "to": location.location_key,
             "scene_key": location.scene_key,
             "scene_title": location.title,
-            "participants": list(location.participants),
+            "participants": [*location.participants, *extra],
             # 目标地点若已有事件索引资产（此前到过/教师上传），换景即换图
             "current_asset": self._asset_json(location.scene_key),
         }
         self._append(evt.EVENT_SCENE_SWITCH, switch_payload)
         self._apply_switch_event(switch_payload)
+        self._request_location_asset(location)
         # 到场反应：只有新地点的在场 NPC 说话（不广播给全场）
         action = PlayerAction(
             type="switch_scene", text=f"你走进了「{location.title}」"
@@ -899,6 +1047,249 @@ class GameRuntime:
             "scene_switch", extra={"from": previous, "to": location.location_key}
         )
         return await self._drive_until_interaction()
+
+    # ===== 玩家干涉世界（M6；design play-through-redesign §B5）=====
+
+    async def _on_intervene(self, cid: str, payload: dict) -> StepResult:
+        """玩家自然语言干涉：Producer 解析 → 确定性校验 → 事件化应用。
+
+        与换景同构：不消耗续写回合预算、全部走事件（回溯到创建之前 =
+        该场景/角色从未存在）、解析/校验失败 fail-closed 成 `intervention_rejected`。
+        不写 `player_action`——那不是「推进一轮」的动作，写进去会让重放把
+        一次干涉多算一拍续写回合、提前触发收束。
+        """
+        if self.exploration is None or self._exploration_progress is None:
+            raise new(
+                codes.ENG_PLAYER_ACTION_INVALID, extra={"reason": "no_exploration"}
+            )
+        if self.active_interaction is None:
+            raise new(codes.ENG_NOT_RUNNING, extra={"reason": "no_active_interaction"})
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            raise new(codes.ENG_PLAYER_ACTION_INVALID, extra={"reason": "empty_text"})
+
+        self._append(evt.EVENT_INTERVENTION_REQUESTED, {"text": text})
+        if self._was_intervened_this_round():
+            # 每轮 ≤1 次（§B5）：确定性拒绝，不调 Producer（本次请求也是审计）
+            self._reject_intervention("本轮已经干涉过一次了，推进一轮后再试。")
+            await self._flush_events()
+            return await self._result_at_point(new_events=[])
+
+        intent = await self.producer.parse_intervention(
+            text, context=self._intervention_context()
+        )
+        applied = self._apply_intervention(intent)
+        await self._flush_events()
+        self._log.info(
+            "intervention_applied",
+            extra={"kind": intent.kind, "applied": applied},
+        )
+        if not applied:
+            # 被拒绝：世界没变，保持当前交互点（不白跑一轮提议）
+            return await self._result_at_point(new_events=[])
+        # 干涉不推进剧情：回到交互点（选项按新世界重新设计）
+        return await self._drive_until_interaction()
+
+    def _was_intervened_this_round(self) -> bool:
+        """本轮（最近一次结算/换景之后）是否已发起过干涉——每轮 ≤1 次。
+
+        调用方在读之前刚 append 了本次 `intervention_requested`，故排除最后一条。
+        """
+        boundary = 0
+        events = self.event_store.active_events()
+        for ev in events:
+            if ev.event_type in (evt.EVENT_EXPLORATION_SETTLE, evt.EVENT_SCENE_SWITCH):
+                boundary = ev.event_id
+        prior = [
+            ev
+            for ev in events
+            if ev.event_type == evt.EVENT_INTERVENTION_REQUESTED and ev.event_id > boundary
+        ]
+        return len(prior) > 1
+
+    def _intervention_context(self) -> dict:
+        """制作人的输入装配（staff 不挂工具，design §B1）：全量世界单次打包。"""
+        current = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
+        )
+        known_locations = [
+            *self.exploration.registry.ordered(),
+            *self._world.dynamic_scenes.values(),
+        ]
+        visited_titles: list[str] = []
+        for key in self._exploration_progress.visited:
+            loc = self.exploration.location(key, self._world)
+            visited_titles.append(loc.title if loc is not None else key)
+        return {
+            "location_title": current.title if current is not None else "",
+            "visited_titles": visited_titles,
+            # 地点 key 与标题分开给：Producer 的 location_key 字段要填 key，
+            # 但 LLM 只见过标题——运行时两种都认（见 `_resolve_location_key`）
+            "locations": [
+                {"key": loc.location_key, "title": loc.title}
+                for loc in known_locations
+            ],
+            "roster": self._known_names(),
+            "player_role": self.state.player_role,
+            "budgets": {
+                "scenes_left": MAX_DYNAMIC_SCENES - len(self._world.dynamic_scenes),
+                "characters_left": MAX_NEW_CHARACTERS - len(self._world.characters),
+            },
+        }
+
+    def _resolve_location_key(self, raw: str | None) -> str | None:
+        """Producer 的地点参数可能是 key 也可能是标题（LLM 输出）——两种都认。"""
+        if not raw:
+            return None
+        if self.exploration.location(raw, self._world) is not None:
+            return raw
+        candidates = [
+            *self.exploration.registry.ordered(),
+            *self._world.dynamic_scenes.values(),
+        ]
+        return next((loc.location_key for loc in candidates if loc.title == raw), None)
+
+    def _known_names(self) -> list[str]:
+        """可拉入名单：剧本角色 + 运行期新增，排除玩家自己。"""
+        names = [c.name for c in self.script.characters if not c.is_player_playable]
+        names.extend(n for n in self._world.characters if n not in names)
+        if self.state.player_role in names:
+            names.remove(self.state.player_role)
+        return names
+
+    def _apply_intervention(self, intent: InterventionIntent) -> bool:
+        """按意图类型应用（全部事件化）；返回是否改动了世界。"""
+        if intent.kind == KIND_CREATE_SCENE:
+            return self._intervene_create_scene(intent)
+        if intent.kind == KIND_ADD_CHARACTER:
+            return self._intervene_add_character(intent)
+        if intent.kind == KIND_PULL_IN_CHARACTER:
+            return self._intervene_pull_in(intent)
+        return self._reject_intervention(intent.reason)
+
+    def _reject_intervention(self, reason: str) -> bool:
+        self._append(
+            evt.EVENT_INTERVENTION_REJECTED,
+            {"reason": reason or "这个请求无法实现。"},
+        )
+        return False
+
+    def _intervene_create_scene(self, intent: InterventionIntent) -> bool:
+        if len(self._world.dynamic_scenes) >= MAX_DYNAMIC_SCENES:
+            return self._reject_intervention(
+                f"新场景最多 {MAX_DYNAMIC_SCENES} 个，本局已经用完了。"
+            )
+        taken = {loc.title for loc in self.exploration.registry.ordered()}
+        taken.update(loc.title for loc in self._world.dynamic_scenes.values())
+        if intent.title in taken:
+            return self._reject_intervention("这个地点已经存在，不用再建。")
+        participants = tuple(
+            n for n in intent.participants if n in self._known_names()
+        )
+        scene_key = location_scene_key(intent.title)
+        payload = {
+            "scene_key": scene_key,
+            "location_key": intent.title,
+            "title": intent.title,
+            "participants": list(participants),
+            "visual_summary": intent.visual_summary,
+            # 锚定的已访问地点（§B4）：解析得到就记下（连通性过滤后置），
+            # 解析不到按当前地点处理——锚点是建议性输入，不因此拒绝
+            "parent_location_key": self._resolve_location_key(
+                intent.parent_location_key
+            )
+            or self._exploration_progress.current_location_key,
+            "current_asset": None,
+        }
+        self._append(evt.EVENT_SCENE_CREATED, payload)
+        self._refresh_world()
+        # 新场景无图（#56）：记一次 scene_montage 配图意图，Session 层后台生成
+        created = self._world.dynamic_scenes.get(scene_key)
+        if created is not None:
+            self._request_location_asset(created)
+        return True
+
+    def _intervene_add_character(self, intent: InterventionIntent) -> bool:
+        if len(self._world.characters) >= MAX_NEW_CHARACTERS:
+            return self._reject_intervention(
+                f"新角色最多 {MAX_NEW_CHARACTERS} 个，本局已经用完了。"
+            )
+        if intent.name == self.state.player_role or any(
+            c.name == intent.name for c in self.script.characters
+        ) or intent.name in self._world.characters:
+            return self._reject_intervention("这个名字已经在戏里了，不能新建同名角色。")
+        if intent.location_key:
+            location_key = self._resolve_location_key(intent.location_key)
+            if location_key is None:
+                return self._reject_intervention("没有这个地点。")
+        else:
+            location_key = self._exploration_progress.current_location_key
+        payload = {
+            "name": intent.name,
+            "public_background": intent.brief,
+            "personality_traits": [intent.personality] if intent.personality else [],
+            # 头像简述（§B5；头像生成本身随资产管线后置，字段先按事件形状留好）
+            "avatar_brief": intent.brief,
+            "location_key": location_key,
+            "origin": "player_intervention",
+        }
+        self._append(evt.EVENT_CHARACTER_CREATED, payload)
+        self._refresh_world()
+        # provenance 记忆与重放同一写者（derive_memories），实时也折这一次
+        self.characters.derive_memories(
+            [{"event_type": evt.EVENT_CHARACTER_CREATED, "payload": payload}]
+        )
+        return True
+
+    def _intervene_pull_in(self, intent: InterventionIntent) -> bool:
+        if intent.name not in self._known_names():
+            return self._reject_intervention(f"「{intent.name}」不在可拉入的角色名单里。")
+        if intent.name in self._exploration_present():
+            return self._reject_intervention(f"「{intent.name}」已经在这里了。")
+        here = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
+        )
+        if here is None:
+            return self._reject_intervention("当前地点无效。")
+        payload = {
+            "name": intent.name,
+            # 来源场景可推断就记（审计/迁移动画用），推断不到留空
+            "from_scene": self._character_current_scene(intent.name),
+            "to_scene": here.scene_key,
+            # Producer 生成的到场理由（§B5）：写进事件，重放/投影同源
+            "reason": intent.reason or "他闻讯赶来了。",
+        }
+        self._append(evt.EVENT_PULL_IN_CHARACTER, payload)
+        self._refresh_world()
+        return True
+
+    def _character_current_scene(self, name: str) -> str | None:
+        """角色此刻所在的地点场景键（按地点表现场名单推断；推断不到返回 None）。"""
+        for location in (
+            *self.exploration.registry.ordered(),
+            *self._world.dynamic_scenes.values(),
+        ):
+            if name in self.exploration.participants_at(location, self._world):
+                return location.scene_key
+        return None
+
+    def _refresh_world(self) -> None:
+        """从事件重建运行期世界 + 同步角色 Agent（实时路径与重放同构）。"""
+        self._world = derive_world(self.event_store.active_events())
+        self._sync_world_characters()
+
+    def _sync_world_characters(self) -> None:
+        """让 manager 的角色集与 `_world.characters` 一致（幂等，重放复用）。
+
+        回溯到 `character_created` 之前时该角色「从未存在」：事件派生集合里没有它，
+        这里把它从 manager 移除（生产路径按命令重建运行时，同一不变量）。
+        """
+        script_names = {c.name for c in self.script.characters}
+        for name in [n for n in self.characters.agents if n not in script_names]:
+            if name not in self._world.characters:
+                self.characters.remove_character(name)
+        for name, profile in self._world.characters.items():
+            self.characters.add_character(_setting_from_payload(profile))
 
     # ===== 推进引擎：跑到下一个稳定交互点 =====
 
@@ -919,11 +1310,14 @@ class GameRuntime:
             reached_ending = stage_name == "stage2" and self.state.beat_cursor >= total_beats(
                 self.script
             )
-            interaction = self.screenwriter.design_interaction(
-                stage=stage_name,
-                proposals=self._valid_proposals,
-                reached_ending=reached_ending,
-            )
+            if stage_name == "stage3" and self.exploration is not None:
+                interaction = self._stage3_interaction()
+            else:
+                interaction = self.screenwriter.design_interaction(
+                    stage=stage_name,
+                    proposals=self._valid_proposals,
+                    reached_ending=reached_ending,
+                )
             self.state.phase = InteractionPhase.PLAYER_TURN.value
             self.state_machine.enter_phase(InteractionPhase.PLAYER_TURN)
             self.active_interaction = interaction

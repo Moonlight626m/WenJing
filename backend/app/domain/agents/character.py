@@ -22,7 +22,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, Huma
 
 from app.domain.agents.chat_model import WenjingChatModel
 from app.domain.agents.tools import WorldView, build_character_tools
-from app.domain.game.event import EVENT_CHARACTER_SPEECH, EVENT_PROPOSAL
+from app.domain.game.event import (
+    EVENT_CHARACTER_CREATED,
+    EVENT_CHARACTER_SPEECH,
+    EVENT_PROPOSAL,
+)
 from app.domain.game.types import CharacterSetting, PlayerAction, Proposal
 from app.domain.llm import LLMService
 from app.infrastructure.errx import Error, codes, exc_reason, new, wrap
@@ -325,6 +329,21 @@ class CharacterAgentManager:
             if setting.is_player_playable:
                 self.player_role = setting.name
 
+    def add_character(self, setting: CharacterSetting) -> None:
+        """运行期新增 NPC（M6 干涉 `add_character`；design §B5）。
+
+        与剧本角色走**同一条创建路径**（裁剪视图 + player_role 缺省空）。
+        初始记忆为空；「为何在此」的 provenance 由 `derive_memories` 从
+        `character_created` 事件折叠（实时与重放同一写者，不双计）。
+        """
+        if setting.name in self.agents:
+            return  # 幂等：重放/实时双写同一次 character_created
+        self.create_agents([setting])
+
+    def remove_character(self, name: str) -> None:
+        """移除运行期新增角色（回溯到 `character_created` 之前 = 从未存在）。"""
+        self.agents.pop(name, None)
+
     def active_names(self, *, include_player: bool = False) -> list[str]:
         return [n for n in self.agents if include_player or n != self.player_role]
 
@@ -346,7 +365,10 @@ class CharacterAgentManager:
 
     def restore_memories(self, snapshot: dict[str, dict[str, Any]]) -> None:
         for name, data in snapshot.items():
-            self.agents[name].memory.restore(data)
+            # 快照可能引用当前分支已不存在的动态角色（回溯到创建前）——跳过
+            agent = self.agents.get(name)
+            if agent is not None:
+                agent.memory.restore(data)
 
     def clear_memories(self) -> None:
         """原地清空全部角色记忆（保持 agent/memory 对象身份——工具闭包持有引用，
@@ -383,3 +405,14 @@ class CharacterAgentManager:
                 text = str(payload.get("text", ""))
                 if text:
                     agent.record_speech(text)
+            elif etype == EVENT_CHARACTER_CREATED:
+                # 干涉新建角色的 provenance 记忆（「为何在此」）：与剧本角色
+                # 一样走事件折叠，回溯到创建之前该记忆随角色一起消失
+                name = payload.get("name")
+                agent = self.agents.get(str(name)) if name else None
+                if agent is None:
+                    continue
+                origin = payload.get("origin")
+                brief = str(payload.get("public_background", ""))
+                if origin == "player_intervention" and brief:
+                    agent.memory.personal_log.append(f"你因玩家的干涉而登场：{brief}")

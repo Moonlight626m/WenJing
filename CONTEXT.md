@@ -114,8 +114,9 @@ Stage2 是**纯 IO 的珊瑚形还原**（设计见 `docs/design/play-through-re
 地点的 `participants` ∩ 已创建角色 = 此刻在场的人，只有他们提议/回应。
 每轮玩家动作先做**确定性结算**（`exploration_settle`：地点化摘要 + 处境，零 LLM），
 再由在场 NPC 反应；**换景**用 `switch_scene` 命令前进式切换
-（`scene_switch` 事件，不建事件分支，交互点带 `scene_options`）。旧剧本没有地图，
-维持原 3 轮 agent 行为。解锁新场景 / 未连通地点随 M6 的 Producer 落地。
+（`scene_switch` 事件，不建事件分支，交互点带 `scene_options`）。玩家经**干涉**
+建出的**动态场景**（`scene_created`，`loc:{title}`）追加进同一地点表，可换景进入、
+照常结算与在场判定。旧剧本没有地图，维持原 3 轮 agent 行为；地点间连通性过滤尚未实现。
 
 ### 参演与工作人员（Cast / Staff）
 
@@ -126,12 +127,19 @@ Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC�
 
 ### 干涉（Intervene）
 
-Stage3 玩家用自然语言改变世界的命令（`intervene` + `IntervenePayload`）：
-建场景、从角色池拉人、新增角色（契约已就位；`ProducerAgent` 落地后该命令才进入
-Stage3 允许列表）。`ProducerAgent` 解析为结构化意图并做 canon/预算
-校验，应用结果全部事件化（`scene_created`/`character_created` 等），因此**可回溯**——
-回到创建之前，该场景/角色等于从未存在。离线期间 NPC 自主行动（§B6），回来只给
-`offline_hint` 提示并指路时间线。
+Stage3 玩家用自然语言改变世界的命令（`intervene` + `IntervenePayload`，已进
+Stage3 允许列表）：建场景、从角色池拉人、新增角色。`ProducerAgent` 解析为结构化
+意图（解析失败 fail-closed 成拒绝），运行时做确定性 canon/预算校验——新场景 ≤3/会话、
+新角色 ≤2/会话、每轮 ≤1 次。应用结果全部事件化（`scene_created`/`character_created`/
+`pull_in_character`），因此**可回溯**——回到创建之前，该场景/角色等于从未存在。
+干涉不消耗续写回合。离线期间 NPC 自主行动（§B6），回来只给 `offline_hint` 提示
+并指路时间线。
+
+### 世界事实（World Fact）
+
+`world_fact {fact_id, kind, text, visibility, audience, location_key}`：世界层面的
+事实（M6 起事件化）。`public` 进公屏与所有角色视图；`private` **只**进 `audience`
+角色的 `view_world_facts` 工具结果——投影层与时间线显式过滤，绝不当系统消息广播。
 
 ### 回溯（Rollback）与回溯页
 

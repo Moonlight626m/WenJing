@@ -48,6 +48,12 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** 输入法选词时的回车是「上屏」不是发送。Safari 在 keydown 时 isComposing 已复位，
+ * 只能再看一眼 keyCode 229。 */
+function isImeEnter(e: { nativeEvent: { isComposing: boolean }; keyCode: number }): boolean {
+  return e.nativeEvent.isComposing || e.keyCode === 229;
+}
+
 /**
  * 三种输入模式：options / free_input / options_with_fallback。
  *
@@ -58,8 +64,9 @@ export function InteractionCard() {
   const interaction = useGameStore((s) => s.interaction);
   const stage = useGameStore((s) => s.stage);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
-  // 自由输入的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
+  // 自由输入/干涉的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
   const [freeText, setFreeText] = useState("");
+  const [interveneText, setInterveneText] = useState("");
   const extras = allowedCommands.filter(isExtraCommand);
 
   return (
@@ -71,6 +78,8 @@ export function InteractionCard() {
             interaction={interaction}
             freeText={freeText}
             setFreeText={setFreeText}
+            interveneText={interveneText}
+            setInterveneText={setInterveneText}
           />
         ) : extras.length > 0 ? (
           <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
@@ -171,10 +180,14 @@ function InteractionBody({
   interaction,
   freeText,
   setFreeText,
+  interveneText,
+  setInterveneText,
 }: {
   interaction: ActiveInteraction;
   freeText: string;
   setFreeText: (update: (prev: string) => string) => void;
+  interveneText: string;
+  setInterveneText: (update: (prev: string) => string) => void;
 }) {
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const pending = useGameStore((s) => s.pending);
@@ -187,6 +200,7 @@ function InteractionBody({
   const canChoose = allowedCommands.includes("choose_option");
   const canFree = allowedCommands.includes("free_input");
   const canSwitch = allowedCommands.includes("switch_scene");
+  const canIntervene = allowedCommands.includes("intervene");
   const sceneOptions = interaction.scene_options ?? [];
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
@@ -219,18 +233,30 @@ function InteractionBody({
     submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
   }
 
+  function sendText(
+    kind: "free_input" | "intervene",
+    text: string,
+    allowed: boolean,
+    reset: () => void,
+    label: string,
+  ) {
+    const trimmed = text.trim();
+    if (!trimmed || busy || !allowed) return;
+    submit(kind, { text: trimmed }, label);
+    reset();
+  }
+
   function sendFreeInput() {
-    const text = freeText.trim();
-    if (!text || busy || !canFree) return;
-    submit("free_input", { text }, "自由输入");
-    setFreeText(() => "");
+    sendText("free_input", freeText, canFree, () => setFreeText(() => ""), "自由输入");
+  }
+
+  function sendIntervene() {
+    sendText("intervene", interveneText, canIntervene, () => setInterveneText(() => ""), "干涉世界");
   }
 
   function onComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key !== "Enter" || e.shiftKey) return;
-    // 输入法选词时的回车是「上屏」不是发送。Safari 在 keydown 时 isComposing 已复位，
-    // 只能再看一眼 keyCode 229。
-    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (isImeEnter(e)) return;
     e.preventDefault();
     sendFreeInput();
   }
@@ -404,6 +430,43 @@ function InteractionBody({
           <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
             Enter 发送，Shift + Enter 换行
             {canChoose && options.length > 0 ? "；也可以直接按数字键选上面的选项" : ""}
+          </p>
+        </div>
+      )}
+
+      {/* 干涉世界（M6）：自然语言改变世界——建场景/拉人/新增角色，制作人裁定。
+          旧剧本没有探索地图（scene_options 为空），引擎会拒绝，不显示入口 */}
+      {canIntervene && sceneOptions.length > 0 && (
+        <div className="mt-3">
+          <p className="font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+            干涉世界
+          </p>
+          <div className="mt-1.5 flex items-center gap-1.5 rounded-2xl border border-dashed border-glass-edge bg-surface/20 p-1 pl-3 transition-[border-color] duration-200 focus-within:border-glow-gold/50">
+            <input
+              value={interveneText}
+              onChange={(e) => setInterveneText(() => e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" || isImeEnter(e)) return;
+                e.preventDefault();
+                sendIntervene();
+              }}
+              placeholder="如：建一间雨夜客栈 / 叫船夫过来 / 让一个乞丐加入"
+              aria-label="干涉世界"
+              maxLength={2000}
+              disabled={busy}
+              className="min-w-0 flex-1 bg-transparent py-1.5 font-serif text-sm text-ink placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+            />
+            <Button
+              tone="glow"
+              size="sm"
+              onClick={sendIntervene}
+              disabled={busy || !interveneText.trim()}
+            >
+              干涉
+            </Button>
+          </div>
+          <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
+            每轮可以干涉一次；制作人可能不答应。
           </p>
         </div>
       )}

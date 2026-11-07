@@ -34,15 +34,21 @@ from app.contracts.runtime import (
 from app.contracts.script import AssetRef
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.event import (
+    EVENT_CHARACTER_CREATED,
     EVENT_EXPLORATION_SETTLE,
+    EVENT_INTERVENTION_REJECTED,
+    EVENT_INTERVENTION_REQUESTED,
+    EVENT_PULL_IN_CHARACTER,
     EVENT_REPLAY_CHOICE,
     EVENT_REPLAY_ENDING_REACHED,
     EVENT_REPLAY_NARRATION,
     EVENT_REPLAY_NODE_ENTERED,
     EVENT_ROLLBACK,
+    EVENT_SCENE_CREATED,
     EVENT_SCENE_SWITCH,
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
+    EVENT_WORLD_FACT,
 )
 from app.domain.game.game_runtime import StepResult
 from app.domain.game.goals import GoalState, apply_goal_event
@@ -248,6 +254,16 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     # 续写目标：定下与达成都以系统消息出现在消息流里，payload 另带一份目标快照
     "stage3_goals_set": "system",
     "stage3_goal_achieved": "system",
+    # 玩家干涉世界（M6 §B5）：请求/拒绝/生效全部是系统消息，玩家能看到后果；
+    # 动态场景与角色由事件派生，消息文本只做摘要（结构以事件为准）
+    EVENT_INTERVENTION_REQUESTED: "system",
+    EVENT_INTERVENTION_REJECTED: "system",
+    EVENT_SCENE_CREATED: "system",
+    EVENT_CHARACTER_CREATED: "system",
+    EVENT_PULL_IN_CHARACTER: "system",
+    # 世界事实（M6 §B6）：public 进公屏；private 只进 audience 角色视图，
+    # 投影层在下方显式过滤（本层无 viewer，不能当普通 system 广播）
+    EVENT_WORLD_FACT: "system",
     # 运行期配图就绪（#56）：命令外事件路径的唯一对外出口——不列这里，
     # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
     "asset_ready": "asset_ready",
@@ -275,7 +291,27 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
         return "续写目标：" + "；".join(descs)
     if event_type == EVENT_STAGE3_GOAL_ACHIEVED:
         return f"达成续写目标：{p.get('description', '')}"
+    if event_type == EVENT_INTERVENTION_REQUESTED:
+        return f"你的干涉：{p.get('text', '')}"
+    if event_type == EVENT_INTERVENTION_REJECTED:
+        return f"制作人没有应允：{p.get('reason', '')}"
+    if event_type == EVENT_SCENE_CREATED:
+        return f"新地点「{p.get('title', '')}」出现了，可在「前往」里选它。"
+    if event_type == EVENT_CHARACTER_CREATED:
+        return f"新角色「{p.get('name', '')}」登场：{p.get('public_background', '')}"
+    if event_type == EVENT_PULL_IN_CHARACTER:
+        reason = str(p.get("reason", "") or "")
+        if reason:
+            return f"「{p.get('name', '')}」来到了现场：{reason}"
+        return f"「{p.get('name', '')}」来到了现场。"
+    if event_type == EVENT_WORLD_FACT:
+        return str(p.get("text", ""))
     return event_type
+
+
+def _is_private_fact(event_type: str, p: dict[str, Any]) -> bool:
+    """私密世界事实不得进公屏/时间线（§B6 机制层知识边界）。"""
+    return event_type == EVENT_WORLD_FACT and p.get("visibility") == "private"
 
 
 def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
@@ -312,6 +348,8 @@ def project_messages(
     for seq, ev in enumerate(store.active_events()):
         goals = apply_goal_event(goals, ev.event_type, ev.payload or {})
         if seq <= after_seq or ev.event_type in _SILENT_EVENTS:
+            continue
+        if _is_private_fact(ev.event_type, ev.payload or {}):
             continue
         category = _MESSAGE_CATEGORY_MAP.get(ev.event_type)
         if category is None:
@@ -392,6 +430,9 @@ def project_timeline(
     plot_asset: AssetRef | None = None
     for seq, ev in enumerate(path):
         p = ev.payload or {}
+        # 私密世界事实不进时间线：回溯页与公屏同一条过滤口径
+        if _is_private_fact(ev.event_type, p):
+            continue
         if ev.event_type in (
             "plot_advancement",
             EVENT_REPLAY_NODE_ENTERED,

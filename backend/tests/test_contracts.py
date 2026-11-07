@@ -208,8 +208,8 @@ def test_allowed_commands_semantics() -> None:
     assert CommandKind.FREE_INPUT in stage3
     # 换景（M5）：只切到已存在的地点
     assert CommandKind.SWITCH_SCENE in stage3
-    # INTERVENE 的契约已就位，但接入允许列表要等 M6 的 ProducerAgent 处理器
-    assert CommandKind.INTERVENE not in stage3
+    # 玩家干涉世界（M6）：ProducerAgent 已接入处理器
+    assert CommandKind.INTERVENE in stage3
 
 
 def test_new_domain_events_have_matching_contract_event_types() -> None:

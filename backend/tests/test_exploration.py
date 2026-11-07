@@ -76,11 +76,11 @@ def _map() -> ExplorationMap:
     )
 
 
-def _make_runtime(*, with_map: bool = True) -> GameRuntime:
+def _make_runtime(*, with_map: bool = True, llm=None) -> GameRuntime:
     return GameRuntime(
         session_id="explore-session",
         script=_script(),
-        llm=FakeLLMService(),
+        llm=llm or FakeLLMService(),
         event_store=EventStore(),
         exploration_map=_map() if with_map else None,
     )
@@ -217,6 +217,10 @@ async def test_switch_scene_moves_and_present_npcs_react():
     assert switches[-1]["participants"] == ["乙", "丙"]
     assert result.state["scene_key"] == "loc:inn"
     assert result.state["scene_title"] == "客栈"
+    # 画师接线（M6）：到访无图地点时记一次 scene_montage 配图意图
+    assert [(i.kind, i.scene_key) for i in result.asset_requests] == [
+        ("scene_montage", "loc:inn")
+    ]
     speakers = {p["speaker"] for p in _events(rt, EVENT_CHARACTER_SPEECH)}
     assert speakers == {"乙", "丙"}
 
@@ -364,3 +368,14 @@ async def test_legacy_script_keeps_all_characters_reacting():
     assert result.state["stage"] == "stage3_extending"
     assert rt._exploration_present() == ("乙", "丙")
     assert rt.export_state()["scene_options"] == []
+
+
+async def test_director_options_drive_stage3_interaction():
+    """M6：有导演输出时交互点用导演选项；没有时回退已验证提议。"""
+    rt = _make_runtime(
+        llm=FakeLLMService(director_output='{"options": ["与船夫攀谈", "检查船绳"]}')
+    )
+    result = await _to_stage3(rt)
+
+    labels = [o["text"] for o in result.active_interaction["options"]]
+    assert labels == ["与船夫攀谈", "检查船绳"]

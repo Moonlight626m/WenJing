@@ -70,8 +70,8 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
             CommandKind.EXIT_GAME,
             # 换景（M5）：只切到已存在的地点的；解锁新场景走 INTERVENE（M6）
             CommandKind.SWITCH_SCENE,
-            # INTERVENE 契约已就位，M6 接入 ProducerAgent 处理器后才加进这里
-            # （提前允许会落到引擎的非法命令兜底）
+            # 玩家干涉世界（M6）：ProducerAgent 解析建场景/拉角色/新角色
+            CommandKind.INTERVENE,
         }
     ),
     StageValue.ENDED: frozenset(),

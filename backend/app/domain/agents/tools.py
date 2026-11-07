@@ -39,6 +39,9 @@ class WorldView(Protocol):
     def roster(self) -> list[dict[str, Any]]:
         """在场角色名册（公开信息）：名字、公开背景、是否为玩家角色。"""
 
+    def world_facts(self) -> list[dict[str, Any]]:
+        """该角色可见的世界事实：公开事实全量 + 只说给它听的私密事实（M6）。"""
+
 
 class MemoryView(Protocol):
     """角色自身记忆的只读投影（`CharacterMemory` 结构上满足）。"""
@@ -76,6 +79,11 @@ def build_character_tools(*, memory: MemoryView, world: WorldView) -> list[BaseT
         return _dump(world.roster())
 
     @tool
+    def view_world_facts() -> str:
+        """查看你知道的世界事实（含只说给你听的私密事实），作为行动依据。"""
+        return _dump(world.world_facts())
+
+    @tool
     def view_my_memory() -> str:
         """查看你自己的私有记忆：先前提议与自我行动日志。"""
         return _dump({"personal_log": memory.personal_log[-10:], "rejected": memory.rejected[-10:]})
@@ -86,6 +94,7 @@ def build_character_tools(*, memory: MemoryView, world: WorldView) -> list[BaseT
         view_current_direction,
         view_story_outline,
         view_characters,
+        view_world_facts,
         view_my_memory,
     ]
 

@@ -67,11 +67,22 @@ class RuntimeWorldView:
         return [*entries[:limit], *spoken[-limit:]]
 
     def _in_scene(self, scene_key: str | None) -> bool:
-        """该角色是否在 scene_key 指的场景里（viewer 未绑 = 看不到发言台账）。"""
+        """该角色是否在 scene_key 指的场景里（viewer 未绑 = 看不到发言台账）。
+
+        M6：`loc:` 键不再经剧本场景表——动态场景/拉人在运行期注册表里，
+        静态地图 + `_world.memberships` 与 `ExplorationDirector.present_names`
+        同一判定口径。
+        """
         if self._viewer is None or scene_key is None:
             return False
-        scene = self._runtime._scene_by_key(scene_key)  # noqa: SLF001 - 同包适配器
-        return scene is not None and self._viewer in scene.participants
+        return self._viewer in self._runtime._scene_participants(scene_key)  # noqa: SLF001 - 同包适配器
+
+    def world_facts(self) -> list[dict[str, Any]]:
+        """该角色可见的世界事实（M6 §B6）：public 全量 + 只说给 audience 的 private。"""
+        return [
+            {"kind": f.kind, "text": f.text}
+            for f in self._runtime._world.facts_for(self._viewer)  # noqa: SLF001 - 同包适配器
+        ]
 
     def direction(self) -> dict[str, str]:
         return dict(self._runtime.state.direction)
@@ -91,7 +102,7 @@ class RuntimeWorldView:
 
     def roster(self) -> list[dict[str, Any]]:
         state = self._runtime.state
-        return [
+        entries = [
             {
                 "name": c.name,
                 "public_background": c.public_background,
@@ -99,6 +110,18 @@ class RuntimeWorldView:
             }
             for c in self._runtime.script.characters
         ]
+        # 运行期新增角色（M6）：与剧本角色同形（roster 是公开信息，不加私域字段）
+        for name, profile in self._runtime._world.characters.items():  # noqa: SLF001 - 同包适配器
+            if any(e["name"] == name for e in entries):
+                continue
+            entries.append(
+                {
+                    "name": name,
+                    "public_background": str(profile.get("public_background", "")),
+                    "is_player_role": name == state.player_role,
+                }
+            )
+        return entries
 
 
 __all__ = ["RuntimeWorldView"]

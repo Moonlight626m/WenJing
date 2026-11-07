@@ -121,21 +121,33 @@ class FakeLLMService:
         proposal_text: str = "我提议质询对方",
         react_text: str = "我平静地回应。",
         verifier_output: str = "pass",
+        # 制作人默认 fail-closed：解析失败 → intervention_rejected（与无 key 的
+        # 确定性 Agent 同口径）；需要走通干涉的测试显式传 JSON。
+        producer_output: str = '{"kind":"reject","reason":"测试环境不做干涉"}',
+        # 导演默认 None = 回落到 proposal_text（解析不出 → 选项回退到已验证提议），
+        # 保住既有 M5 测试对回退选项文本的断言。
+        director_output: str | None = None,
     ) -> None:
         self._proposal_text = proposal_text
         self._react_text = react_text
         self._verifier_output = verifier_output
+        self._producer_output = producer_output
+        self._director_output = director_output
         self.call_count = 0
         self.calls: list[list[dict]] = []
 
     async def chat(self, messages, *, session_id: str = "", purpose=None):
         self.call_count += 1
         self.calls.append(messages)
-        # 验证 Agent 的 system 提示不在最后一条里（system + user 两条），必须扫全文；
-        # 只看 messages[-1] 会让 `verifier_output` 形同虚设。
+        # 验证/制作人/导演的 system 提示不在最后一条里（system + user 两条），
+        # 必须扫全文；只看 messages[-1] 会让这些开关形同虚设。
         joined = "\n".join(str(m.get("content", "")) for m in messages)
         if "验证 Agent" in joined or "你是验证" in joined:
             return self._verifier_output
+        if "制作人 Agent" in joined:
+            return self._producer_output
+        if "导演 Agent" in joined and self._director_output is not None:
+            return self._director_output
         user = messages[-1]["content"] if messages else ""
         if "react" in user:
             return self._react_text

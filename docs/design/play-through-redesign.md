@@ -323,6 +323,48 @@ scripts（content_version/format/replay_ready）
   拉一个当前不在场的角色进入场景（`pull_in_character`），无需新建 profile；新建角色
   走 `add_character` 生成 profile（staff LLM）→ 入池 + 入场。
 
+**实现注记（2026-11-07，M6 已落地）**：
+- 命令 `intervene {text}` 进 Stage3 允许列表（契约加法，**3.3.0**）；前端交互卡
+  增加「干涉世界」输入框（Enter 提交，草稿随卡切换保留）。
+- `ProducerAgent.parse_intervention` 只做解析（不挂工具、上下文由运行时装配），
+  失败/未知 kind/缺字段一律 `reject`（fail-closed）；`pull_in_character` 的
+  到场理由由 Producer 生成、写进事件，缺省「他闻讯赶来了」。
+- 运行时校验在 `GameRuntime`：预算（新场景 ≤3、新角色 ≤2、每轮 ≤1 次干涉）、
+  同名/玩家角色、地点存在、可拉入名单；**所有拒绝都写 `intervention_rejected`**，
+  且不调 Producer（每轮上限）或保持当前交互点（世界没变）。
+- 干涉**不写 `player_action`**、不消耗 `stage3_round_taken`——否则重放会把一次
+  干涉多算一拍、提前收束。每轮上限由「最近一次 settle/switch 之后的
+  `intervention_requested` 数」判定（事件折叠，回溯自动回退）。
+- 画师接线补齐 M5 留下的口子：静态探索地点没有 Stage2 离线槽位，结算与换景时
+  若事件索引里没有图，就记一次 `SceneAssetIntent(kind="scene_montage")`
+  （描述取 `visual_summary`），去重交给会话层调度器。
+- 动态场景 `scene_created`：`location_key` 直接用地点标题（`scene_key = loc:{title}`），
+  同名静态/动态地点拒绝；进 `WorldState.dynamic_scenes`，`scene_options` 追加、
+  可 `switch_scene` 进入，`ExplorationDirector.location/resolve_scene` 先静态后动态，
+  结算/在场/标题解析同一套代码。配图发 `SceneAssetIntent(kind="scene_montage")`。
+- 动态角色 `character_created`：`CharacterAgentManager.add_character` 与剧本角色
+  同一条创建路径（裁剪世界视图）；provenance 记忆（「你因玩家的干涉而登场：…」）
+  由 `derive_memories` 从事件折叠，实时/重放同一写者。
+- `pull_in_character`：只加入当前地点的在场成员（`WorldState.memberships`），
+  不新建 profile；已在场/不在名册均拒绝。
+- 世界事实 `world_fact`：`derive_world` 折叠；public 投影为公屏 system 消息，
+  private **只**进 audience 角色的 `view_world_facts` 工具结果——投影层与时间线
+  都显式过滤（`_is_private_fact`），不泄漏。
+- 回溯/重放：`replay_from` 先 `derive_world` + 同步角色 agent，再折叠记忆；
+  回溯到 `exploration_settle` 之前，其后创建的场景/角色/事实一并消失
+  （`_sync_world_characters` 会移除已不存在的动态角色）。
+- **SceneBrief 的落法**：没有单独立类型——新场景的「地点/视觉摘要/在场」
+  就是 `scene_created` 载荷，画师输入就是同一份 `SceneAssetIntent`（描述取
+  `visual_summary`）；场景实体的唯一真相仍是事件。
+- **Producer 地点参数容错**：上下文同时给「标题=key」映射；运行时的
+  `_resolve_location_key` key 与标题都认（LLM 输出不可靠，fail-closed 只用于
+  地点不存在）。`parent_location_key` 解析后写入 `scene_created` 作锚点，
+  连通性过滤后置。
+- **未做**：新角色头像生成（`character_created` 已带 `avatar_brief`，资产管线只
+  接了 `scene_montage`）；独立文本内容安全过滤（复用 Producer 的 prompt 规则与
+  fail-closed 解析；canon 的「不得改写已发生事实」目前只靠 prompt 约束，
+  确定性校验仅覆盖玩家角色/同名/预算）；地点间连通性过滤仍未实现。
+
 ### B6. 离线 tick：NPC 自主行动（无 Director）
 
 - 触发：`session_init` 按 `last_tick_at` 补算，clamp `max_offline_ticks=3`；无定时器。
