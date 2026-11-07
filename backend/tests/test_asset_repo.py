@@ -18,7 +18,7 @@ from app.domain.game.media import AssetKind, AssetRecord, AssetStatus
 from app.infrastructure.media import SqlAssetRepository
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 

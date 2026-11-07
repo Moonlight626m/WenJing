@@ -38,14 +38,12 @@ class Script(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft", index=True)
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="org")
     # 生成成功后写入 ScriptPackage；草稿/生成失败时为 NULL
     script_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     verification: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )

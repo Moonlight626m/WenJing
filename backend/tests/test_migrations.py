@@ -23,7 +23,7 @@ from alembic import command as alembic_command
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 _BASELINE_TABLES = {
@@ -40,6 +40,9 @@ _BASELINE_TABLES = {
     "llm_usage",
     "media_usage",
     "assets",
+    "asset_jobs",
+    "prompts",
+    "script_generations",
 }
 
 
@@ -92,6 +95,24 @@ async def test_upgrade_head_creates_baseline_tables(migrated: Config):
             )
             tables = {r[0] for r in rows}
         assert _BASELINE_TABLES <= tables, f"缺表: {_BASELINE_TABLES - tables}"
+    finally:
+        await engine.dispose()
+
+
+async def test_upgrade_head_covers_model_metadata(migrated: Config):
+    """v2 基线 == 模型元数据：新增模型表必须同步进基线/增量迁移。"""
+    import app.infrastructure.models  # noqa: F401
+    from app.infrastructure.db.session import Base
+
+    engine = create_async_engine(_DB_URL, pool_timeout=5, connect_args={"timeout": 5})
+    try:
+        async with engine.connect() as conn:
+            rows = await conn.execute(
+                text("select tablename from pg_tables where schemaname = 'public'")
+            )
+            tables = {r[0] for r in rows}
+        expected = set(Base.metadata.tables)
+        assert expected <= tables, f"基线缺模型表: {expected - tables}"
     finally:
         await engine.dispose()
 

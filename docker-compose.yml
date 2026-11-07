@@ -10,7 +10,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-wenjing}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wenjing}
-      POSTGRES_DB: ${POSTGRES_DB:-wenjing}
+      POSTGRES_DB: ${POSTGRES_DB:-wenjing_v2}
     # 仅绑定回环，避免数据库直接暴露公网
     ports:
       - "127.0.0.1:5432:5432"
@@ -76,7 +76,7 @@ services:
     environment:
       WENJING_DEBUG: "false"
       WENJING_RUN_MIGRATIONS: "1"
-      WENJING_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wenjing}:${POSTGRES_PASSWORD:-wenjing}@db:5432/${POSTGRES_DB:-wenjing}
+      WENJING_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-wenjing}:${POSTGRES_PASSWORD:-wenjing}@db:5432/${POSTGRES_DB:-wenjing_v2}
       WENJING_CORS_ORIGINS: ${WENJING_CORS_ORIGINS:-http://localhost}
       # 走 HTTPS 时置 1，Cookie 加 Secure；纯 HTTP 部署保持 0
       WENJING_AUTH_COOKIE_SECURE: ${WENJING_AUTH_COOKIE_SECURE:-0}

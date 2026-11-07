@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # CORS 允许来源（逗号分隔）；默认本地前端 dev server
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
-    database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    database_url: str = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 
     # 账号会话（issue #17 / ADR-0002）。生产走 HTTPS 时应置 WENJING_AUTH_COOKIE_SECURE=1。
     auth_cookie_secure: bool = False

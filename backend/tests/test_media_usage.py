@@ -20,7 +20,7 @@ from app.infrastructure.media import MediaQuotaService, MediaUsageRecorder
 from app.infrastructure.models.media_usage import MediaUsage as MediaUsageRow
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 

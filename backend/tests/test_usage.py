@@ -25,7 +25,7 @@ from app.infrastructure.usage import UsageContext, UsageRecorder, UsageRecording
 from app.services.admin import AdminService
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 

@@ -36,7 +36,7 @@ from app.main import create_app
 from app.services.script_library import ScriptLibrary
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 _MATERIAL_TEXT = (

@@ -25,7 +25,7 @@ from app.infrastructure.models.event_branch import EventBranchRecord
 from app.infrastructure.models.session import Session
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 _SID = uuid.uuid4()

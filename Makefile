@@ -2,7 +2,7 @@ PY := uv run
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install db-up db-down db-reset media-up dev dev-stop dev-status dev-backend dev-frontend test lint lint-arch build \
+.PHONY: help install db-up db-down db-reset db-create-v2 media-up dev dev-stop dev-status dev-backend dev-frontend test lint lint-arch build \
 	build-backend build-frontend up down logs migrate seed demo e2e
 
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "  make db-up          启动本地 PostgreSQL (docker compose)"
 	@echo "  make db-down        停止本地 PostgreSQL"
 	@echo "  make db-reset       破坏式重建：删库卷 → 起库 → 迁移 → seed（旧数据不可恢复）"
+	@echo "  make db-create-v2   既有库卷上补建 wenjing_v2（新卷由 POSTGRES_DB 默认值创建）"
 	@echo "  make media-up       启动本地 MinIO 对象存储 + 建桶（docker compose）"
 	@echo "  make migrate        运行 Alembic 迁移 (backend)"
 	@echo "  make seed           写入默认 org 与测试账号（幂等）"
@@ -40,6 +41,10 @@ db-up:
 
 db-down:
 	docker compose down
+
+# 既有 pgdata 卷不会因 POSTGRES_DB 改动而新建库：显式补建（幂等）。
+db-create-v2:
+	@docker compose exec -T db psql -U $${POSTGRES_USER:-wenjing} -tAc "select 1 from pg_database where datname='wenjing_v2'" | grep -q 1 || docker compose exec -T db psql -U $${POSTGRES_USER:-wenjing} -c "create database wenjing_v2"
 
 # 破坏式重建（ADR-0002）：旧匿名数据无保留价值。会删除 pgdata 卷。
 db-reset:

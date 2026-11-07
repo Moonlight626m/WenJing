@@ -28,7 +28,7 @@ from app.services.script_library import ScriptLibrary
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 _MATERIAL_TEXT = (

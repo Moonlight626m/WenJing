@@ -20,7 +20,10 @@ if config.config_file_name is not None:
 # 若调用方显式注入了真实 URL（如迁移测试的临时库），则不覆盖。
 _url = config.get_main_option("sqlalchemy.url")
 if not _url or _url.startswith("driver://"):
-    config.set_main_option("sqlalchemy.url", get_settings().database_url)
+    # 显式注入的真实 URL（迁移测试的临时库）优先；占位符才回落到应用配置
+    config.set_main_option(
+        "sqlalchemy.url", get_settings().database_url.replace("%", "%%")
+    )
 
 target_metadata = Base.metadata
 
@@ -65,8 +68,4 @@ def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    config.set_main_option(
-        "sqlalchemy.url",
-        get_settings().database_url.replace("%", "%%"),
-    )
     run_migrations_online()

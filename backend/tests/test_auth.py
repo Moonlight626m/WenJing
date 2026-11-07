@@ -21,7 +21,7 @@ from app.services.auth import DEFAULT_ORG_NAME
 from app.services.auth_seed import seed
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 _REGISTER = {

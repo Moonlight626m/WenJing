@@ -359,6 +359,23 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
 3. `make seed` 重建管理员/提示词；剧本重新生成。
 4. 旧库只读保留用于观察；不写迁移脚本。
 
+**实现注记（2026-11-07，已落地）**：
+- `alembic/versions/0001_v2_initial.py` 是合并后的单一基线；旧链 0001–0012 移到
+  `alembic/legacy_versions/`（不再被 Alembic 扫描，供对照/审计）。基线由
+  autogenerate 生成后**补齐了服务端默认值**（模型未声明 `server_default` 的列从
+  旧库回填），并与旧库 `pg_dump` 逐段比对；保留旧链手工建的
+  `ix_scripts_status`（模型同步加 `index=True`）。剩余差异只有列顺序与
+  `created_at` 可空性（新基线取模型的 NOT NULL，更严格）。
+- `alembic/env.py`：显式注入的 `sqlalchemy.url` 现在真正优先（原先底部无条件用
+  Settings 覆盖，迁移测试的临时库 URL 实际无效）；只有占位符才回落 Settings。
+- 新库创建：新卷由 `POSTGRES_DB=wenjing_v2` 直接创建；既有卷用
+  `make db-create-v2` 补建（幂等）。应用默认 URL、`.env.example`、docker-compose
+  已指向 `wenjing_v2`；旧库 `wenjing` 只读保留。
+- **与草案的差异**：M2 基线仍是**当前** schema（含 `scripts.script_data`）。
+  §D2 的 `script_*` 关系表、`session_ticks`、快照新列随各自里程碑以 0002+ 增量
+  迁移落地；等表仓储（M3/M4）接管读写后再删 `script_data`——否则 M2→M3 之间
+  应用无法启动，违背「每个里程碑可运行」。
+
 ---
 
 ## E. 里程碑

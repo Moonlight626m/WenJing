@@ -333,7 +333,7 @@ async def test_dossier_with_web_claims_survives_checkpoint_write() -> None:
 
     db_url = os.environ.get(
         "WENJING_DATABASE_URL",
-        "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing",
+        "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2",
     )
     engine = create_async_engine(db_url, pool_timeout=5, connect_args={"timeout": 5})
     try:

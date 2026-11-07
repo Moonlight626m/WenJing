@@ -26,7 +26,7 @@ from app.infrastructure.media import ImageProcessor, SqlAssetRepository
 from app.services.assets import AssetAccessService
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 _REGISTER = {"schema_version": "2.4.0", "phone": None, "password": "supersecret1"}
 

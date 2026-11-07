@@ -25,7 +25,7 @@ from app.domain.game.media import AssetCredit, AssetKind, ImageCandidate
 from app.infrastructure.usage import UsageContext, UsageRecorder, UsageRecordingLLM
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 

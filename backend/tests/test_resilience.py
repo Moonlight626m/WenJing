@@ -36,7 +36,7 @@ from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
 from app.services.session_runtime import SessionApplication
 
 _DB_URL = os.environ.get(
-    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing"
+    "WENJING_DATABASE_URL", "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
 )
 
 
