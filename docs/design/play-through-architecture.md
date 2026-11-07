@@ -319,11 +319,31 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
   `stage3_round_taken` 不变；每轮上限由「最近一次 settle/switch 之后已有
   `intervention_requested`」判定。
 
-### 7.3 未落地（M7）的实现约束
+### 7.3 已落地：离线 tick（M7）
 
-- **离线 tick**：`session_ticks(session_id, tick_index)` UNIQUE + claim-first，
-  一 tick 一事务；只写 `offline_hint` 与事件，不设计玩家选项、不跑 Director。
-  其 `world_fact` 写入路径已在 M6 打通（`visibility/audience/location_key`）。
+- 触发：WS `session_init` 进快照之前补算（`_run_offline_ticks_guarded`），失败只记日志
+  不阻断连接；只对续写阶段、未结束的会话生效。间隔由
+  `offline_tick_interval_minutes`（缺省 30）决定，一次最多
+  `max_offline_ticks`（缺省 3）个时段；间隔 0 = 关闭。
+- 幂等：`session_ticks(session_id, tick_index)` 是 **claim-first** 幂等闸——认领行与
+  该 tick 的事件在**同一事务**里写（`SessionStore.commit(claim=...)`），并发 init
+  只会有一个赢家；`tick_id = uuid5(session_id, tick_index)`。
+- 每 tick：重建运行时 → **全体 cast** 自主提议（LLM，并行；事实按各自所在地点锚定）
+  → Verifier → 确定性结算
+  （每个被接受的行动写成 public `world_fact {kind: npc_action, tick_id, location_key}`）。
+  不设计玩家选项、不跑导演、不判目标、不推进 `stage3_round_taken`、不写台词。
+- 结束写一条 `offline_hint`（命令外事件路径）：只指路时间线，不写详细摘要。
+- 已知边界：LLM 提议在 claim 之前执行（并发 init 可能重复花费，但事件效果由
+  claim 保证只落一次）；`offline_hint` 在 tick 事务之外单独提交（report_runtime_event
+  CAS 重试；极端失败时本批次不再补写提示，但 tick 事实不会丢）；「事件序列指针」
+  以 tick id 形式给出（`world_fact.fact_id` 前缀即 tick id）。
+- 未做：关系漂移（无关系模型）、**地点变化**（确定性结算不推断）自助迁移、
+  tick 内铸新场景与画师生图（需要 Producer 式裁定）、`scheduled_facts`（v5 改为
+  NPC 自主行动，未使用作者预写事实）。
+
+### 7.4 未落地（M8 及以后）
+
+- **快照新列与回溯页**（M8）：`branch_id/sequence/label/kind`、坐标统一、存档点列表。
 - **新角色头像**：`character_created` 已带 公开背景/性格，但画师侧只接了场景的
   `scene_montage` 意图；角色头像生成随资产管线扩展。
 - **旧剧本**：`exploration=None` 时 Stage3 维持现有 3 轮行为（干涉/换景命令

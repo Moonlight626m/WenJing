@@ -20,6 +20,7 @@ from app.infrastructure.models.prompt import PromptTemplate
 from app.infrastructure.models.script import Script
 from app.infrastructure.models.script_generation import ScriptGeneration
 from app.infrastructure.models.session import Session
+from app.infrastructure.models.session_tick import SessionTick
 from app.infrastructure.models.snapshot import Snapshot
 from app.infrastructure.models.user import User
 
@@ -36,6 +37,7 @@ __all__ = [
     "CommandRecord",
     "CommandStatus",
     "Snapshot",
+    "SessionTick",
     "Org",
     "User",
     "AuthSession",
@@ -56,6 +58,7 @@ _ = (
     GameEventRecord,
     CommandRecord,
     Snapshot,
+    SessionTick,
     Org,
     User,
     AuthSession,

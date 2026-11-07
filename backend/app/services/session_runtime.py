@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.contracts.commands import CommandKind, PlayerCommand
@@ -31,10 +31,12 @@ from app.contracts.dto import (
     SessionSummary,
     SessionTimelineResponse,
 )
+from app.contracts.enums import StageValue
 from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.domain.access import Actor, require_session_access, script_visible_to
 from app.domain.game.engine_config import EngineConfig
+from app.domain.game.event import EVENT_OFFLINE_HINT
 from app.domain.game.game_runtime import GameRuntime, StepResult
 from app.domain.game.media import (
     AssetKind,
@@ -42,17 +44,26 @@ from app.domain.game.media import (
     AssetRepositoryPort,
     SceneAssetRequest,
 )
+from app.domain.game.offline_ticks import (
+    MAX_OFFLINE_TICKS,
+    offline_hint_payload,
+    plan_offline_ticks,
+    tick_id_for,
+)
 from app.domain.game.replay import build_replay_graph
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.llm import LLMService
+from app.infrastructure.config import get_settings
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
 from app.infrastructure.errx import Error as WJError
-from app.infrastructure.errx import codes, match_code, new
+from app.infrastructure.errx import codes, exc_reason, match_code, new
+from app.infrastructure.models._time import utcnow
 from app.infrastructure.models.command import CommandStatus
 from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.session import Session as SessionRecord
+from app.infrastructure.models.session_tick import SessionTick
 from app.services.scene_assets import RecoveryReport, SceneAssetScheduler
 from app.services.session_events import SessionEventHub
 from app.services.session_projection import (
@@ -710,8 +721,13 @@ class SessionApplication:
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====
 
     async def session_init(self, session_id: uuid.UUID, *, actor: Actor) -> dict:
-        """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。"""
+        """连接建立/重连时的权威快照：阶段、历史、交互点（运行时按需从 DB 重建）。
+
+        M7：进快照之前先补算离线 tick（§B6）——玩家回来看到的就是「这段时间
+        世界发生了什么」之后的世界；tick 失败只记日志，绝不阻断连接。
+        """
         sess = await self._access_session(session_id, actor)
+        await self._run_offline_ticks_guarded(session_id, sess)
         runtime, store, _ = await self._restore_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
         return {
@@ -741,6 +757,134 @@ class SessionApplication:
             ),
             "allowed_commands": [k.value for k in state.allowed_commands()],
         }
+
+    # ===== 离线 tick（M7；design play-through-redesign §B6）=====
+
+    async def _run_offline_ticks_guarded(
+        self, session_id: uuid.UUID, sess: SessionRecord
+    ) -> None:
+        """session_init 的离线补算入口：任何失败只记日志（连接不能被 tick 阻断）。"""
+        try:
+            await self._run_offline_ticks(session_id, sess)
+        except Exception as exc:  # noqa: BLE001 - tick 是增强路径，失败必须降级
+            logger.warning(
+                "offline_tick_failed",
+                extra={"session_id": str(session_id), "err": exc_reason(exc)},
+            )
+
+    async def _run_offline_ticks(
+        self, session_id: uuid.UUID, sess: SessionRecord
+    ) -> None:
+        """按墙上时间补算离线 tick：claim-first、每 tick 一事务、最多 3 次。
+
+        只在续写阶段、未结束的会话上生效；无排程（间隔 ≤0）或缺 `last_at` 即 no-op。
+        每个 tick 都是本进程内一次「重建运行时 → NPC 提议/验证 → 确定性结算」，
+        事件与 `session_ticks` 认领行同一事务提交（`SessionStore.commit(claim=...)`）。
+        """
+        if sess.status == "ended":
+            return
+        if sess.current_stage != StageValue.STAGE3_EXTENDING.value:
+            return
+        settings = get_settings()
+        last_at = await self._last_tick_at(session_id) or sess.updated_at or sess.created_at
+        planned = plan_offline_ticks(
+            now=utcnow(),
+            last_at=last_at,
+            interval_minutes=settings.offline_tick_interval_minutes,
+            # 配置是软上限：硬上限永远是 MAX_OFFLINE_TICKS（§B6「clamp 3」）
+            max_ticks=min(settings.max_offline_ticks, MAX_OFFLINE_TICKS),
+        )
+        if planned <= 0:
+            return
+
+        ran: list[str] = []
+        facts = 0
+        for _ in range(planned):
+            tick_index = await self._next_tick_index(session_id)
+            tick_id = tick_id_for(session_id, tick_index)
+            claimed, written = await self._run_one_tick(session_id, tick_index, tick_id)
+            if not claimed:
+                # 并发 init 已认领这一 tick：名额被赢走，本轮不再排队（下次 init 再补）
+                break
+            ran.append(tick_id)
+            facts += written
+        if not ran:
+            return
+        logger.info(
+            "offline_ticks_ran",
+            extra={"session_id": str(session_id), "ticks": len(ran), "facts": facts},
+        )
+        await self._write_offline_hint(session_id, ticks=ran, facts=facts)
+
+    async def _run_one_tick(
+        self, session_id: uuid.UUID, tick_index: int, tick_id: str
+    ) -> tuple[bool, int]:
+        """执行并提交一个 tick；返回 (是否认领成功, 写入的世界事实数)。"""
+        runtime, store, version = await self._restore_runtime(session_id)
+        facts = await runtime.offline_tick(tick_id=tick_id)
+
+        async def claim(s: AsyncSession) -> bool:
+            # claim-first：这一行就是幂等闸，写入与事件同一事务
+            existing = await s.get(SessionTick, (session_id, tick_index))
+            if existing is not None:
+                return False
+            s.add(SessionTick(session_id=session_id, tick_index=tick_index))
+            return True
+
+        try:
+            claimed = await self._store.commit(
+                session_id=session_id,
+                store=store,
+                stage=runtime.state.stage,
+                expected_version=version,
+                op="offline_tick",
+                claim=claim,
+            )
+        except WJError as exc:
+            logger.warning(
+                "offline_tick_commit_failed",
+                extra={
+                    "session_id": str(session_id),
+                    "tick": tick_index,
+                    "err": exc_reason(exc),
+                },
+            )
+            return False, 0
+        return claimed, facts if claimed else 0
+
+    async def _write_offline_hint(
+        self, session_id: uuid.UUID, *, ticks: list[str], facts: int
+    ) -> None:
+        """写一条 `offline_hint`（命令外事件路径）：指路时间线，不写详细摘要。"""
+        async with self._factory() as s:
+            row = await s.get(SessionRecord, session_id)
+        branch = row.active_branch_id if row is not None else None
+        if branch is None:
+            return
+        await self.report_runtime_event(
+            session_id,
+            branch_id=branch,
+            event_type=EVENT_OFFLINE_HINT,
+            payload=offline_hint_payload(ticks=ticks, facts=facts),
+        )
+
+    async def _last_tick_at(self, session_id: uuid.UUID) -> datetime | None:
+        async with self._factory() as s:
+            value = await s.scalar(
+                select(func.max(SessionTick.created_at)).where(
+                    SessionTick.session_id == session_id
+                )
+            )
+        return value if isinstance(value, datetime) else None
+
+    async def _next_tick_index(self, session_id: uuid.UUID) -> int:
+        async with self._factory() as s:
+            value = await s.scalar(
+                select(func.max(SessionTick.tick_index)).where(
+                    SessionTick.session_id == session_id
+                )
+            )
+        return int(value or 0) + 1
 
     async def replay_after(
         self, session_id: uuid.UUID, after_seq: int, *, actor: Actor

@@ -367,6 +367,15 @@ scripts（content_version/format/replay_ready）
 
 ### B6. 离线 tick：NPC 自主行动（无 Director）
 
+**实现注记（2026-11-07，M7 已落地）**：触发点 = WS `session_init`（快照之前补算，
+失败降级不阻断）；`session_ticks(session_id, tick_index)` claim-first，认领行与事件
+同一事务（`SessionStore.commit(claim=...)`）；每 tick 在场 NPC 提议 → Verifier →
+确定性写成 public `world_fact`，不判目标/不推进回合/不写台词；结束写一条
+`offline_hint` 指路时间线。行动者是**全体 cast**（事实锚在各自地点），上限硬夹
+3（配置只能更小）；已知边界：LLM 提议发生在 claim 之前（并发重复花费但效果幂等）、
+`offline_hint` 在 tick 事务外单独提交。关系漂移、地点变化、tick 内新场景与作者预写的
+`scheduled_facts` 按 v5 口径未实现（需要关系模型/Producer 式裁定）。
+
 - 触发：`session_init` 按 `last_tick_at` 补算，clamp `max_offline_ticks=3`；无定时器。
 - 每 tick：Cast NPC 自主提案/行动（LLM，并行）→ Verifier → 确定性结算
   （world_fact/关系漂移/地点变化）。

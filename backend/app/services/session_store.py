@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,6 +39,10 @@ from app.infrastructure.models.session import Session as SessionRecord
 from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
 
 _UNSET: Any = object()
+
+
+class _ClaimLost(Exception):
+    """事务内 claim 失败（如 tick 已被并发认领）：整事务回滚，提交返回 False。"""
 
 
 @dataclass
@@ -194,13 +198,18 @@ class SessionStore:
         player_role: str | None | object = _UNSET,
         ended: bool = False,
         runtime_state: Callable[[], dict[str, Any]] | None = None,
-    ) -> None:
+        claim: Callable[[AsyncSession], Awaitable[bool]] | None = None,
+    ) -> bool:
         """事件 + 命令 + head/branch/stage/快照，同一事务。
 
         `expected_version=None` 表示以事务内读到的会话版本为基线（系统初始化）；
         传入恢复时读到的版本即为乐观锁 CAS（并发冲突 `SESS_CONFLICT`）。
         `player_role` 仅在显式传入时写入（`_UNSET` = 保持库中原值）。
         事件非空且给了 `runtime_state` 工厂时才追加快照行（无事件不计算导出）。
+
+        `claim`：在 CAS 抢占成功后、写任何事件**之前**执行的事务内回调（M7 离线
+        tick 的 claim-first 幂等闸）。返回 False 表示已被并发认领——整个事务回滚、
+        方法返回 False；返回 True 才继续写事件。默认 None 表示无额外认领语义。
         """
         try:
             async with self._factory() as s:
@@ -223,6 +232,8 @@ class SessionStore:
                         codes.SESS_CONFLICT,
                         extra={"id": str(session_id), "expected": expected},
                     )
+                if claim is not None and not await claim(s):
+                    raise _ClaimLost()
 
                 # 2) 持锁后写事件与命令（同事务；任何失败整体回滚）
                 rows = await store.write_pending(s, str(session_id))
@@ -275,6 +286,10 @@ class SessionStore:
                         )
                     )
                 await s.commit()
+            return True
+        except _ClaimLost:
+            # 已提交的认领归对方：本事务什么都没写（claim 在事件之前）
+            return False
         except Exception as exc:
             if isinstance(exc, SQLAlchemyError):
                 raise wrap(exc, codes.PER_WRITE_FAILED, extra={"op": op}) from exc

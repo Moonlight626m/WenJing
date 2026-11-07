@@ -38,6 +38,7 @@ from app.domain.game.event import (
     EVENT_EXPLORATION_SETTLE,
     EVENT_INTERVENTION_REJECTED,
     EVENT_INTERVENTION_REQUESTED,
+    EVENT_OFFLINE_HINT,
     EVENT_PULL_IN_CHARACTER,
     EVENT_REPLAY_CHOICE,
     EVENT_REPLAY_ENDING_REACHED,
@@ -264,6 +265,8 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     # 世界事实（M6 §B6）：public 进公屏；private 只进 audience 角色视图，
     # 投影层在下方显式过滤（本层无 viewer，不能当普通 system 广播）
     EVENT_WORLD_FACT: "system",
+    # 离线 tick 提示（M7 §B6）：一条系统消息指路时间线，不写详细摘要
+    EVENT_OFFLINE_HINT: "system",
     # 运行期配图就绪（#56）：命令外事件路径的唯一对外出口——不列这里，
     # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
     "asset_ready": "asset_ready",
@@ -305,6 +308,8 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
             return f"「{p.get('name', '')}」来到了现场：{reason}"
         return f"「{p.get('name', '')}」来到了现场。"
     if event_type == EVENT_WORLD_FACT:
+        return str(p.get("text", ""))
+    if event_type == EVENT_OFFLINE_HINT:
         return str(p.get("text", ""))
     return event_type
 

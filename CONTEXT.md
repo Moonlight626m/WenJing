@@ -135,6 +135,14 @@ Stage3 允许列表）：建场景、从角色池拉人、新增角色。`Produc
 干涉不消耗续写回合。离线期间 NPC 自主行动（§B6），回来只给 `offline_hint` 提示
 并指路时间线。
 
+### 离线 tick（Offline Tick）
+
+玩家不在线时由在场 NPC 自主行动的确定性补算（§B6，M7）：WS `session_init`
+按墙上时间补算，最多 3 个时段；`session_ticks(session_id, tick_index)` 的
+claim-first 唯一键保证同一 tick 只执行一次，认领行与事件同一事务。每个 tick 写
+`world_fact {kind: npc_action}`，批次结束写一条 `offline_hint` 指路时间线；不设计
+玩家选项、不跑导演、不判目标、不推进回合计数。
+
 ### 世界事实（World Fact）
 
 `world_fact {fact_id, kind, text, visibility, audience, location_key}`：世界层面的

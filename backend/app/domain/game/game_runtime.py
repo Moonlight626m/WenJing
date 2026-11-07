@@ -49,6 +49,7 @@ from app.domain.game.exploration import (
 )
 from app.domain.game.goals import GoalState, derive_goals
 from app.domain.game.media import scene_visual_description
+from app.domain.game.offline_ticks import npc_action_fact
 from app.domain.game.replay import ReplayCue, ReplayDirector, ReplayGraph, ReplayState
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.streaming import SpeechStreamSink
@@ -1394,6 +1395,53 @@ class GameRuntime:
                 description=scene_visual_description(ctx),
             )
         )
+
+    # ===== 离线 tick（M7；design play-through-redesign §B6）=====
+
+    async def offline_tick(self, *, tick_id: str) -> int:
+        """一次离线 tick：在场 NPC 自主提议 → 验证 → 确定性结算成 world_fact。
+
+        不设计玩家选项、不跑导演、不判续写目标、不动回合计数（§B6）；返回写入的
+        事实条数。事件都落在运行时的事件存储里，由调用方（服务层）与
+        `session_ticks` 认领行同一事务提交——重放时与实时路径同一折叠。
+        """
+        if (
+            self.exploration is None
+            or self.state.stage != StageValue.STAGE3_EXTENDING.value
+        ):
+            return 0
+        names = list(self.characters.active_names())
+        if not names:
+            return 0
+        proposals = await self._collect_proposals("stage3", [], names=names)
+        valid = await self._verify_proposals(proposals, "stage3", [])
+        for index, proposal in enumerate(valid, start=1):
+            self._append(
+                evt.EVENT_WORLD_FACT,
+                npc_action_fact(
+                    tick_id=tick_id,
+                    index=index,
+                    actor=proposal.proposed_by,
+                    description=proposal.description,
+                    location_key=self._actor_location_key(proposal.proposed_by),
+                ),
+            )
+        return len(valid)
+
+    def _actor_location_key(self, name: str) -> str | None:
+        """角色此刻所在地点的 location_key（事实的地点锚）。"""
+        for location in (
+            *self.exploration.registry.ordered(),
+            *self._world.dynamic_scenes.values(),
+        ):
+            if name in self.exploration.participants_at(location, self._world):
+                return location.location_key
+        if self._exploration_progress is None:
+            return None
+        current = self.exploration.location(
+            self._exploration_progress.current_location_key, self._world
+        )
+        return current.location_key if current is not None else None
 
     async def _collect_proposals(
         self, stage: str, sink: list[dict], *, names: list[str] | None = None

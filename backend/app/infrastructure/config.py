@@ -4,6 +4,7 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domain.game.offline_ticks import MAX_OFFLINE_TICKS
 from app.infrastructure.llm.factory import KNOWN_PROVIDERS, ModelConfig
 
 # 绝对锚定 backend/.env：不随启动 cwd 漂移（从仓库根/IDE 启动也能读到配置）
@@ -171,6 +172,10 @@ class Settings(BaseSettings):
     checkpoint_interval: int = 20
     max_rollback_steps: int = 100
     max_proposal_retries: int = 2
+    # 离线 tick（§B6，M7）：每 N 分钟算一个离线时段，一次登录最多补 3 个。
+    # 置 0 关闭离线 tick（无排程 = no-op）。
+    offline_tick_interval_minutes: int = 30
+    max_offline_ticks: int = MAX_OFFLINE_TICKS
 
     def llm_model_config(self) -> ModelConfig:
         """根据环境配置构建当前生效的 `ModelConfig`（provider 多路分发）。
