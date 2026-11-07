@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.3.0",
+  "schema_version": "3.4.0",
   "gate": "pre_write",
   "dossier": null,
   "evidence": [],
@@ -70,7 +70,7 @@
   },
   "profiles": [
     {
-      "schema_version": "3.3.0",
+      "schema_version": "3.4.0",
       "name": "我",
       "public_background": "离家买药的青年",
       "appearance": {
@@ -102,7 +102,7 @@
       }
     },
     {
-      "schema_version": "3.3.0",
+      "schema_version": "3.4.0",
       "name": "母亲",
       "public_background": "病中的母亲",
       "personality_traits": [
@@ -138,11 +138,11 @@
     }
   ],
   "package": {
-    "schema_version": "3.3.0",
+    "schema_version": "3.4.0",
     "title": "冬日买药",
     "characters": [
       {
-        "schema_version": "3.3.0",
+        "schema_version": "3.4.0",
         "name": "我",
         "public_background": "离家买药的青年",
         "personality_traits": [

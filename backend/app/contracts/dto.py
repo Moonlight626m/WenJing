@@ -74,6 +74,9 @@ class TimelineEntry(ContractModel):
     """
 
     sequence: int = Field(ge=0)
+    #: 对外坐标的另一半：事件 UUID 与所属分支（跨端稳定，回溯首选坐标）
+    event_id: uuid.UUID
+    branch_id: uuid.UUID
     kind: MessageCategory
     text: str
     speaker: str | None = None
@@ -83,6 +86,25 @@ class TimelineEntry(ContractModel):
     #: 只有叙事节拍是回溯目标：回溯按 beat 游标恢复，落在台词/系统提示上会让
     #: 「回到哪一幕」变得不可预期。
     rollbackable: bool = False
+
+
+class SavePoint(ContractModel):
+    """回溯页的存档点卡片：快照坐标 + 人读标记（场景/命令/回溯）。"""
+
+    branch_id: uuid.UUID
+    sequence: int = Field(ge=0)
+    event_id: uuid.UUID
+    label: str
+    kind: str = "command"
+    created_at: datetime | None = None
+
+
+class BranchSummary(ContractModel):
+    """回溯页的分支切换项：活动分支可继续玩，其余分支只读。"""
+
+    branch_id: uuid.UUID
+    is_active: bool
+    event_count: int = Field(ge=0)
 
 
 class SessionTimelineResponse(ContractModel):
@@ -97,6 +119,11 @@ class SessionTimelineResponse(ContractModel):
     stage: str
     head_sequence: int = Field(ge=0)
     can_rollback: bool = False
+    #: 本次返回的是哪条分支：默认活动分支；`?branch_id=` 可查看旧分支（只读）
+    branch_id: uuid.UUID | None = None
+    read_only: bool = False
+    save_points: list[SavePoint] = Field(default_factory=list)
+    branches: list[BranchSummary] = Field(default_factory=list)
     entries: list[TimelineEntry] = Field(default_factory=list)
 
 

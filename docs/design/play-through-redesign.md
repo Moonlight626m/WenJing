@@ -442,6 +442,27 @@ scripts（content_version/format/replay_ready）
   `_restore_runtime(until)` → `rollback_to` → `rollback` 事件 → 推进到交互点。
 - 回溯页：存档点卡片 + 时间线 + 分支只读视图；补回游戏页 → `/game/rollback` 入口。
 
+**实现注记（2026-11-08，M8 已落地）**：
+- `snapshots` 落 `branch_id/sequence/label/kind`（迁移 `0003_snapshot_checkpoint`），
+  `sessions` 落 `head_sequence`。存量行回填按「分支血缘 + `root_sequence`」推出事件在
+  分支时间线里的下标；新库没有历史数据，回填是空操作。
+- **坐标口径**：这里的 `sequence` 是**分支时间线（含父分支继承前缀）的下标**，与 WS
+  `seq`、`sessions.head_sequence`、回溯 `target_sequence` 同一条；`events.sequence`
+  是分支自有行序号（回溯出的子分支从 0 重数），两者不同，不能混用。
+- 恢复选快照：只在活动路径的分支里挑、`sequence` 不晚于目标、且
+  `plot_context.latest_event_id` 与 `path[sequence]` 对齐。这同时修掉「回溯后取到被
+  放弃分支最新快照」的隐患（原先按 `id desc` 盲取）。
+- 回溯仍由 `GameRuntime.rollback` 重放前缀（M0 不变量：状态 == 事件重放结果）；
+  `_restore_runtime(rollback=…)` 省掉的是「目标 → head」这段与本次命令无关的重放
+  （状态迁移与记忆折叠停在目标；`replay_from` 末尾的世界/播放位置折叠仍遍历整条
+  路径，随后被回溯的前缀重放覆盖）。
+  HEAD 阶段本来不允许回溯（`ended` / `stage2_complete`）时不截断，保持原拒绝路径。
+- 与草案差异：`last_tick_at` 不落列（离线 tick 的权威是 `session_ticks` 台账）；
+  `script_content_version` 随表仓储里程碑；分支视图只做列表 + `?branch_id=` 只读
+  时间线，没有分支树可视化。
+- 副作用（正向）：回溯命令的阶段校验改按**目标所处阶段**判定，Stage3 → Stage2 的
+  跨阶段回溯因此首次可行（此前按 HEAD 阶段选「拍」类型，会把目标当成 settle 找不到）。
+
 ---
 
 ## D. 新数据库与新 schema（只建表，不迁数据）

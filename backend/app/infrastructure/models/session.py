@@ -48,7 +48,10 @@ class Session(Base):
     active_branch_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), nullable=True
     )
+    # head 事件在**分支内**的序号（对外 `(branch_id, sequence)` 坐标的一半）。
+    # `head_event_id` 是全局行 id，不能当进度序号用。
     head_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    head_sequence: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     # 乐观锁：UPDATE ... WHERE version = :expected 提供每会话单命令并发保护
     version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

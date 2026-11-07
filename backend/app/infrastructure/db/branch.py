@@ -53,10 +53,15 @@ async def commit_rollback_branch(
         )
     )
     if snapshot is not None:
+        # 快照挂在**新分支**的继承终点上：`root_sequence` 之后才是新分支自己的事件，
+        # 所以坐标是 `(新分支, root_sequence)`——与 `(branch_id, sequence)` 的
+        # 「分支时间线下标」口径一致，不能拿锚定事件的 `events.sequence` 充数。
         session.add(
             Snapshot(
                 session_id=session_id,
                 event_id=head_event_id,
+                branch_id=new_branch_id,
+                sequence=int(root_sequence),
                 state_machine=snapshot.get("state_machine", ""),
                 character_memories=snapshot.get("character_memories", {}),
                 plot_context=snapshot.get("plot_context"),
@@ -72,6 +77,8 @@ async def commit_rollback_branch(
         .values(
             active_branch_id=new_branch_id,
             head_event_id=head_event_id,
+            # 回溯后 head 落在继承终点上（新分支自己的事件从 root_sequence+1 开始）
+            head_sequence=int(root_sequence),
             version=Session.version + 1,
         )
     )

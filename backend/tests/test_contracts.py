@@ -274,6 +274,24 @@ def test_intervene_payload_requires_text() -> None:
         PlayerCommand(session_id=uuid4(), kind=CommandKind.INTERVENE, payload={})
 
 
+def test_rollback_payload_accepts_either_coordinate() -> None:
+    """M8：回溯坐标以事件 UUID 为首选，旧 sequence 仍兼容；两者都缺则拒绝。"""
+    from uuid import uuid4
+
+    from app.contracts.commands import RollbackToEventPayload
+
+    sid = uuid4()
+    event_id = uuid4()
+    assert RollbackToEventPayload(target_sequence=3).target_sequence == 3
+    assert (
+        RollbackToEventPayload(target_event_id=event_id).target_event_id == event_id
+    )
+    both = RollbackToEventPayload(target_event_id=event_id, target_sequence=3)
+    assert both.target_event_id == event_id and both.target_sequence == 3
+    with pytest.raises(Exception):
+        PlayerCommand(session_id=sid, kind=CommandKind.ROLLBACK_TO_EVENT, payload={})
+
+
 def test_switch_scene_payload_requires_scene_key() -> None:
     from uuid import uuid4
 

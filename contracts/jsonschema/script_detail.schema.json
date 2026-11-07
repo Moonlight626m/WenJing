@@ -5,7 +5,7 @@
       "description": "结构化外貌要素（文生图锚定）：只写原文可推断内容。\n\n未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——\n严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -43,7 +43,7 @@
       "description": "素材署名/许可元数据（ADR-0005 §6）：供教师端展示与学生端折叠署名。\n\n默认仅采用免署名许可（CC0/PD）；采用需署名许可时向最终用户展示。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -76,7 +76,7 @@
       "description": "稳定资产引用（ADR-0005 §3）。\n\n只放稳定 id/kind/status；字节与 URL（含 `object_key`）不进契约——访问经鉴权\n端点签发短时效预签名 URL（#42）。\n\n`scene_montage`（方案 branch-montage-dm）是**完整场面图**：背景+在场人物+\n行为一图的插画（推翻 ADR-0005 §1「游玩内不显示人物」需随 ADR 修订走）；\n`background` 保留给旧脚本与纯空镜背景。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -118,7 +118,7 @@
       "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -210,7 +210,7 @@
       "description": "伪分支场景（珊瑚形结构）：挂在主干场景介入点上的替代过场。\n\n分支播放完并回主干下一场，结局固定；分支 beat 一律非关键事件\n（不进 total_beats、不动主 beat_cursor），不得包含 must_not_change\n关键事件、不得改变课文结局。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -443,7 +443,7 @@
       "description": "单个角色的设定（身份/背景/性格/语言风格），角色 Agent identity 的来源。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -547,7 +547,7 @@
       "description": "性格标签：标签 + 原文证据 + 行为化描述（show don't tell，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -643,7 +643,7 @@
       "description": "一句预写台词。`speaker=None` 表示旁白。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -680,7 +680,7 @@
       "description": "doubter 裁决记录：打回时带逐条问题（教师端可见）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -719,7 +719,7 @@
       "description": "剧本结局。`canonical` 是必达主线结局，`alternate` 是合理变体，\n`distractor` 只用于干扰分支的「错结局」。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -797,7 +797,7 @@
       "description": "Stage3 探索地图上的一个地点（在场角色 + 视觉摘要）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -843,7 +843,7 @@
       "description": "Stage3 自由探索的地图：起点地点 + 地点列表。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -876,7 +876,7 @@
       "description": "闸门暂停时给教师看的中间产物快照（按 gate 字段决定哪些字段有意义）。\n\n终审闸门（#48 选项 A）随 `package` 天然携带场景/人物槽位上的 AssetRef，\n教师配图审批（#49）直接基于槽位状态发起 asset_ops，无需独立资产清单字段。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -975,7 +975,7 @@
       "description": "生成进度：长时间生成过程不是黑盒（进度由 script_generations 落库）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1073,7 +1073,7 @@
       "description": "知识边界：角色知道/不知道的事（防 OOC，运行时 persona 引用）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1156,7 +1156,7 @@
       "description": "单个 workflow 节点的进度投影。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1191,7 +1191,7 @@
       "description": "原文证据：以原文字符区间或段落标识定位。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1257,7 +1257,7 @@
       "description": "是否适合玩家扮演：布尔 + 可选理由（不带安全考量，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1280,7 +1280,7 @@
       "description": "剧本中的一个场景：参与者 + 有序 beats。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1445,7 +1445,7 @@
       "description": "珊瑚图决策点的玩家选项：指向分支 / 目标场景 / 结局之一。\n\n`branch_id` 指向本场景 `branches` 里的内容；`target_scene_id` 直接跳到某\n场景；`ending_id` 表示这是终局选项。三者最多填一个；全为 None 表示续接\n主干下一场。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1517,7 +1517,7 @@
       "description": "Stage1 生成的完整剧本包（冻结契约，版本化校验后进入游戏）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1604,7 +1604,7 @@
       "description": "剧本列表项/发布结果的轻量投影。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1742,7 +1742,7 @@
       "description": "说话风格五要素 + 示例台词（驱动角色 Agent 的 persona，spec 裁决）。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1787,7 +1787,7 @@
       "description": "场景视觉锚点（文生图槽位）：只写原文可推断的环境信息。\n\n未交代处写「原文未交代」或留空；动作留在 beats，此处不含人物行为。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1825,7 +1825,7 @@
       "description": "网络补充证据：记录来源、URL、抓取时间与内容 hash，供审计。",
       "properties": {
         "schema_version": {
-          "default": "3.3.0",
+          "default": "3.4.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -1875,7 +1875,7 @@
   "description": "剧本详情：生成成功后带 `script`；生成中/失败时带 `generation`。\n\n`review` 仅在 status=awaiting_review 且 attempt 暂停在闸门时非空：\n教师审阅面板的中间产物快照（#34）。",
   "properties": {
     "schema_version": {
-      "default": "3.3.0",
+      "default": "3.4.0",
       "title": "Schema Version",
       "type": "string"
     },

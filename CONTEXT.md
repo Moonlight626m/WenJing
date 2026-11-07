@@ -151,17 +151,28 @@ claim-first 唯一键保证同一 tick 只执行一次，认领行与事件同�
 
 ### 回溯（Rollback）与回溯页
 
-回溯是**保留历史的分支切换**：`rollback_to_event`（payload 为目标事件在活动分支上的
-`sequence`）让引擎新建活动分支，继承前缀**止于目标所属叙事拍之前**——目标拍由新分支
-整拍重演（继承它会让恢复时的重放把同一拍计两次）；旧事件仍可审计
-（`EventStore.rollback_to`）。可回溯的目标是含有叙事拍的节点（台词/系统提示等中途事件
-按其所属拍处理；首拍之前没有合法目标）。回溯后阶段、beat 游标、剧情日志与角色记忆
-全部随事件回退——记忆由事件折叠重建（`CharacterAgentManager.derive_memories`），
-不受进程内状态影响。
+回溯是**保留历史的分支切换**：`rollback_to_event` 的目标坐标二选一——事件 UUID
+（`target_event_id`，`TimelineEntry.event_id` / 存档点卡片带的那个，首选）或活动分支
+时间线下标（`target_sequence`，兼容旧客户端）。引擎新建活动分支，继承前缀**止于目标
+所属叙事拍之前**——目标拍由新分支整拍重演（继承它会让恢复时的重放把同一拍计两次）；
+旧事件仍可审计（`EventStore.rollback_to`）。可回溯的目标是含有叙事拍的节点（台词/
+系统提示等中途事件按其所属拍处理；首拍之前没有合法目标）。回溯后阶段、beat 游标、
+剧情日志与角色记忆全部随事件回退——记忆由事件折叠重建
+（`CharacterAgentManager.derive_memories`），不受进程内状态影响。
 
-回溯页（`/game/rollback`）数据源是 `GET /api/sessions/{id}/timeline`，只投影
-`active_events()`——剧本里**尚未演到**的场景与被放弃分支的进度都不会出现；每一幕带
-场景图与一句节拍描述（事件溯源是资产与进度的唯一权威）。
+回溯页（`/game/rollback`）数据源是 `GET /api/sessions/{id}/timeline`，只投影该分支的
+事件——剧本里**尚未演到**的场景与被放弃分支的进度都不会混进活动分支；每一幕带场景图
+与一句节拍描述（事件溯源是资产与进度的唯一权威）。`?branch_id=` 可切到回溯放弃的
+旧分支**只读**回看（进度保留，但不能从旧分支继续玩）。
+
+### 存档点（Save Point）
+
+每条命令结束时落下的快照，坐标是 `(branch_id, sequence)` + 人读标记
+`label/kind`（如「选择 · 场景：当铺」「回溯到 #4」）。`sequence` 是**分支时间线
+下标**（含从父分支继承的前缀），与 WS `seq`、`sessions.head_sequence`、回溯
+`target_sequence` 同一口径；它不等于 `events.sequence`（那是分支自有行的序号，
+回溯出的子分支从 0 重数）。快照只是加速恢复的缓存：回溯命令按目标前最近的存档点
+恢复，事件仍是唯一权威。
 
 ### 流式（Streaming）
 

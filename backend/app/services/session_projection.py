@@ -8,9 +8,12 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from app.contracts.dto import (
+    BranchSummary,
+    SavePoint,
     SessionStatusResponse,
     SessionTimelineResponse,
     TimelineEntry,
@@ -32,7 +35,7 @@ from app.contracts.runtime import (
     Stage3Goal,
 )
 from app.contracts.script import AssetRef
-from app.domain.game.assets import RuntimeAssets
+from app.domain.game.assets import RuntimeAssets, derive_scene_assets
 from app.domain.game.event import (
     EVENT_CHARACTER_CREATED,
     EVENT_EXPLORATION_SETTLE,
@@ -50,11 +53,14 @@ from app.domain.game.event import (
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
     EVENT_WORLD_FACT,
+    GameEvent,
 )
 from app.domain.game.game_runtime import StepResult
 from app.domain.game.goals import GoalState, apply_goal_event
 from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
+from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
+from app.services.session_store import snapshot_sequence_on_path
 
 # 内存事件类型 → 契约 EventType
 _EVENT_TYPE_MAP: dict[str, EventType] = {
@@ -406,6 +412,17 @@ def project_messages(
     return msgs
 
 
+def _stage_from_path(path: Sequence[GameEvent], fallback: str) -> str:
+    """分支时间线 → 该分支尾部的阶段（旧分支只读视图用，别拿活动分支的阶段充数）。"""
+    stage = fallback
+    for ev in path:
+        if ev.event_type == "stage_transition":
+            value = (ev.payload or {}).get("stage")
+            if value:
+                stage = str(value)
+    return stage
+
+
 def project_timeline(
     session_id: uuid.UUID,
     store: Any,
@@ -413,22 +430,39 @@ def project_timeline(
     stage: StageValue | str,
     allowed_commands: list[str],
     max_rollback_steps: int,
+    snapshots: Sequence[SnapshotRecord] = (),
+    branch_int: int | None = None,
 ) -> SessionTimelineResponse:
-    """活动分支事件流 → 回溯页进度（与 WS 消息同一条投影口径）。
+    """分支事件流 → 回溯页进度（与 WS 消息同一条投影口径）。
 
-    只遍历 `active_events()`：回溯/分支放弃后的事件自然消失，剧本包里**尚未
-    发生**的场景也永远不会出现。场景图与标题按事件流累积——`plot_advancement`
+    `branch_int` 为空时取活动分支；给了别的分支就是**只读**视图（回溯/放弃后
+    的旧进度仍可审计，但不能从旧分支继续玩）。只遍历分支时间线：剧本包里
+    **尚未发生**的场景永远不会出现。场景图与标题按事件流累积——`plot_advancement`
     携带当时的场景上下文，`asset_ready` 到达后替换为该场景的图。
 
     只有叙事节拍可作回溯目标：回溯按 beat 游标恢复，目标落在台词或系统提示上
     会让「回到哪一幕」不可预期。
     """
-    path = store.active_events()
-    latest = store.latest_event_id
+    path = (
+        store.active_events()
+        if branch_int is None
+        else store.branch_path(branch_int)
+    )
+    read_only = branch_int is not None and branch_int != store.active_branch_id
+    latest = path[-1].event_id if path else 0
+    # 旧分支的「当前阶段」得从它自己的事件流取：活动运行时说的是活动分支的阶段
+    branch_stage = str(stage.value if isinstance(stage, StageValue) else stage)
+    if read_only:
+        branch_stage = _stage_from_path(path, branch_stage)
     # 事件索引优先、剧本槽位兜底（AGENTS.md：RuntimeAssets.rebuild 是资产索引的
     # 指定入口）——`plot_advancement` 的 current_asset 是生成期离线预生成的槽位，
-    # 运行期 asset_ready 才算在事件索引里。
-    runtime_assets = RuntimeAssets.rebuild(store)
+    # 运行期 asset_ready 才算在事件索引里。旧分支只读视图要按**它自己**的路径
+    # 重建：活动分支的配图不能出现在被放弃的时间线上。
+    runtime_assets = (
+        RuntimeAssets(by_scene=derive_scene_assets(path))
+        if read_only
+        else RuntimeAssets.rebuild(store)
+    )
     entries: list[TimelineEntry] = []
     scene_key: str | None = None
     scene_title: str | None = None
@@ -464,6 +498,8 @@ def project_timeline(
         entries.append(
             TimelineEntry(
                 sequence=seq,
+                event_id=event_uuid(session_id, ev.branch_id, ev.event_id),
+                branch_id=branch_uuid(session_id, ev.branch_id),
                 kind=MessageCategory(category),
                 text=_event_text(ev.event_type, p, category),
                 speaker=str(speaker) if speaker else None,
@@ -475,18 +511,61 @@ def project_timeline(
                     else None
                 ),
                 rollbackable=(
-                    category == "narrative" and 0 < steps <= max_rollback_steps
+                    not read_only
+                    and category == "narrative"
+                    and 0 < steps <= max_rollback_steps
                 ),
+            )
+        )
+    branch_of = {
+        branch_uuid(session_id, meta.branch_id): meta.branch_id
+        for meta in store.branches
+    }
+    save_points: list[SavePoint] = []
+    for row in snapshots:
+        ev_branch = branch_of.get(row.branch_id)
+        if ev_branch is None:
+            continue
+        # 坐标必须在这次展示的路径上：父分支被放弃的那截历史不算存档点
+        sequence = snapshot_sequence_on_path(row, path)
+        if sequence is None:
+            continue
+        event = path[sequence]
+        save_points.append(
+            SavePoint(
+                branch_id=branch_uuid(session_id, ev_branch),
+                sequence=sequence,
+                event_id=event_uuid(session_id, event.branch_id, event.event_id),
+                label=row.label or "存档点",
+                kind=row.kind or "command",
+                created_at=row.created_at,
+            )
+        )
+    branch_summaries: list[BranchSummary] = []
+    for meta in store.branches:
+        branch_summaries.append(
+            BranchSummary(
+                branch_id=branch_uuid(session_id, meta.branch_id),
+                is_active=meta.branch_id == store.active_branch_id,
+                event_count=len(store.branch_path(meta.branch_id)),
             )
         )
     return SessionTimelineResponse(
         session_id=session_id,
-        stage=stage.value if isinstance(stage, StageValue) else str(stage),
+        stage=branch_stage,
         head_sequence=max(0, len(path) - 1),
         can_rollback=(
-            CommandKind.ROLLBACK_TO_EVENT.value in allowed_commands
+            not read_only
+            and CommandKind.ROLLBACK_TO_EVENT.value in allowed_commands
             and any(e.rollbackable for e in entries)
         ),
+        branch_id=branch_uuid(
+            session_id,
+            store.active_branch_id if branch_int is None else branch_int,
+        ),
+        read_only=read_only,
+        save_points=sorted(save_points, key=lambda p: p.sequence)[-20:],
+        branches=branch_summaries,
         entries=entries,
     )
 
@@ -526,16 +605,20 @@ def project_status(
     session_id: uuid.UUID,
     stage: str,
     active_branch_id: uuid.UUID,
-    head_event_id: int | None,
+    head_sequence: int,
     playable_roles: list[str],
     selected_role: str | None,
 ) -> SessionStatusResponse:
-    """会话行 + 运行时摘要 → SessionStatusResponse。"""
+    """会话行 + 运行时摘要 → SessionStatusResponse。
+
+    `head_sequence` 是**分支内**进度序号（`sessions.head_sequence`），与 WS 消息的
+    `seq`、回溯坐标同口径；不要拿全局事件行 id 充数。
+    """
     return SessionStatusResponse(
         session_id=session_id,
         stage=stage,
         active_branch_id=active_branch_id,
-        head_sequence=head_event_id or 0,
+        head_sequence=max(0, int(head_sequence)),
         playable_roles=playable_roles,
         selected_role=selected_role,
     )

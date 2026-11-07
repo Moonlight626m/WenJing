@@ -155,11 +155,16 @@ async def session_status(
 async def session_timeline(
     session_id: str,
     principal: Annotated[Principal, Depends(get_principal)],
+    branch_id: uuid.UUID | None = None,
 ) -> SessionTimelineResponse:
-    """回溯页进度（只含活动分支已发生的事件；未来场景不经此接口泄露）。"""
+    """回溯页进度 + 存档点 + 分支列表。
+
+    默认活动分支，只含已发生的事件（未来场景不经此接口泄露）；`branch_id`
+    指向回溯放弃的旧分支时返回只读视图。
+    """
     try:
         return await get_application().get_timeline(
-            _ensure_uuid(session_id), actor=principal.actor
+            _ensure_uuid(session_id), actor=principal.actor, branch_id=branch_id
         )
     except WJError as exc:
         return _error_response(exc)

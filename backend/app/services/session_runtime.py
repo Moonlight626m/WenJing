@@ -23,7 +23,11 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.contracts.commands import CommandKind, PlayerCommand
+from app.contracts.commands import (
+    CommandKind,
+    PlayerCommand,
+    RollbackToEventPayload,
+)
 from app.contracts.dto import (
     CreateSessionResponse,
     SessionListResponse,
@@ -36,7 +40,7 @@ from app.contracts.runtime import RuntimeUpdate
 from app.contracts.script import ScriptPackage
 from app.domain.access import Actor, require_session_access, script_visible_to
 from app.domain.game.engine_config import EngineConfig
-from app.domain.game.event import EVENT_OFFLINE_HINT
+from app.domain.game.event import EVENT_OFFLINE_HINT, GameEvent
 from app.domain.game.game_runtime import GameRuntime, StepResult
 from app.domain.game.media import (
     AssetKind,
@@ -55,7 +59,11 @@ from app.domain.game.script_adapter import script_package_to_script
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.llm import LLMService
 from app.infrastructure.config import get_settings
-from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid
+from app.infrastructure.db.event_store import (
+    PersistentEventStore,
+    branch_uuid,
+    event_uuid,
+)
 from app.infrastructure.errx import Error as WJError
 from app.infrastructure.errx import codes, exc_reason, match_code, new
 from app.infrastructure.models._time import utcnow
@@ -83,6 +91,62 @@ logger = logging.getLogger("wenjing.session.application")
 #: 投递——事件流是权威，配图下次会由后续命令或 #57 的恢复路径补上，不值得为它
 #: 阻塞或反复抢锁。
 _RUNTIME_EVENT_MAX_ATTEMPTS = 3
+
+#: HEAD 阶段本来就不允许回溯的会话不做「按目标选快照」截断：保持整段重放，让
+#: 运行时按 HEAD 阶段的 allowed_commands 拒绝（ended / stage2_complete 等）。
+_ROLLBACK_STAGES = frozenset(
+    {StageValue.STAGE2_REENACTING.value, StageValue.STAGE3_EXTENDING.value}
+)
+
+#: 存档点的命令词（label 是给人读的标记，不参与任何判定）
+_COMMAND_LABELS: dict[CommandKind, str] = {
+    CommandKind.SELECT_ROLE: "选角",
+    CommandKind.CHOOSE_OPTION: "选择",
+    CommandKind.FREE_INPUT: "行动",
+    CommandKind.SWITCH_SCENE: "换景",
+    CommandKind.INTERVENE: "干涉世界",
+    CommandKind.ENTER_STAGE3: "进入续写",
+    CommandKind.CONFIRM_ENDING: "收束",
+    CommandKind.EXIT_GAME: "退出",
+    CommandKind.ROLLBACK_TO_EVENT: "回溯",
+}
+
+
+def _rollback_target_index(
+    session_id: uuid.UUID, path: list[GameEvent], payload: RollbackToEventPayload
+) -> int:
+    """回溯坐标 → 分支时间线下标：`target_event_id`（UUID）优先，旧 `target_sequence` 兼容。
+
+    两种坐标都是**活动分支**上的位置：UUID 由 `event_uuid` 确定性映射而来，
+    sequence 是 `active_events()` 的下标（与 WS 消息的 `seq` 同口径）。
+    """
+    if payload.target_event_id is not None:
+        wanted = payload.target_event_id
+        for index, event in enumerate(path):
+            if event_uuid(session_id, event.branch_id, event.event_id) == wanted:
+                return index
+        raise new(codes.ENG_ROLLBACK_TARGET_MISSING, extra={"event_id": str(wanted)})
+    seq = payload.target_sequence
+    if seq is None or seq >= len(path):
+        raise new(codes.ENG_ROLLBACK_TARGET_MISSING, extra={"event_id": seq})
+    return seq
+
+
+def _snapshot_marker(command: PlayerCommand, export: dict[str, Any]) -> tuple[str, str]:
+    """命令 → 存档点 (label, kind)：回溯页据此给每个存档点一句人话。"""
+    scene = export.get("scene_title")
+    if command.kind is CommandKind.ROLLBACK_TO_EVENT:
+        payload = command.payload_model
+        seq = (
+            payload.target_sequence
+            if isinstance(payload, RollbackToEventPayload)
+            else None
+        )
+        if seq is not None:
+            return f"回溯到 #{seq}", "rollback"
+        return (f"回溯 · {scene}" if scene else "回溯"), "rollback"
+    word = _COMMAND_LABELS.get(command.kind, command.kind.value)
+    return (f"{word} · {scene}" if scene else word), "command"
 
 
 @dataclass
@@ -417,7 +481,15 @@ class SessionApplication:
         speech_sink: SpeechStreamSink | None = None,
     ) -> tuple[RuntimeUpdate, PersistentEventStore]:
         await self._access_session(session_id, actor)
-        runtime, store, version = await self._restore_runtime(session_id, speech_sink=speech_sink)
+        # 回溯命令先解析目标坐标再恢复：只重放到目标之前（按目标选快照，M8）
+        rollback = (
+            command.payload_model
+            if command.kind is CommandKind.ROLLBACK_TO_EVENT
+            else None
+        )
+        runtime, store, version = await self._restore_runtime(
+            session_id, speech_sink=speech_sink, rollback=rollback
+        )
 
         # 幂等闸：quota 已受理（含后台命令的 RECEIVED 占位）→ 对账返回当前状态，
         # 不重复执行。后台命令（202 化）的执行路径走 `_submit_claimed`，越过本闸。
@@ -449,7 +521,7 @@ class SessionApplication:
         if runtime.state.ended:
             raise new(codes.SESS_ENDED, extra={"id": str(session_id)})
 
-        payload = self._engine_payload(command, store)
+        payload = self._engine_payload(session_id, command, store)
         result = await runtime.submit(
             command_id=str(command.command_id),
             kind=command.kind.value,
@@ -479,6 +551,9 @@ class SessionApplication:
         expected_version: int,
     ) -> None:
         """命令 + 事件 + head/version/active_branch + 快照，同一事务（见 SessionStore）。"""
+        # 导出一次、复用：快照要落它，存档点标签也从它取（避免事务内二次导出）
+        export = runtime.export_state()
+        label, kind = _snapshot_marker(command, export)
         await self._store.commit(
             session_id=session_id,
             store=store,
@@ -488,7 +563,9 @@ class SessionApplication:
             command=command,
             player_role=runtime.state.player_role,
             ended=bool(result.terminal) if result is not None else False,
-            runtime_state=runtime.export_state,
+            runtime_state=lambda: export,
+            snapshot_label=label,
+            snapshot_kind=kind,
         )
 
     async def _commit_system_events(
@@ -693,29 +770,51 @@ class SessionApplication:
             session_id=session_id,
             stage=sess.current_stage,
             active_branch_id=sess.active_branch_id or branch_uuid(session_id, 1),
-            head_event_id=sess.head_event_id,
+            head_sequence=sess.head_sequence or 0,
             playable_roles=playable,
             selected_role=sess.player_role,
         )
 
     async def get_timeline(
-        self, session_id: uuid.UUID, *, actor: Actor
+        self,
+        session_id: uuid.UUID,
+        *,
+        actor: Actor,
+        branch_id: uuid.UUID | None = None,
     ) -> SessionTimelineResponse:
-        """独立回溯页的数据源：活动分支上已发生的进度。
+        """独立回溯页的数据源：分支上已发生的进度 + 存档点 + 分支列表。
 
-        与重连补发同一条路径（`_restore_runtime` + `active_events`），所以回溯后
-        旧分支的进度自动消失；剧本包里尚未演到的场景根本不在事件流里，也就不会
-        被「预告」出来。
+        与重连补发同一条路径（`_restore_runtime` + 分支时间线），所以回溯后旧
+        分支的进度不会混进活动分支；`branch_id` 指向旧分支时返回**只读**视图
+        （回溯/放弃的进度仍可审计）。
         """
         await self._access_session(session_id, actor)
         runtime, store, _ = await self._restore_runtime(session_id)
         state = project_state(session_id, store, runtime.export_state())
+        branch_int: int | None = None
+        if branch_id is not None:
+            branch_int = next(
+                (
+                    meta.branch_id
+                    for meta in store.branches
+                    if branch_uuid(session_id, meta.branch_id) == branch_id
+                ),
+                None,
+            )
+            if branch_int is None:
+                raise new(
+                    codes.SESS_NOT_FOUND,
+                    extra={"id": str(session_id), "reason": "branch not found"},
+                )
+        snapshots = await self._store.list_snapshots(session_id)
         return project_timeline(
             session_id,
             store,
             stage=state.stage,
             allowed_commands=[k.value for k in state.allowed_commands()],
             max_rollback_steps=runtime.config.max_rollback_steps,
+            snapshots=snapshots,
+            branch_int=branch_int,
         )
 
     # ===== WS 会话协议支撑（session_init 重建 / 断线补发）=====
@@ -904,12 +1003,22 @@ class SessionApplication:
     # ===== 恢复（断线重连 / 进程重启 / 每命令）=====
 
     async def _restore_runtime(
-        self, session_id: uuid.UUID, *, speech_sink: SpeechStreamSink | None = None
+        self,
+        session_id: uuid.UUID,
+        *,
+        speech_sink: SpeechStreamSink | None = None,
+        rollback: RollbackToEventPayload | None = None,
     ) -> tuple[GameRuntime, PersistentEventStore, int]:
-        """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最新快照重放。
+        """从 DB 重建运行时：剧本 + 分支结构 + 事件流 + 最近可用快照重放。
 
         无状态（#21）：每次命令都走此路径，返回 (runtime, store, 恢复时会话版本)；
         版本用于命令落库的乐观锁 CAS（见 `_persist_command`）。
+
+        回溯命令（`rollback` 非空）只重放到目标事件为止：快照按目标前最近的
+        存档点挑（M8），状态迁移与记忆折叠都停在目标——随后 `GameRuntime.rollback`
+        仍会按回溯目标整段重放前缀（事件是唯一权威），这里省掉的是「目标→head」
+        这段与本次命令无关的重放。注意 `replay_from` 末尾的世界/播放位置/探索进度
+        折叠仍遍历整条路径（它们随后会被回溯的前缀重放覆盖）。
 
         一致性：以 `SELECT ... FOR UPDATE` 锁定会话行，使读到的 (version, events)
         来自同一一致快照（不持锁做 LLM）。
@@ -917,7 +1026,16 @@ class SessionApplication:
         容错（issue #13）：剧本/快照损坏或 schema 不兼容时，宁可忽略快照
         从完整事件流重建，也不让恢复路径崩溃；剧本无法解析则返回明确错误。
         """
-        loaded = await self._store.restore(session_id)
+
+        def resolve_until(sess: SessionRecord, events: list[GameEvent]) -> int | None:
+            if rollback is None or sess.current_stage not in _ROLLBACK_STAGES:
+                return None
+            return _rollback_target_index(session_id, events, rollback)
+
+        loaded = await self._store.restore(
+            session_id,
+            until_resolver=resolve_until if rollback is not None else None,
+        )
         runtime, store = self._build_runtime(
             session_id,
             loaded.package,
@@ -945,10 +1063,15 @@ class SessionApplication:
                     extra={"session_id": str(session_id)},
                 )
         cutoff = int((base or {}).get("latest_event_id", 0))
+        until = loaded.until_event_id
         # 只能重放**活动分支**路径：`loaded.events` 还含被回溯放弃的分支，
         # 折进去会让游标/剧情/角色记忆停在已放弃的回合上。
         active = loaded.store.active_events()
-        replay = [e.to_dict() for e in active if e.event_id > cutoff]
+        replay = [
+            e.to_dict()
+            for e in active
+            if e.event_id > cutoff and (until is None or e.event_id <= until)
+        ]
         try:
             runtime.replay_from(base, replay)
         except Exception as exc:
@@ -956,7 +1079,10 @@ class SessionApplication:
                 "snapshot_replay_failed_rebuild",
                 extra={"session_id": str(session_id), "reason": str(exc)},
             )
-            runtime.replay_from(None, [e.to_dict() for e in active])
+            runtime.replay_from(
+                None,
+                [e.to_dict() for e in active if until is None or e.event_id <= until],
+            )
 
         return runtime, store, loaded.version
 
@@ -1003,8 +1129,10 @@ class SessionApplication:
         )
 
     @staticmethod
-    def _engine_payload(command: PlayerCommand, store: PersistentEventStore) -> dict:
-        """契约 payload → 引擎 payload；回溯以活动分支 sequence 定位本地事件。"""
+    def _engine_payload(
+        session_id: uuid.UUID, command: PlayerCommand, store: PersistentEventStore
+    ) -> dict:
+        """契约 payload → 引擎 payload；回溯以活动分支事件坐标定位本地事件。"""
         p = command.payload_model
         kind = command.kind
         if kind is CommandKind.SELECT_ROLE:
@@ -1015,12 +1143,8 @@ class SessionApplication:
             return {"text": p.text}
         if kind is CommandKind.ROLLBACK_TO_EVENT:
             path = store.active_events()
-            if p.target_sequence >= len(path):
-                raise new(
-                    codes.ENG_ROLLBACK_TARGET_MISSING,
-                    extra={"event_id": p.target_sequence},
-                )
-            return {"target_event_id": path[p.target_sequence].event_id}
+            index = _rollback_target_index(session_id, path, p)
+            return {"target_event_id": path[index].event_id}
         return {}
 
     @staticmethod

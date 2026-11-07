@@ -45,6 +45,25 @@ class _ClaimLost(Exception):
     """事务内 claim 失败（如 tick 已被并发认领）：整事务回滚，提交返回 False。"""
 
 
+def snapshot_sequence_on_path(row: SnapshotRecord, path: list[GameEvent]) -> int | None:
+    """快照在给定分支时间线里的下标；坐标与路径对不上时返回 None。
+
+    `snapshots.sequence` 是**分支时间线下标**（含继承前缀），与 WS `seq` / 回溯
+    `target_sequence` 同口径。用快照自带的 `plot_context.latest_event_id` 与
+    `path[sequence]` 对齐，可排除「父分支在回溯点之后、属于被放弃历史」的快照：
+    它们的 branch 还在路径上，但那个位置已经不是同一个事件了。
+    """
+    context = row.plot_context
+    if not isinstance(context, dict):
+        return None
+    sequence = int(row.sequence)
+    if sequence < 0 or sequence >= len(path):
+        return None
+    if context.get("latest_event_id") != path[sequence].event_id:
+        return None
+    return sequence
+
+
 @dataclass
 class LoadedSession:
     """`restore()` 的产物：重建运行时所需的一致快照（会话行加锁读）。"""
@@ -55,6 +74,9 @@ class LoadedSession:
     events: list[GameEvent]
     snapshot: SnapshotRecord | None
     version: int
+    #: 恢复重放的截止事件（全局行 id）；None = 重放到 head。回溯命令用它
+    #: 「只恢复到目标之前」，省掉目标之后的重放（design §C1）。
+    until_event_id: int | None = None
 
 
 class SessionStore:
@@ -117,6 +139,26 @@ class SessionStore:
             row.status = status
             await s.commit()
 
+    async def list_snapshots(self, session_id: uuid.UUID) -> list[SnapshotRecord]:
+        """会话的全部存档点（回溯页读侧），按落库顺序返回。
+
+        不在这里过滤分支：「哪些快照在这条路径上」要对照分支时间线才判得了，
+        投影层用 `snapshot_sequence_on_path` 完成。
+        """
+        async with self._factory() as s:
+            rows = (
+                (
+                    await s.execute(
+                        select(SnapshotRecord)
+                        .where(SnapshotRecord.session_id == session_id)
+                        .order_by(SnapshotRecord.event_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return list(rows)
+
     async def load_package(self, session_id: uuid.UUID) -> ScriptPackage | None:
         """只取会话引用的剧本包（状态查询/初始化用）；无生成内容返回 None。"""
         async with self._factory() as s:
@@ -134,8 +176,17 @@ class SessionStore:
                 extra={"id": str(session_id), "reason": "script package invalid"},
             ) from exc
 
-    async def restore(self, session_id: uuid.UUID) -> LoadedSession:
+    async def restore(
+        self,
+        session_id: uuid.UUID,
+        *,
+        until_resolver: Callable[[SessionRecord, list[GameEvent]], int | None] | None = None,
+    ) -> LoadedSession:
         """锁定会话行，一致读取 (version, 剧本包, 快照, 事件流)。
+
+        `until_resolver`：拿到会话行与活动分支事件后决定「重放到哪个事件为止」
+        （返回分支时间线下标；None = 整段重放到 head）。回溯命令用它做「按目标
+        选快照」——只恢复到目标之前的那份存档点，目标之后的事件不再重放。
 
         容错（issue #13）：剧本/快照损坏回退为明确错误由上层处理；事件损坏
         以 `PER_CORRUPT_SNAPSHOT` / `PER_WRITE_FAILED` 上抛。
@@ -158,14 +209,6 @@ class SessionStore:
                     codes.PER_INCOMPATIBLE_SCHEMA,
                     extra={"id": str(session_id), "reason": "script package invalid"},
                 ) from exc
-            snap = (
-                await s.execute(
-                    select(SnapshotRecord)
-                    .where(SnapshotRecord.session_id == session_id)
-                    .order_by(SnapshotRecord.id.desc())
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
             store = PersistentEventStore()
             try:
                 events = await store.restore_active_branch(s, str(session_id))
@@ -175,6 +218,9 @@ class SessionStore:
                 raise wrap(
                     exc, codes.PER_CORRUPT_SNAPSHOT, extra={"reason": "events corrupt"}
                 ) from exc
+            path = store.active_events()
+            until_index = until_resolver(sess, path) if until_resolver is not None else None
+            snap = await self._pick_snapshot(s, session_id, path, until_index)
         return LoadedSession(
             session=sess,
             package=package,
@@ -182,7 +228,51 @@ class SessionStore:
             events=events,
             snapshot=snap,
             version=version,
+            until_event_id=(
+                path[until_index].event_id if until_index is not None else None
+            ),
         )
+
+    @staticmethod
+    async def _pick_snapshot(
+        s: AsyncSession,
+        session_id: uuid.UUID,
+        path: list[GameEvent],
+        until_index: int | None,
+    ) -> SnapshotRecord | None:
+        """挑「活动路径上、目标之前最近」的可用快照。
+
+        只按 `session_id + 最新一行` 取会在回溯后踩到被放弃分支的快照——它的状态
+        含当前分支根本没发生的事件。这里用两个条件过滤：
+        - `branch_id` 必须出现在活动路径上（祖先分支的快照也是合法基线，新分支的
+          继承前缀与它同源）；
+        - 快照锚定的事件必须真的在这一位置：`(branch_id, sequence)` 的 sequence
+          就是分支时间线下标，拿它的 `latest_event_id` 与 `path[sequence]` 对齐。
+          父分支在回溯点之后、属于被放弃历史的快照会在这一步被排除。
+        """
+        if not path:
+            return None
+        limit_seq = len(path) - 1 if until_index is None else min(until_index, len(path) - 1)
+        branch_ids = list({branch_uuid(session_id, e.branch_id) for e in path})
+        rows = (
+            (
+                await s.execute(
+                    select(SnapshotRecord)
+                    .where(
+                        SnapshotRecord.session_id == session_id,
+                        SnapshotRecord.branch_id.in_(branch_ids),
+                        SnapshotRecord.sequence <= limit_seq,
+                    )
+                    .order_by(SnapshotRecord.id.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            if snapshot_sequence_on_path(row, path) is not None:
+                return row
+        return None
 
     # ===== 写入 =====
 
@@ -198,6 +288,8 @@ class SessionStore:
         player_role: str | None | object = _UNSET,
         ended: bool = False,
         runtime_state: Callable[[], dict[str, Any]] | None = None,
+        snapshot_label: str | None = None,
+        snapshot_kind: str = "command",
         claim: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> bool:
         """事件 + 命令 + head/branch/stage/快照，同一事务。
@@ -206,6 +298,7 @@ class SessionStore:
         传入恢复时读到的版本即为乐观锁 CAS（并发冲突 `SESS_CONFLICT`）。
         `player_role` 仅在显式传入时写入（`_UNSET` = 保持库中原值）。
         事件非空且给了 `runtime_state` 工厂时才追加快照行（无事件不计算导出）。
+        `snapshot_label/snapshot_kind` 是存档点标记（场景/回溯/命令），只为人读。
 
         `claim`：在 CAS 抢占成功后、写任何事件**之前**执行的事务内回调（M7 离线
         tick 的 claim-first 幂等闸）。返回 False 表示已被并发认领——整个事务回滚、
@@ -255,11 +348,21 @@ class SessionStore:
                         )
                 await s.flush()
                 head_db = rows[-1].id if rows else sess.head_event_id
+                # head 的分支内序号 = 分支时间线（含继承前缀）的下标，与 WS seq /
+                # 回溯 target_sequence 同一口径；不取 events.sequence（子分支从 0
+                # 重数，语义不同）
+                head_seq = (
+                    max(0, len(store.active_events()) - 1)
+                    if rows
+                    else (sess.head_sequence or 0)
+                )
+                branch = branch_uuid(session_id, store.active_branch_id)
 
                 # 3) 更新 head/branch/stage/status（head 依赖新事件行，故在写入后）
                 values: dict[str, Any] = {
                     "head_event_id": head_db,
-                    "active_branch_id": branch_uuid(session_id, store.active_branch_id),
+                    "head_sequence": head_seq,
+                    "active_branch_id": branch,
                     "current_stage": stage,
                     "status": "ended" if ended else sess.status,
                 }
@@ -274,6 +377,10 @@ class SessionStore:
                         SnapshotRecord(
                             session_id=session_id,
                             event_id=head_db,
+                            branch_id=branch,
+                            sequence=head_seq,
+                            label=snapshot_label,
+                            kind=snapshot_kind,
                             state_machine=json.dumps(
                                 {
                                     "stage": export["stage"],

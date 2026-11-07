@@ -1,8 +1,8 @@
 # 游玩链路说明（现行）
 
-> 状态：M0–M6 已落地（2026-11-07）。上游设计见
+> 状态：M0–M8 已落地（2026-11-08）。上游设计见
 > `docs/design/play-through-redesign.md`（v5，下称「设计」）。
-> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续里程碑（M7–M8）与排查时查阅；
+> 本文讲**现在是什么样、为什么这样、去哪里找**，供后续排查与增量开发查阅；
 > 任务与进度仍以 GitHub Issues 为追踪源。
 
 ## 1. 什么时候查这份文档
@@ -28,10 +28,10 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 当前**已落地**的是：契约与事件注册（M1）、新库与 v2 基线（M2）、回溯修复（M0）、
 Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线）、Stage2 运行期
 （M4：珊瑚图纯 IO 播放，旧剧本走原 agent 路径）、Stage3 确定性探索骨架
-（M5：地点/在场/结算/换景），以及 Stage3 工作人员与玩家干涉
-（M6：DirectorAgent 选项 + ProducerAgent 干涉 + 动态场景/角色 + world_fact）。
-离线 tick（M7）、快照新列与回溯页（M8）仍按设计推进——它们依赖的契约与事件名
-已经就位，见第 4 节。
+（M5：地点/在场/结算/换景）、Stage3 工作人员与玩家干涉
+（M6：DirectorAgent 选项 + ProducerAgent 干涉 + 动态场景/角色 + world_fact）、
+离线 tick（M7：NPC 自主行动 + offline_hint），以及快照坐标与回溯页
+（M8：`(branch_id, sequence)` 坐标、存档点、按目标选快照、旧分支只读、游戏页入口）。
 
 ---
 
@@ -117,7 +117,7 @@ divide_events(v4 大纲：beats + branches + options + endings)
 - 回溯的「拍」变成 `replay_node_entered`：回退后整节点重演（新分支继承前缀）。
 - 到达结局：`beat_cursor` 对齐 `total_beats`，交互复用 0=续写 / 1=结束。
 - **Stage2 不允许自由输入**（见 6.1）；Stage3 探索骨架（M5）与工作人员/干涉
-  （M6）见第 7 节；离线 tick（M7）尚未落地。
+  （M6）、离线 tick（M7）与快照/回溯页（M8）见第 7 节。
 
 运行期不推 `beat_cursor`；场景键/标题/背景由播放位置解析（`export_state`）。
 旧剧本（无 options/endings）不派生图，运行时保持原 agent 线性路径。
@@ -128,10 +128,11 @@ divide_events(v4 大纲：beats + branches + options + endings)
 
 ### 4.1 版本与同步
 
-当前 `CONTRACTS_SCHEMA_VERSION = 3.3.0`（`backend/app/contracts/base.py`）。
+当前 `CONTRACTS_SCHEMA_VERSION = 3.4.0`（`backend/app/contracts/base.py`）。
 3.0.0 是 Stage2 删除自由输入的 breaking；3.1.0 是 M3 给生成草稿加可选字段；
 3.2.0 是 M5 的 `switch_scene` 命令与交互点 `scene_options`；3.3.0 是 M6 把
-`intervene` 加进 Stage3 允许列表（都是加法，minor）。
+`intervene` 加进 Stage3 允许列表；3.4.0 是 M8 给回溯 payload 加可选的
+`target_event_id`（`target_sequence` 保留兼容，都是加法，minor）。
 
 改契约必须同步四处，缺一处都不会报错：
 
@@ -156,6 +157,9 @@ enter_stage3 / confirm_ending / exit_game / intervene / switch_scene`。
   解析，运行时校验预算与 canon，见 7.2）。
 - `IntervenePayload` 与 `FreeInputPayload` 共用 `TextPayload`（1–2000 字）；
   `SwitchScenePayload.scene_key` 是交互点 `scene_options[].scene_key`（`loc:{key}`）。
+- `RollbackToEventPayload` 接受两种坐标：`target_event_id`（事件 UUID，
+  `TimelineEntry.event_id` / 存档点卡片，首选）与 `target_sequence`（分支时间线
+  下标，旧坐标，保留兼容）；两者至少给一个，UUID 优先。
 
 ### 4.3 领域事件登记表
 
@@ -248,11 +252,21 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 生产每条命令重建运行时（`session_runtime._restore_runtime`）：
 读会话行（`FOR UPDATE`）→ 载入剧本与分支 → 最新快照基线 → 重放快照之后的
 活动分支事件 → 执行命令 → 单个 CAS 事务落库（版本、事件、命令行、head/分支/阶段、
-快照）。回溯目标前的快照优化留给 M8（快照带 `branch_id/sequence` 后才有定位依据）。
+快照）。
+
+快照坐标（M8）：`snapshots` 带 `(branch_id, sequence)`——`sequence` 是**分支时间线
+下标**（含继承前缀），与 WS `seq`、`sessions.head_sequence`、回溯 `target_sequence`
+同一口径。恢复时不再盲取「会话最新一行」：只在活动路径的分支里挑、`sequence` 不晚于
+目标、且 `plot_context.latest_event_id` 与 `path[sequence]` 对齐的快照（父分支在回溯点
+之后、属于被放弃历史的快照会在这一步被排除）。回溯命令因此可以「按目标选快照」：
+`_restore_runtime(rollback=…)` 的状态迁移与记忆折叠停在目标事件（`replay_from`
+末尾的世界/播放位置/探索进度折叠仍遍历整条路径，但随后会被回溯的前缀重放覆盖）；
+随后 `GameRuntime.rollback` 仍按前缀整段重放（事件是唯一权威）。HEAD 阶段本来就不允许
+回溯的会话（`ended` / `stage2_complete`）不做截断，保持旧行为让运行时按 HEAD 阶段拒绝。
 
 ---
 
-## 7. Stage3：探索 + 工作人员已落地（M5/M6），离线 tick 未落地（M7）
+## 7. Stage3：探索 + 工作人员 + 离线 tick（M5–M7）与回溯页（M8）
 
 ### 7.1 已落地：确定性探索骨架
 
@@ -341,9 +355,26 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
   tick 内铸新场景与画师生图（需要 Producer 式裁定）、`scheduled_facts`（v5 改为
   NPC 自主行动，未使用作者预写事实）。
 
-### 7.4 未落地（M8 及以后）
+### 7.4 已落地：快照坐标与回溯页（M8）
 
-- **快照新列与回溯页**（M8）：`branch_id/sequence/label/kind`、坐标统一、存档点列表。
+- `snapshots` 新增 `branch_id/sequence/label/kind`（索引
+  `(session_id, branch_id, sequence)`），`sessions` 新增 `head_sequence`；
+  `SessionStatusResponse.head_sequence` 不再拿全局事件行 id 充数。
+- 每条命令落一个存档点：`label` 由场景/命令生成（「选择 · 场景：当铺」
+  「回溯 · 场景：当铺」；旧坐标回溯给出「回溯到 #N」），`kind = command | rollback`。
+  不新增 checkpoint 事件，也不加 `snapshots.asset_id`。
+- `GET /api/sessions/{id}/timeline` 返回 `entries[].event_id/branch_id`、`save_points`、
+  `branches`；`?branch_id=` 指向旧分支时返回**只读**视图（`read_only=true`，
+  进度原样保留但不可回溯）。回溯页按 `target_event_id` 提交，游戏顶栏补「回溯进度」入口；
+  剧情回顾面板里的 `RollbackBar` 仍用 `target_sequence`（WS 消息只带 seq）。
+- 已知边界：`last_tick_at` 不落列——离线 tick 的权威是 `session_ticks` 台账；
+  `script_content_version` 随表仓储里程碑；存档点不做保留策略（每命令一行，
+  读侧只取最近 20 个展示）；回溯页只做分支列表切换 + 只读回看，没有分支树可视化。
+
+### 7.5 未落地（后续）
+
+- **表仓储**：`script_*` 关系表、`scripts.replay_ready`、`ScriptRepository` 只读表
+  （设计 §D/附录 A，未排期）。
 - **新角色头像**：`character_created` 已带 公开背景/性格，但画师侧只接了场景的
   `scene_montage` 意图；角色头像生成随资产管线扩展。
 - **旧剧本**：`exploration=None` 时 Stage3 维持现有 3 轮行为（干涉/换景命令
@@ -363,11 +394,14 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 导演/制作人（选项设计、干涉解析） | `backend/app/domain/agents/director.py`、`producer.py` |
 | 角色记忆折叠 | `backend/app/domain/agents/character.py` |
 | 恢复与命令事务 | `backend/app/services/session_runtime.py`、`session_store.py` |
-| 投影（事件→消息/状态） | `backend/app/services/session_projection.py` |
+| 投影（事件→消息/状态/时间线） | `backend/app/services/session_projection.py` |
+| 快照坐标规则（单源） | `backend/app/services/session_store.py::snapshot_sequence_on_path` |
 | v2 基线 / 冻结旧链 | `backend/alembic/versions/0001_v2_initial.py`、`backend/alembic/legacy_versions/` |
 | 迁移 URL 解析 | `backend/alembic/env.py` |
+| 快照坐标迁移 | `backend/alembic/versions/0003_snapshot_checkpoint.py` |
 | 前端契约镜像 | `frontend/src/lib/contracts/types.ts` |
-| 回溯验收测试 | `backend/tests/test_rollback_memory.py`、`test_branch_replay.py`、`test_full_flow.py` |
+| 回溯页 / 存档点 UI | `frontend/src/components/rollback/rollback-timeline.tsx` |
+| 回溯验收测试 | `backend/tests/test_rollback_memory.py`、`test_branch_replay.py`、`test_full_flow.py`、`test_snapshots.py` |
 | 珊瑚图播放测试 | `backend/tests/test_replay_director.py` |
 | 探索/换景测试 | `backend/tests/test_exploration.py` |
 | 干涉/动态角色/世界事实测试 | `backend/tests/test_intervention.py`、`test_world_facts.py` |

@@ -213,6 +213,12 @@ export function GameHud({
             </button>
           )}
         </div>
+        <Link
+          href={`/game/rollback?id=${sessionId}`}
+          className={buttonClass("quiet", "xs")}
+        >
+          回溯进度
+        </Link>
         <Link href="/" className={buttonClass("quiet", "xs")}>
           返回首页
         </Link>

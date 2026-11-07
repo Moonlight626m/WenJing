@@ -203,11 +203,14 @@ export interface RuntimeUpdateDto {
 /**
  * 回溯页的一条进度（backend/app/contracts/dto.py TimelineEntry 镜像）。
  *
- * 只来自**活动分支已发生**的事件：游标之后的剧本场景不会出现在这里，
+ * 只来自**该分支已发生**的事件：游标之后的剧本场景不会出现在这里，
  * `rollbackable` 由服务端按「叙事节拍 + 步数上限 + 当前阶段允许回溯」判定。
+ * `event_id` 是回溯的首选坐标（跨端稳定），`sequence` 兼容旧坐标/展示。
  */
 export interface TimelineEntry {
   sequence: number;
+  event_id: string;
+  branch_id: string;
   kind: "narrative" | "character_speech" | "system";
   text: string;
   speaker: string | null;
@@ -217,11 +220,32 @@ export interface TimelineEntry {
   rollbackable: boolean;
 }
 
+/** 存档点卡片：一条命令结束时的快照坐标 + 人读标记。 */
+export interface SavePoint {
+  branch_id: string;
+  sequence: number;
+  event_id: string;
+  label: string;
+  kind: string;
+  created_at: string | null;
+}
+
+/** 分支切换项：活动分支可继续玩，其余分支只读（回溯放弃的进度仍可审计）。 */
+export interface BranchSummary {
+  branch_id: string;
+  is_active: boolean;
+  event_count: number;
+}
+
 export interface SessionTimeline {
   session_id: string;
   stage: string;
   head_sequence: number;
   can_rollback: boolean;
+  branch_id: string | null;
+  read_only: boolean;
+  save_points: SavePoint[];
+  branches: BranchSummary[];
   entries: TimelineEntry[];
 }
 
@@ -240,8 +264,12 @@ export function getStatus(sessionId: string): Promise<SessionStatus> {
 }
 
 /** 回溯页进度（GET /api/sessions/{id}/timeline）：只含已发生的事件。 */
-export function getTimeline(sessionId: string): Promise<SessionTimeline> {
-  return request(`/api/sessions/${sessionId}/timeline`);
+export function getTimeline(
+  sessionId: string,
+  branchId?: string
+): Promise<SessionTimeline> {
+  const query = branchId ? `?branch_id=${encodeURIComponent(branchId)}` : "";
+  return request(`/api/sessions/${sessionId}/timeline${query}`);
 }
 
 /** 我的游戏列表（GET /api/sessions，仅自己的剧情世界）。 */

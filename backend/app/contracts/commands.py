@@ -42,9 +42,21 @@ class IntervenePayload(TextPayload):
 
 
 class RollbackToEventPayload(CommandPayload):
-    """回溯目标：活动分支上的事件 sequence（回溯不物理删除历史）。"""
+    """回溯目标：活动分支上的事件坐标（回溯不物理删除历史）。
 
-    target_sequence: int = Field(ge=0)
+    两种坐标二选一（都有效时 `target_event_id` 优先）：
+    - `target_event_id`：契约事件 UUID（`TimelineEntry.event_id`），跨端稳定；
+    - `target_sequence`：活动分支路径下标（旧坐标，与 WS 消息 `seq` 同口径）。
+    """
+
+    target_event_id: uuid.UUID | None = None
+    target_sequence: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _require_target(self) -> RollbackToEventPayload:
+        if self.target_event_id is None and self.target_sequence is None:
+            raise ValueError("target_event_id 与 target_sequence 至少提供一个")
+        return self
 
 
 class SwitchScenePayload(CommandPayload):

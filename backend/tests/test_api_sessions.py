@@ -270,6 +270,14 @@ def test_timeline_lists_only_active_branch_progress(client):
         "system",
     }
     assert all(e["sequence"] <= data["head_sequence"] for e in entries)
+    assert all(e["event_id"] and e["branch_id"] == data["branch_id"] for e in entries)
+    assert data["read_only"] is False
+    assert data["save_points"], "每条命令都应留下存档点"
+    assert all(
+        p["sequence"] <= data["head_sequence"] and p["label"]
+        for p in data["save_points"]
+    )
+    assert any(b["is_active"] for b in data["branches"])
     target = next(
         e for e in entries if e["kind"] == "narrative" and e["rollbackable"]
     )
@@ -279,7 +287,7 @@ def test_timeline_lists_only_active_branch_progress(client):
         json={
             "session_id": sid,
             "kind": "rollback_to_event",
-            "payload": {"target_sequence": target["sequence"]},
+            "payload": {"target_event_id": target["event_id"]},
         },
         headers=headers,
     )
@@ -288,6 +296,12 @@ def test_timeline_lists_only_active_branch_progress(client):
     assert any(
         e["kind"] == "system" and "已回溯" in e["text"] for e in after["entries"]
     )
+    assert len(after["branches"]) >= 2
+    old = next(b for b in after["branches"] if not b["is_active"])
+    old_view = client.get(
+        f"/api/sessions/{sid}/timeline", params={"branch_id": old["branch_id"]}
+    ).json()
+    assert old_view["read_only"] is True and old_view["can_rollback"] is False
 
 
 def test_rest_error_envelopes(client):

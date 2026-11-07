@@ -8,7 +8,7 @@
  * - CI 断言 schema 导出不过期（backend/tests/test_contracts.py）。
  */
 
-export const CONTRACTS_SCHEMA_VERSION = "3.3.0";
+export const CONTRACTS_SCHEMA_VERSION = "3.4.0";
 
 // ===== 阶段 / 枚举 =====
 
@@ -740,7 +740,10 @@ export type ChooseOptionPayload = { option_id: string };
 export type FreeInputPayload = { text: string };
 export type IntervenePayload = { text: string };
 export type SwitchScenePayload = { scene_key: string };
-export type RollbackToEventPayload = { target_sequence: number };
+export type RollbackToEventPayload = {
+  target_event_id?: string | null;
+  target_sequence?: number | null;
+};
 export type EmptyPayload = Record<string, never>;
 
 export interface CommandPayloadByKind {
