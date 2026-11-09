@@ -182,6 +182,7 @@ export function TranscriptPanel({
             >
               <RolePanel
                 characters={characters}
+                messages={messages}
                 playableRoles={playableRoles}
                 playerRole={playerRole}
               />

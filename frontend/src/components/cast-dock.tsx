@@ -16,12 +16,16 @@ function CastChip({
   active,
   speaking,
   playable,
+  present,
+  dynamic,
 }: {
   profile: CharacterProfile;
   isPlayer: boolean;
   active: boolean;
   speaking: boolean;
   playable: boolean;
+  present: boolean;
+  dynamic: boolean;
 }) {
   const { url } = useAssetUrl(profile.avatar_asset);
   const cardId = useId();
@@ -31,11 +35,14 @@ function CastChip({
     <div className="group relative">
       <button
         type="button"
-        aria-label={isPlayer ? `${profile.name}（你）` : profile.name}
+        aria-label={`${isPlayer ? `${profile.name}（你）` : profile.name}${
+          present ? "" : "（不在场）"
+        }`}
         aria-describedby={cardId}
         className={[
           "relative grid size-10 place-items-center overflow-hidden rounded-full border-2 font-serif text-sm",
-          "backdrop-blur-md transition-[transform,box-shadow] duration-300 hover:-translate-y-0.5",
+          "backdrop-blur-md transition-[transform,box-shadow,opacity] duration-300 hover:-translate-y-0.5",
+          present ? "opacity-100" : "opacity-40",
           isPlayer
             ? "border-flag bg-flag text-canvas shadow-[0_0_16px_-4px_var(--wj-flag)]"
             : active
@@ -70,6 +77,8 @@ function CastChip({
           ) : playable ? (
             <Tag tone="accent">可扮演</Tag>
           ) : null}
+          {dynamic && <Tag>运行期登场</Tag>}
+          {!present && <Tag>不在场</Tag>}
         </div>
         {profile.public_background && (
           <p className="mt-1.5 line-clamp-4 text-xs leading-relaxed text-ink-soft">
@@ -91,12 +100,18 @@ function CastChip({
  */
 export function CastDock({
   characters,
+  dynamic,
+  present,
   playableRoles,
   playerRole,
   active,
   speaking,
 }: {
   characters: CharacterProfile[];
+  /** 运行期登场的角色名（不是剧本包里的） */
+  dynamic: ReadonlySet<string>;
+  /** 当前在场名单；null = 没有探索地图（旧剧本/Stage2），不做弱化 */
+  present: ReadonlySet<string> | null;
   playableRoles: string[];
   playerRole: string | null;
   active: string | null;
@@ -113,8 +128,12 @@ export function CastDock({
     ...characters.filter((c) => c.name === playerRole),
     ...characters.filter((c) => c.name !== playerRole),
   ];
-  const shown = ordered.slice(0, MAX_CHIPS);
+    const shown = ordered.slice(0, MAX_CHIPS);
   const rest = ordered.length - shown.length;
+  // 玩家永远在当前地点；运行期角色没有可靠的在场名单（拉人/新增不进静态名单），
+  // 宁可保持点亮，也不要把在场的人误弱化。
+  const isPresent = (name: string) =>
+    name === playerRole || dynamic.has(name) || (present ? present.has(name) : true);
 
   return (
     <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
@@ -126,6 +145,8 @@ export function CastDock({
           active={c.name === active}
           speaking={speaking.includes(c.name)}
           playable={playable.has(c.name)}
+          present={isPresent(c.name)}
+          dynamic={dynamic.has(c.name)}
         />
       ))}
       {rest > 0 && (

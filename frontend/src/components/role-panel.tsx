@@ -1,7 +1,12 @@
 "use client";
 
 import type { CharacterProfile } from "@/lib/contracts/types";
-import { initialOf, listedCharacters } from "@/lib/stage-cast";
+import {
+  initialOf,
+  listedCharacters,
+  mergeRuntimeCharacters,
+} from "@/lib/stage-cast";
+import type { ChatMessage } from "@/stores/gameStore";
 import { Tag } from "@/components/ui/tag";
 
 /**
@@ -10,14 +15,20 @@ import { Tag } from "@/components/ui/tag";
  */
 export function RolePanel({
   characters,
+  messages,
   playableRoles,
   playerRole,
 }: {
   characters: CharacterProfile[];
+  messages: ChatMessage[];
   playableRoles: string[];
   playerRole: string | null;
 }) {
-  const listed = listedCharacters(characters, playableRoles);
+  const { characters: listed, dynamic } = mergeRuntimeCharacters(
+    listedCharacters(characters, playableRoles),
+    messages,
+    playerRole
+  );
   const playableSet = new Set(
     characters.filter((c) => c.is_player_playable.value).map((c) => c.name)
   );
@@ -59,6 +70,8 @@ export function RolePanel({
                 <Tag tone="flag">你</Tag>
               ) : playableSet.has(c.name) ? (
                 <Tag tone="accent">可扮演</Tag>
+              ) : dynamic.has(c.name) ? (
+                <Tag>运行期登场</Tag>
               ) : null}
             </div>
             {c.public_background && (

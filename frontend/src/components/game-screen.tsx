@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
 import { useSpeakingSpeakers } from "@/lib/audio-session";
-import { listedCharacters, stageCast } from "@/lib/stage-cast";
+import { listedCharacters, mergeRuntimeCharacters, stageCast } from "@/lib/stage-cast";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useGameStore } from "@/stores/gameStore";
 import { useEffectsLevel, useUiStore } from "@/stores/uiStore";
@@ -53,6 +53,7 @@ export function GameScreen() {
   const currentAsset = useGameStore((s) => s.currentAsset);
   const scenes = useGameStore((s) => s.scenes);
   const stage3Goals = useGameStore((s) => s.stage3Goals);
+  const interaction = useGameStore((s) => s.interaction);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
   const speaking = useSpeakingSpeakers();
@@ -72,7 +73,22 @@ export function GameScreen() {
   const [tab, setTab] = useState<TranscriptTab>("story");
 
   const cast = stageCast(messages, streams);
-  const listed = listedCharacters(characters, playableRoles);
+  // 剧本角色 + 运行期登场（M6 动态角色）；后端补结构化档案前先按消息流兜底
+  const runtimeCast = useMemo(
+    () =>
+      mergeRuntimeCharacters(
+        listedCharacters(characters, playableRoles),
+        messages,
+        playerRole
+      ),
+    [characters, playableRoles, messages, playerRole]
+  );
+  const listed = runtimeCast.characters;
+  // 当前在场：交互点的换景列表里 is_current 那一项（静态地点名单）
+  const presentNames = useMemo(() => {
+    const current = interaction?.scene_options?.find((scene) => scene.is_current);
+    return current ? new Set(current.participants) : null;
+  }, [interaction]);
   const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
   const showGoals =
     stage3Goals.length > 0 && (stage === "stage3_extending" || stage === "ended");
@@ -112,6 +128,8 @@ export function GameScreen() {
                 />
                 <CastDock
                   characters={listed}
+                  dynamic={runtimeCast.dynamic}
+                  present={presentNames}
                   playableRoles={playableRoles}
                   playerRole={playerRole}
                   active={cast.active}

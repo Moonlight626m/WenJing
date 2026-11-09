@@ -70,3 +70,67 @@ export function listedCharacters(
 export function initialOf(name: string): string {
   return Array.from(name)[0] ?? "";
 }
+
+/** 运行期登场的角色：档案 + 名字集合（后者用于「运行期登场」标记）。 */
+export interface RuntimeCast {
+  characters: CharacterProfile[];
+  dynamic: Set<string>;
+}
+
+const CREATED_RE = /^新角色「([^」]+)」登场[：:]?(.*)$/;
+const PULLED_RE = /^「([^」]+)」来到了现场(?:[：:](.*))?。?$/;
+
+/**
+ * 把消息流里出现的运行期角色补进角色表（M6 动态角色）。
+ *
+ * 后端目前只把 `character_created` / `pull_in_character` 投影成系统文本，
+ * 还没有结构化档案；这里按**固定的两种文案**提取名字，再合并台词里出现过的
+ * speaker。属于过渡方案：payload 带上 `character` 后删掉文本提取，只保留合并。
+ */
+export function mergeRuntimeCharacters(
+  base: CharacterProfile[],
+  messages: ChatMessage[],
+  playerRole: string | null
+): RuntimeCast {
+  const known = new Set(base.map((c) => c.name));
+  if (playerRole) known.add(playerRole);
+  const found = new Map<string, string>();
+
+  function note(name: string | null | undefined, background = "") {
+    const trimmed = name?.trim();
+    if (!trimmed || known.has(trimmed)) return;
+    const previous = found.get(trimmed);
+    if (previous === undefined) {
+      found.set(trimmed, background);
+    } else if (!previous && background) {
+      found.set(trimmed, background);
+    }
+  }
+
+  for (const message of messages) {
+    if (message.kind === "character_speech") {
+      note(message.speaker);
+      continue;
+    }
+    if (message.kind !== "system") continue;
+    const created = CREATED_RE.exec(message.text);
+    if (created) {
+      note(created[1], created[2].trim());
+      continue;
+    }
+    const pulled = PULLED_RE.exec(message.text);
+    if (pulled) note(pulled[1]);
+  }
+
+  if (found.size === 0) return { characters: base, dynamic: new Set() };
+
+  const extra: CharacterProfile[] = [...found].map(([name, background]) => ({
+    name,
+    public_background: background,
+    personality_traits: [],
+    speech_style: null,
+    knowledge_boundary: { knows: [], not_knows: [] },
+    is_player_playable: { value: false, reason: "" },
+  }));
+  return { characters: [...base, ...extra], dynamic: new Set(found.keys()) };
+}

@@ -3,9 +3,10 @@
 import type { OriginalEvidenceRef, Scene, StageValue } from "@/lib/contracts/types";
 import { Tag } from "@/components/ui/tag";
 
-/** `scene:{id}` → 场景 id；运行期新场景（非剧本场景）返回 null。 */
+/** `scene:{id}` / `scene:{id}::branch:{bid}` → 场景 id；运行期新场景（非剧本场景）返回 null。 */
 export function sceneIdOf(sceneKey: string | null): number | null {
-  const match = sceneKey ? /^scene:(\d+)$/.exec(sceneKey) : null;
+  // 珊瑚图分支节点也属于父场景：原文对照、课文高亮都按父场景 id 走。
+  const match = sceneKey ? /^scene:(\d+)(?:::branch:.*)?$/.exec(sceneKey) : null;
   return match ? Number(match[1]) : null;
 }
 

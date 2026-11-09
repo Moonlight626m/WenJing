@@ -202,6 +202,7 @@ function InteractionBody({
   const canSwitch = allowedCommands.includes("switch_scene");
   const canIntervene = allowedCommands.includes("intervene");
   const sceneOptions = interaction.scene_options ?? [];
+  const currentScene = sceneOptions.find((scene) => scene.is_current);
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
 
@@ -288,6 +289,14 @@ function InteractionBody({
           </p>
           {interaction.hint && (
             <p className="mt-0.5 text-xs text-ink-faint">{interaction.hint}</p>
+          )}
+          {sceneOptions.length > 0 && (
+            <p className="mt-1 text-xs text-ink-faint" aria-live="polite">
+              当前在场：
+              {currentScene && currentScene.participants.length > 0
+                ? currentScene.participants.join("、")
+                : "只有你"}
+            </p>
           )}
         </div>
       </div>
