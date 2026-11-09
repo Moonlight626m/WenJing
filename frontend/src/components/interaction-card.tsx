@@ -14,12 +14,13 @@ import type {
   OptionItem,
   StageValue,
 } from "@/lib/contracts/types";
-import { useGameStore } from "@/stores/gameStore";
+import { useGameStore, type ChatMessage } from "@/stores/gameStore";
 import { Thinking } from "@/components/thinking";
 import { VoiceInput } from "@/components/voice-input";
 import { Button, buttonClass } from "@/components/ui/button";
 import { SendIcon } from "@/components/ui/icons";
 import { MotionRoot } from "@/components/ui/motion-root";
+import { Tag } from "@/components/ui/tag";
 
 /** 出场缓动：先快后慢，落定时不回弹。 */
 const EASE = [0.2, 0.7, 0.2, 1] as const;
@@ -52,6 +53,37 @@ function isTypingTarget(target: EventTarget | null): boolean {
  * 只能再看一眼 keyCode 229。 */
 function isImeEnter(e: { nativeEvent: { isComposing: boolean }; keyCode: number }): boolean {
   return e.nativeEvent.isComposing || e.keyCode === 229;
+}
+
+/** 最近一次干涉的结果：请求之后的第一条拒绝/生效事件。 */
+function latestInterventionFeedback(
+  messages: ChatMessage[]
+): { status: "applied" | "rejected"; text: string } | null {
+  let requestIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].eventType === "intervention_requested") {
+      requestIndex = i;
+      break;
+    }
+  }
+  if (requestIndex < 0) return null;
+  for (let i = requestIndex + 1; i < messages.length; i += 1) {
+    const message = messages[i];
+    if (message.eventType === "intervention_rejected") {
+      return {
+        status: "rejected",
+        text: message.intervention?.reason || message.text,
+      };
+    }
+    if (
+      message.eventType === "scene_created" ||
+      message.eventType === "character_created" ||
+      message.eventType === "pull_in_character"
+    ) {
+      return { status: "applied", text: message.text };
+    }
+  }
+  return null;
 }
 
 /**
@@ -192,6 +224,7 @@ function InteractionBody({
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const pending = useGameStore((s) => s.pending);
   const connection = useGameStore((s) => s.connection);
+  const messages = useGameStore((s) => s.messages);
   const submit = useGameStore((s) => s.submitCommand);
   const sessionId = useGameStore((s) => s.sessionId);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -203,6 +236,7 @@ function InteractionBody({
   const canIntervene = allowedCommands.includes("intervene");
   const sceneOptions = interaction.scene_options ?? [];
   const currentScene = sceneOptions.find((scene) => scene.is_current);
+  const interventionFeedback = latestInterventionFeedback(messages);
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
 
@@ -477,6 +511,19 @@ function InteractionBody({
           <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
             每轮可以干涉一次；制作人可能不答应。
           </p>
+          {interventionFeedback && (
+            <p
+              role="status"
+              className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
+            >
+              <Tag tone={interventionFeedback.status === "applied" ? "ok" : "warn"}>
+                {interventionFeedback.status === "applied" ? "已生效" : "未应允"}
+              </Tag>
+              <span className="min-w-0 flex-1 text-ink-soft">
+                {interventionFeedback.text}
+              </span>
+            </p>
+          )}
         </div>
       )}
 

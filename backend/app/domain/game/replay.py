@@ -444,6 +444,7 @@ class ReplayDirector:
                 "node_id": ending.node_id,
                 "ending_id": ending.ending_id,
                 "title": ending.title,
+                "description": ending.description,
                 "kind": ending.kind,
             },
         )

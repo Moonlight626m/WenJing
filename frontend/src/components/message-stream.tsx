@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 
 import type { ChatMessage } from "@/stores/gameStore";
+import { useGameStore } from "@/stores/gameStore";
 import { RewindIcon } from "@/components/ui/icons";
 import { Tag } from "@/components/ui/tag";
 
@@ -18,6 +20,19 @@ function ContentMessage({
   playerRole: string | null;
 }) {
   if (message.kind === "system") {
+    if (message.eventType === "offline_hint") return null; // 顶部横幅承担
+    if (message.eventType === "world_fact") {
+      return (
+        <div className="animate-rise-in my-3 flex justify-center">
+          <div className="max-w-[85%] rounded-lg border border-glow-gold/35 bg-glow-gold/10 px-3.5 py-2 text-xs leading-relaxed text-ink-soft">
+            <span className="mr-1.5 text-2xs tracking-[0.18em] text-glow-gold">
+              世界事实
+            </span>
+            {message.text}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="animate-rise-in my-3 flex justify-center">
         <span className="rounded-full border border-glass-edge bg-glass px-3.5 py-1 text-xs text-ink-faint backdrop-blur-md">
@@ -48,6 +63,11 @@ function ContentMessage({
           {message.speaker ?? "角色"}
           {isOwn && <Tag tone="flag">你</Tag>}
         </span>
+        {message.stageDirection && (
+          <span className="pl-2.5 text-2xs text-ink-faint">
+            {message.stageDirection}
+          </span>
+        )}
         <div
           className={`max-w-[85%] pl-2.5 ${PROSE} text-ink [text-shadow:0_1px_3px_rgba(0,0,0,0.7)]`}
         >
@@ -91,14 +111,58 @@ export function MessageStream({
   onRollback?: (seq: number) => void;
 }) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const sessionId = useGameStore((s) => s.sessionId);
+  const [dismissedHint, setDismissedHint] = useState<number | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length]);
 
+  const offlineHint = [...messages]
+    .reverse()
+    .find((m) => m.eventType === "offline_hint");
+  const showHint = offlineHint != null && offlineHint.seq !== dismissedHint;
+  const visible = offlineHint
+    ? messages.filter((m) => m.eventType !== "offline_hint")
+    : messages;
+
   return (
     <div className="flex flex-col gap-1" data-testid="message-stream">
-      {messages.map((m) => {
+      {showHint && (
+        <div
+          role="status"
+          className="my-1 rounded-xl border border-glow-gold/35 bg-glow-gold/10 px-3 py-2 text-xs text-ink-soft"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="font-serif text-sm text-glow-gold">
+                你离开期间，世界发生了一些事
+              </p>
+              {offlineHint.text && (
+                <p className="mt-0.5 leading-relaxed">{offlineHint.text}</p>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {sessionId && (
+                <Link
+                  href={`/game/rollback?id=${sessionId}`}
+                  className="text-glow-jade underline"
+                >
+                  查看进度
+                </Link>
+              )}
+              <button
+                type="button"
+                onClick={() => setDismissedHint(offlineHint.seq)}
+                className="text-ink-faint transition-colors hover:text-ink"
+              >
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {visible.map((m) => {
         const pickable = onRollback !== undefined && isRollbackTarget(m);
         const picked = pickable && rollbackTarget === m.seq;
         return (

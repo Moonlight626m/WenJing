@@ -94,17 +94,22 @@ export function mergeRuntimeCharacters(
 ): RuntimeCast {
   const known = new Set(base.map((c) => c.name));
   if (playerRole) known.add(playerRole);
-  const found = new Map<string, string>();
+  const found = new Map<string, { background: string; traits: string[] }>();
 
-  function note(name: string | null | undefined, background = "") {
+  function note(
+    name: string | null | undefined,
+    background = "",
+    traits: string[] = []
+  ) {
     const trimmed = name?.trim();
     if (!trimmed || known.has(trimmed)) return;
     const previous = found.get(trimmed);
-    if (previous === undefined) {
-      found.set(trimmed, background);
-    } else if (!previous && background) {
-      found.set(trimmed, background);
+    if (!previous) {
+      found.set(trimmed, { background, traits });
+      return;
     }
+    if (!previous.background && background) previous.background = background;
+    if (traits.length > 0) previous.traits = traits;
   }
 
   for (const message of messages) {
@@ -113,6 +118,12 @@ export function mergeRuntimeCharacters(
       continue;
     }
     if (message.kind !== "system") continue;
+    // 新投影带结构化 character；旧消息回落到固定文案提取。
+    const character = message.character;
+    if (character?.name) {
+      note(character.name, character.public_background ?? "", character.personality_traits);
+      continue;
+    }
     const created = CREATED_RE.exec(message.text);
     if (created) {
       note(created[1], created[2].trim());
@@ -124,10 +135,14 @@ export function mergeRuntimeCharacters(
 
   if (found.size === 0) return { characters: base, dynamic: new Set() };
 
-  const extra: CharacterProfile[] = [...found].map(([name, background]) => ({
+  const extra: CharacterProfile[] = [...found].map(([name, entry]) => ({
     name,
-    public_background: background,
-    personality_traits: [],
+    public_background: entry.background,
+    personality_traits: entry.traits.map((label) => ({
+      label,
+      evidence: "",
+      behavior: "",
+    })),
     speech_style: null,
     knowledge_boundary: { knows: [], not_knows: [] },
     is_player_playable: { value: false, reason: "" },

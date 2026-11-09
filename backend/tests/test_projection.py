@@ -299,6 +299,60 @@ async def test_narrative_message_carries_scene_switch_info(make_runtime):
     assert asset is not None and asset["asset_id"] == str(bg2.asset_id)
 
 
+async def test_payload_carries_event_type_and_structured_fields(make_runtime):
+    """前端增补依赖的结构化 payload：event_type + 角色/干涉/结局/舞台提示。"""
+    from app.services.session_projection import project_messages
+
+    rt = make_runtime(session_id=str(_SID))
+    await _start_and_select(rt)
+    rt.event_store.append(
+        "character_speech",
+        {"speaker": "李白", "text": "好", "stage_direction": "抬袖"},
+    )
+    rt.event_store.append(
+        "character_created",
+        {
+            "name": "杜甫",
+            "public_background": "途经此地的诗人",
+            "personality_traits": ["沉郁"],
+            "location_key": "harbor",
+            "origin": "player_intervention",
+            "avatar_brief": "清瘦，青衫。",
+        },
+    )
+    rt.event_store.append("intervention_requested", {"text": "建一间客栈"})
+    rt.event_store.append(
+        "intervention_rejected", {"reason": "本轮已经干涉过一次了。"}
+    )
+    rt.event_store.append(
+        "replay_ending_reached",
+        {
+            "ending_id": "e1",
+            "title": "送别",
+            "description": "渡口送别。",
+            "kind": "canonical",
+        },
+    )
+
+    msgs = project_messages(_SID, rt.event_store)
+    assert all("event_type" in m["payload"] for m in msgs)
+    by_event = {m["payload"]["event_type"]: m["payload"] for m in msgs}
+
+    assert by_event["character_speech"]["stage_direction"] == "抬袖"
+    created = by_event["character_created"]["character"]
+    assert created["name"] == "杜甫"
+    assert created["personality_traits"] == ["沉郁"]
+    assert created["origin"] == "player_intervention"
+    assert by_event["intervention_rejected"]["intervention"] == {
+        "status": "rejected",
+        "reason": "本轮已经干涉过一次了。",
+    }
+    ending = by_event["replay_ending_reached"]["ending"]
+    assert ending["title"] == "送别"
+    assert ending["description"] == "渡口送别。"
+    assert ending["kind"] == "canonical"
+
+
 async def test_asset_ready_event_is_projected_as_ws_message(make_runtime):
     """#56：`asset_ready` 必须进消息类别表——不进的话事件落了库却永远不推给前端。"""
     from app.services.session_projection import project_messages

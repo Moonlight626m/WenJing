@@ -1,10 +1,15 @@
 # 游玩链路前端增补设计（Stage2 还原 / Stage3 探索 / 回溯）
 
-> 状态：设计草案 v1（2026-11-09）
+> 状态：设计草案 v1（2026-11-09）；P0/P1 前端项已落地（2026-11-09）
 > 依据：M4–M8 已落地实现的前端覆盖审计；协议以
 > `docs/design/play-through-architecture.md` 为准。
 > 范围：只讨论前端界面与逻辑。需要后端补的少量 payload 单列在第 5 节，
 > 均为 `ServerMessage.payload` 的加法，不动 `CONTRACTS_SCHEMA_VERSION`。
+>
+> 实现注记：2.1、2.3、2.4、3.1、3.3、3.4、3.5 已落地；3.6 的达成动效原本已在
+> `GoalTracker` 中实现。第 5 节的 payload 字段已随 `project_messages` 一并加上
+> （`event_type` / `character` / `ending` / `stage_direction` / `intervention`，
+> 以及 `scene_options[].participants` 并入运行期成员）。
 
 ## 0. 原则
 
@@ -243,7 +248,8 @@ avatar_brief），前端直接补全档案与头像占位；`pull_in_character` 
 ## 5. 需要的后端 payload 增补
 
 全部是投影层 `project_messages` 的加法；`ServerMessage.payload` 是
-`dict[str, Any]`，**不升契约版本**。字段到位前前端保持现状。
+`dict[str, Any]`，**不升契约版本**。以下字段已落地（2026-11-09）；
+字段缺失时前端仍按旧路径降级。
 
 | 字段 | 事件 | 用途 | 优先级 |
 |---|---|---|---|

@@ -5,9 +5,10 @@ import Link from "next/link";
 import { AnimatePresence, m } from "motion/react";
 
 import type { Stage3Goal } from "@/lib/contracts/types";
-import type { ChatMessage } from "@/stores/gameStore";
+import type { ChatMessage, MessageEnding } from "@/stores/gameStore";
 import { useGameStore } from "@/stores/gameStore";
 import { Button, buttonClass } from "@/components/ui/button";
+import { Tag } from "@/components/ui/tag";
 
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
@@ -36,6 +37,7 @@ export function EndingPanel({
   playerRole,
   messages,
   goals = [],
+  ending = null,
   onReview,
   onClose,
 }: {
@@ -44,6 +46,8 @@ export function EndingPanel({
   messages: ChatMessage[];
   /** 续写目标；没进续写就结束时为空，不显示那一块 */
   goals?: Stage3Goal[];
+  /** 重演到达的具体结局（title/kind/description）；旧剧本或非重演为空 */
+  ending?: MessageEnding | null;
   onReview: () => void;
   onClose?: () => void;
 }) {
@@ -64,6 +68,33 @@ export function EndingPanel({
       <h2 className="mt-6 font-serif text-2xl tracking-[0.2em] text-ink">
         {scriptTitle ? `《${scriptTitle}》演完了` : "这一局演完了"}
       </h2>
+      {ending?.title && (
+        <p className="mt-2 flex flex-wrap items-center justify-center gap-2 font-serif text-base text-ink-soft">
+          <Tag
+            tone={
+              ending.kind === "canonical"
+                ? "accent"
+                : ending.kind === "distractor"
+                  ? "warn"
+                  : undefined
+            }
+          >
+            {ending.kind === "canonical"
+              ? "正史结局"
+              : ending.kind === "alternate"
+                ? "另一种结局"
+                : ending.kind === "distractor"
+                  ? "偏离结局"
+                  : "结局"}
+          </Tag>
+          {ending.title}
+        </p>
+      )}
+      {ending?.description && (
+        <p className="measure mt-2 text-sm leading-relaxed text-ink-faint">
+          {ending.description}
+        </p>
+      )}
       <p className="measure mt-3 font-serif text-base leading-[1.9] text-ink-soft">
         {playerRole && yours > 0 ? (
           <>
@@ -132,6 +163,8 @@ export function EndingCard({ onReview }: { onReview: () => void }) {
   const playerRole = useGameStore((s) => s.playerRole);
   const messages = useGameStore((s) => s.messages);
   const goals = useGameStore((s) => s.stage3Goals);
+  const ending =
+    [...messages].reverse().find((m) => m.ending)?.ending ?? null;
   const [dismissed, setDismissed] = useState(false);
   const open = stage === "ended" && !dismissed;
 
@@ -158,6 +191,7 @@ export function EndingCard({ onReview }: { onReview: () => void }) {
               playerRole={playerRole}
               messages={messages}
               goals={goals}
+              ending={ending}
               onReview={() => {
                 setDismissed(true);
                 onReview();

@@ -374,7 +374,8 @@ class ExplorationDirector:
             {
                 "scene_key": location.scene_key,
                 "title": location.title,
-                "participants": list(location.participants),
+                # 与 present_names / 换景 payload 同一口径：静态名单 + 运行期拉入/新增
+                "participants": list(self.participants_at(location, world)),
                 "is_current": location.location_key == progress.current_location_key,
             }
             for location in locations

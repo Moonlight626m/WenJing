@@ -34,6 +34,44 @@ export interface ChatMessage {
   kind: ChatKind;
   text: string;
   speaker: string | null;
+  /** 领域事件类型（投影 payload 的 event_type）：区分离线提示/世界事实/干涉结果等。 */
+  eventType?: string | null;
+  /** 重演台词的舞台提示（动作/神态）。 */
+  stageDirection?: string | null;
+  /** 运行期角色（character_created / pull_in_character）。 */
+  character?: MessageCharacter | null;
+  /** 重演结局（replay_ending_reached）。 */
+  ending?: MessageEnding | null;
+  /** 干涉审计与结果（intervention_requested / intervention_rejected）。 */
+  intervention?: MessageIntervention | null;
+}
+
+export interface MessageCharacter {
+  name?: string | null;
+  public_background?: string | null;
+  personality_traits?: string[];
+  location_key?: string | null;
+  origin?: string | null;
+  avatar_brief?: string | null;
+}
+
+export interface MessageEnding {
+  ending_id?: string | null;
+  title?: string;
+  description?: string;
+  kind?: string;
+}
+
+export interface MessageIntervention {
+  status?: "requested" | "rejected";
+  text?: string;
+  reason?: string;
+}
+
+function asRecord<T>(value: unknown): T | null {
+  return value !== null && typeof value === "object"
+    ? (value as unknown as T)
+    : null;
 }
 
 export interface PendingCommand {
@@ -487,7 +525,22 @@ export const useGameStore = create<GameStore>((set, get) => {
           typeof payload.speaker === "string" ? payload.speaker : null;
         messages = [
           ...messages,
-          { key, seq, kind: msg.type as ChatKind, text, speaker },
+          {
+            key,
+            seq,
+            kind: msg.type as ChatKind,
+            text,
+            speaker,
+            eventType:
+              typeof payload.event_type === "string" ? payload.event_type : null,
+            stageDirection:
+              typeof payload.stage_direction === "string"
+                ? payload.stage_direction
+                : null,
+            character: asRecord<MessageCharacter>(payload.character),
+            ending: asRecord<MessageEnding>(payload.ending),
+            intervention: asRecord<MessageIntervention>(payload.intervention),
+          },
         ];
         // 终态规则：这条持久发言就是该角色流缓冲的归宿，接收即丢弃缓冲，
         // 屏幕上不会同时留下"滚动中的"与"最终的"两份文本

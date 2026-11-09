@@ -366,7 +366,9 @@ def project_messages(
         if category is None:
             continue
         p = ev.payload or {}
-        payload: dict[str, Any] = {"category": category}
+        # 消息类型随 payload 下发：前端据此区分离线提示、世界事实、干涉结果等
+        # 系统消息；WS 的 payload 是自由 dict，不动契约版本。
+        payload: dict[str, Any] = {"category": category, "event_type": ev.event_type}
         if category == "asset_ready":
             # 配图就绪（#56）：与 narrative 消息同形携带 current_asset，
             # 前端复用同一套「按 AssetRef 换背景」逻辑，不另立字段语义。
@@ -381,6 +383,8 @@ def project_messages(
         elif category == "character_speech":
             payload["speaker"] = p.get("speaker")
             payload["text"] = _event_text(ev.event_type, p, category)
+            if p.get("stage_direction"):
+                payload["stage_direction"] = str(p["stage_direction"])
         elif category == "narrative":
             payload["text"] = _event_text(ev.event_type, p, category)
             # 场景切换信息（#53）：前端据此更新背景/场景标题。
@@ -396,6 +400,30 @@ def project_messages(
         # 目标变化与回溯都带一份完整目标快照：前端直接替换，回溯到续写之前也会清空
         if ev.event_type in (EVENT_STAGE3_GOALS_SET, EVENT_STAGE3_GOAL_ACHIEVED, EVENT_ROLLBACK):
             payload["stage3_goals"] = [g.model_dump(mode="json") for g in project_goals(goals)]
+        # 结构化字段（M6/M8 前端增补）：运行期角色、干涉结果、重演结局。
+        # 都是 payload 加法，不改变消息类别与 seq。
+        if ev.event_type == EVENT_CHARACTER_CREATED:
+            payload["character"] = {
+                "name": p.get("name"),
+                "public_background": p.get("public_background", ""),
+                "personality_traits": [str(t) for t in p.get("personality_traits", [])],
+                "location_key": p.get("location_key"),
+                "origin": p.get("origin"),
+                "avatar_brief": p.get("avatar_brief", ""),
+            }
+        elif ev.event_type == EVENT_PULL_IN_CHARACTER:
+            payload["character"] = {"name": p.get("name")}
+        elif ev.event_type == EVENT_INTERVENTION_REQUESTED:
+            payload["intervention"] = {"status": "requested", "text": p.get("text", "")}
+        elif ev.event_type == EVENT_INTERVENTION_REJECTED:
+            payload["intervention"] = {"status": "rejected", "reason": p.get("reason", "")}
+        elif ev.event_type == EVENT_REPLAY_ENDING_REACHED:
+            payload["ending"] = {
+                "ending_id": p.get("ending_id"),
+                "title": p.get("title", ""),
+                "description": p.get("description", ""),
+                "kind": p.get("kind", "canonical"),
+            }
         msgs.append({"type": category, "seq": seq, "payload": payload})
     if interaction is not None:
         msgs.append(

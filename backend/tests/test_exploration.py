@@ -20,7 +20,9 @@ from app.domain.game.event import (
     EventStore,
 )
 from app.domain.game.exploration import (
+    ExplorationDirector,
     ExplorationProgress,
+    WorldState,
     build_location_registry,
     derive_exploration,
 )
@@ -200,6 +202,19 @@ async def test_scene_options_are_projected():
     }
     current = [s for s in scenes if s["is_current"]]
     assert [s["scene_key"] for s in current] == ["loc:harbor"]
+
+
+def test_scene_options_include_runtime_members():
+    """在场名单与 present_names 同口径：静态 participants + 运行期拉入/新增。"""
+    registry = build_location_registry(_map())
+    assert registry is not None
+    director = ExplorationDirector(registry)
+    progress = ExplorationProgress(current_location_key="harbor", visited=("harbor",))
+    world = WorldState(memberships={"loc:harbor": ("丁",)})
+
+    options = director.scene_options(progress, world)
+    current = next(item for item in options if item["is_current"])
+    assert current["participants"] == ["乙", "丁"]
 
 
 async def test_switch_scene_moves_and_present_npcs_react():
