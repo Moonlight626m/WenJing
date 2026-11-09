@@ -13,6 +13,9 @@
 | `docs/contract-change-process.md` | 契约变更流程(四处单源) | 现行 |
 | `docs/design/` | 专题设计:游玩链路重构、Stage3 自由探索 | 草案 |
 | `docs/design/play-through-architecture.md` | 游玩链路说明(现行语义/契约/存储/不变量,供后续任务查阅) | 现行 |
+| `docs/design/play-through-frontend.md` | 游玩链路前端增补设计(Stage2 还原/Stage3 探索/回溯的界面与逻辑) | 草案 |
+| `docs/prompts/` | 运行期 Agent 的 Prompt 模板与设计标准 | 现行+提议 |
+| `docs/prompts/runtime-agents.md` | 运行期 Agent 分工、现行 Prompt 与 Director/Producer 的 v2 设计 | 现行+提议 |
 | `docs/research/` | 技术 / 部署调研快照(带日期,非规格,不追改) | 参考 |
 
 历史上的架构决策文档(`docs/adr/` ADR-0001…0006 与 `docs/archive/design/` MVP 期设计)于
