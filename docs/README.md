@@ -14,6 +14,7 @@
 | `docs/design/` | 专题设计:游玩链路重构、Stage3 自由探索 | 草案 |
 | `docs/design/play-through-architecture.md` | 游玩链路说明(现行语义/契约/存储/不变量,供后续任务查阅) | 现行 |
 | `docs/design/play-through-frontend.md` | 游玩链路前端增补设计(Stage2 还原/Stage3 探索/回溯的界面与逻辑) | 草案 |
+| `docs/design/stage3-chronicle-redesign.md` | Stage3 自由探索与编年史:单机实例/角色工厂/限知编年史/无显式结束 | 草案 |
 | `docs/prompts/` | 运行期 Agent 的 Prompt 全文、设计标准与查阅/试验/更新手册 | 现行 |
 | `docs/prompts/runtime-agents.md` | 运行期 Agent 分工、现行 Prompt 全文、开发者查阅/试验/更新流程 | 现行 |
 | `docs/research/` | 技术 / 部署调研快照(带日期,非规格,不追改) | 参考 |
