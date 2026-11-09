@@ -1,11 +1,12 @@
-"""编剧 Agent：剧情推进 + 方向确认 + 交互设计（精简版）。
+"""剧情主持 Agent（DM）：运行期剧情推进、方向确认、交互设计与续写目标。
 
-本 MVP 阶段不测试剧本生成链路（Stage1 的 Script 由外部 mock 提供），
-编剧 Agent 聚焦 Stage2/3 的推进与交互设计机制：
-- `advance_plot`：推进到下一 beat，产出 PlotAdvancement
-- `confirm_direction`：D5 两段式第一步，产出当前矛盾
-- `design_interaction`：决定模式（A/B/C）并生成交互点
-- `design_stage3_goals`：进入续写时按教学重点定 2–3 个小目标
+**不是剧本生成 Agent**。剧本由 `domain/generation/workflow` 生成（`write_script` /
+`write_dialogue` 等节点，prompt 在 `domain/prompts/` 的 DB 注册表），本类只服务运行期：
+- 旧剧本路径（无珊瑚图 / 无探索图）的确定性 `advance_plot` / `confirm_direction` /
+  `design_interaction`；
+- 进入 Stage3 时按教学重点定 2–3 个续写目标（本类唯一的 LLM 调用）。
+新版 Stage2 珊瑚图是纯 IO 播放，Stage3 探索的每轮推进由确定性
+`ExplorationDirector.settle` 承担，都不会调用本类。
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ import logging
 from dataclasses import dataclass
 
 from app.contracts.enums import UsagePurpose
-from app.domain.game.goals import MAX_GOALS, fallback_goals, parse_goal_list
+from app.domain.agents.prompting import build_stage3_goals_prompt
+from app.domain.game.goals import fallback_goals, parse_goal_list
 from app.domain.game.types import (
     Beat,
     Direction,
@@ -26,7 +28,8 @@ from app.domain.game.types import (
 )
 from app.domain.llm import LLMService
 
-logger = logging.getLogger("wenjing.agents.screenwriter")
+logger = logging.getLogger("wenjing.agents.game_master")
+
 
 
 @dataclass
@@ -35,7 +38,7 @@ class _BeatCtx:
     beat: Beat
 
 
-class ScreenwriterAgent:
+class GameMasterAgent:
     def __init__(self, llm: LLMService) -> None:
         self.llm = llm
         self.beat_index = 0
@@ -126,31 +129,11 @@ class ScreenwriterAgent:
         LLM 失败或输出解析不出目标时退回 `fallback_goals`（直接从教学重点出题），
         续写不因出题失败而卡住。
         """
-        focus = "；".join(script.teaching_focus) or "（未标注）"
-        recent = "\n".join(plot_log[-6:]) or "（无）"
-        names = "、".join(c.name for c in script.characters)
+        bundle = build_stage3_goals_prompt(
+            script, player_role=player_role, plot_log=plot_log
+        )
         try:
-            raw = await self.llm.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": "你是编剧 Agent，为语文课文的剧情续写设定小目标。",
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"课文：《{script.title}》\n"
-                            f"教学重点：{focus}\n"
-                            f"学生扮演：{player_role or '（未选）'}；在场角色：{names}\n"
-                            f"课文演到这里为止的剧情：\n{recent}\n\n"
-                            f"请为接下来的续写定 2 到 {MAX_GOALS} 个小目标。要求：每个一句话、"
-                            "不超过 30 字；学生通过自己角色的言行就能达成；尽量落在教学重点上；"
-                            "不要剧透课文后文。只输出 JSON：{\"goals\": [\"目标一\", \"目标二\"]}"
-                        ),
-                    },
-                ],
-                purpose=UsagePurpose.AGENT,
-            )
+            raw = await self.llm.chat(bundle.messages(), purpose=UsagePurpose.AGENT)
         except Exception:
             logger.warning("stage3_goals_degraded", extra={"reason": "llm_failed"})
             return fallback_goals(script.teaching_focus, player_role)

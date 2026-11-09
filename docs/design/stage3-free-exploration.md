@@ -283,7 +283,7 @@ backend/app/
 │   │                                  保留给无地图旧剧本）
 │   ├── agents/
 │   │   ├── tools.py              [改] 注册两个新视图工具
-│   │   ├── screenwriter.py       [改] stage3 交互点增加地点选项；advance_plot/
+│   │   ├── game_master.py       [改] stage3 交互点增加地点选项；advance_plot/
 │   │   │                              confirm_direction 在 stage3 不再被调用（保留给 Stage2）
 │   │   └── character.py          [不改]（结构不变；地点上下文经工具获取）
 │   └── prompts/defaults.py       [不改]（M3 translator 才新增键）

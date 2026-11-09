@@ -27,6 +27,7 @@ from app.infrastructure.errx import Error as WJError
 from app.infrastructure.models.session import Session as SessionRecord
 from app.infrastructure.models.snapshot import Snapshot
 from app.services.session_runtime import SessionApplication
+from app.services.session_store import SNAPSHOT_KIND_COMMAND, SNAPSHOT_KIND_ROLLBACK
 
 _DB_URL = os.environ.get("WENJING_DATABASE_URL", DEFAULT_DATABASE_URL)
 
@@ -123,7 +124,7 @@ async def test_snapshots_carry_branch_coordinates_and_labels(factory, actor):
     newest = snaps[0]
     assert newest.branch_id == status.active_branch_id
     assert newest.sequence == status.head_sequence
-    assert newest.kind == "command"
+    assert newest.kind == SNAPSHOT_KIND_COMMAND
     assert newest.label
 
     # 回溯页的存档点来自同一批快照坐标
@@ -132,6 +133,73 @@ async def test_snapshots_carry_branch_coordinates_and_labels(factory, actor):
     assert last.sequence == timeline.head_sequence
     assert last.branch_id == status.active_branch_id
     assert last.event_id  # 契约 UUID，可直接当回溯坐标
+
+
+async def test_snapshot_retention_keeps_recent_per_branch(factory, actor, monkeypatch):
+    """快照是缓存：每分支只留最近 K 个命令快照，超出部分删掉。"""
+    from conftest import make_playable_session
+
+    from app.services import session_store as store_mod
+
+    monkeypatch.setattr(store_mod, "SNAPSHOT_KEEP_PER_BRANCH", 1)
+
+    app, sid = await make_playable_session(factory, actor)
+    await _play(app, sid, actor, steps=2)
+    status = await app.get_status(sid, actor=actor)
+
+    async with factory() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(Snapshot)
+                    .where(Snapshot.session_id == sid)
+                    .order_by(Snapshot.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    command_rows = [row for row in rows if row.kind != SNAPSHOT_KIND_ROLLBACK]
+    assert command_rows
+    assert all(
+        sum(1 for row in command_rows if row.branch_id == branch) <= 1
+        for branch in {row.branch_id for row in command_rows}
+    )
+    assert command_rows[-1].sequence == status.head_sequence
+
+
+async def test_rollback_snapshots_are_never_pruned(factory, actor, monkeypatch):
+    """回溯快照是审计坐标，不受保留策略影响。"""
+    from conftest import make_playable_session
+
+    from app.services import session_store as store_mod
+
+    monkeypatch.setattr(store_mod, "SNAPSHOT_KEEP_PER_BRANCH", 1)
+
+    app, sid = await make_playable_session(factory, actor)
+    await _play(app, sid, actor, steps=2)
+    timeline = await app.get_timeline(sid, actor=actor)
+    target = _rollbackable(timeline.entries)[0]
+    await app.submit_command(
+        sid,
+        _cmd(sid, CommandKind.ROLLBACK_TO_EVENT, {"target_event_id": str(target.event_id)}),
+        actor=actor,
+    )
+    await app.submit_command(
+        sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
+    )
+
+    async with factory() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(Snapshot).where(Snapshot.session_id == sid)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert any(row.kind == SNAPSHOT_KIND_ROLLBACK for row in rows)
 
 
 async def test_rollback_by_event_uuid_and_read_only_branch_view(factory, actor):

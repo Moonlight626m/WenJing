@@ -1,9 +1,11 @@
-"""制作人 Agent（工作人员）：解析玩家干涉（design §B5，M6）。
+"""世界构建 Agent（工作人员）：解析玩家干涉（design §B5，M6）。
 
-玩家用自然语言说「建一个雨夜客栈 / 让一个乞丐加入 / 叫船夫过来」，制作人把它
+玩家用自然语言说「建一个雨夜客栈 / 让一个乞丐加入 / 叫船夫过来」，世界构建把它
 解析成结构化意图；**校验与应用在运行时**（预算、canon、事件化），这里只做解析。
 不挂工具、不出场；解析失败或无法归类一律返回 `reject`（fail-closed），
 运行时据此写 `intervention_rejected` 并提示玩家。
+
+Prompt 组装在 `domain/agents/prompting.py`（`build_world_builder_prompt`）。
 """
 
 from __future__ import annotations
@@ -13,10 +15,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
+from app.domain.agents.prompting import build_world_builder_prompt
 from app.domain.game.goals import extract_json_object
 from app.domain.llm import LLMService
 
-logger = logging.getLogger("wenjing.agents.producer")
+logger = logging.getLogger("wenjing.agents.world_builder")
 
 KIND_CREATE_SCENE = "create_scene"
 KIND_ADD_CHARACTER = "add_character"
@@ -66,7 +69,7 @@ def _participants(value: Any) -> tuple[str, ...]:
     return tuple(names)
 
 
-class ProducerAgent:
+class WorldBuilderAgent:
     """干涉解析器：自然语言 → `InterventionIntent`（四类之一，其余拒绝）。"""
 
     def __init__(self, llm: LLMService) -> None:
@@ -75,60 +78,12 @@ class ProducerAgent:
     async def parse_intervention(
         self, text: str, *, context: dict[str, Any]
     ) -> InterventionIntent:
-        current_title = _text(context.get("location_title"))
-        visited = "、".join(str(v) for v in context.get("visited_titles", [])) or "（无）"
-        locations = (
-            "、".join(
-                f"{item.get('title', '')}={item.get('key', '')}"
-                for item in context.get("locations", [])
-                if isinstance(item, dict)
-            )
-            or "（无）"
-        )
-        roster = "、".join(str(n) for n in context.get("roster", [])) or "（无）"
-        player_role = _text(context.get("player_role")) or "（未选）"
-        budgets = context.get("budgets", {})
-
+        bundle = build_world_builder_prompt(text, context)
         try:
-            raw = await self.llm.chat(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是语文课文情景演绎的制作人 Agent（工作人员，不出场）。"
-                            "把玩家的干涉请求解析成四类意图之一，只输出 JSON，不要解释。"
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"玩家在「{current_title}」。已访问地点：{visited}。\n"
-                            f"已存在地点（标题=key）：{locations}；地点参数请填 key，"
-                            "留空表示当前地点。\n"
-                            f"可拉入的角色：{roster}。玩家扮演：{player_role}。\n"
-                            f"剩余预算：新场景 {budgets.get('scenes_left', 0)} 个、"
-                            f"新角色 {budgets.get('characters_left', 0)} 个。\n"
-                            f"玩家请求：{text}\n\n"
-                            "允许的意图与字段：\n"
-                            "- 新建场景：{\"kind\":\"create_scene\",\"title\":\"地点名\","
-                            "\"participants\":[\"在场人物\"],\"visual_summary\":\"一句画面\","
-                            "\"parent_location_key\":\"锚定的已访问地点 key（可留空=当前）\"}\n"
-                            "- 新增角色：{\"kind\":\"add_character\",\"name\":\"姓名\","
-                            "\"brief\":\"身份与来意\",\"personality\":\"性格一句\","
-                            "\"location_key\":\"所在地点 key（可留空=当前）\"}\n"
-                            "- 拉人入场：{\"kind\":\"pull_in_character\",\"name\":\"角色名\","
-                            "\"reason\":\"一句到场理由（可留空=他闻讯赶来）\"}\n"
-                            "- 不允许：{\"kind\":\"reject\",\"reason\":\"原因（给学生看）\"}\n"
-                            "规则：不得改写已发生事实或课文结局；新角色不得是玩家角色；"
-                            "不在可拉入名单里的角色只能走 add_character；拿不准就 reject。"
-                        ),
-                    },
-                ],
-                purpose=UsagePurpose.AGENT,
-            )
+            raw = await self.llm.chat(bundle.messages(), purpose=UsagePurpose.AGENT)
         except Exception:
-            logger.warning("producer_parse_degraded", extra={"reason": "llm_failed"})
-            return InterventionIntent(kind=KIND_REJECT, reason="制作人暂时无法处理，请稍后再试。")
+            logger.warning("world_builder_parse_degraded", extra={"reason": "llm_failed"})
+            return InterventionIntent(kind=KIND_REJECT, reason="世界构建暂时无法处理，请稍后再试。")
 
         return parse_intent(raw)
 

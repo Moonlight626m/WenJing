@@ -14,9 +14,10 @@
 | `docs/design/` | 专题设计:游玩链路重构、Stage3 自由探索 | 草案 |
 | `docs/design/play-through-architecture.md` | 游玩链路说明(现行语义/契约/存储/不变量,供后续任务查阅) | 现行 |
 | `docs/design/play-through-frontend.md` | 游玩链路前端增补设计(Stage2 还原/Stage3 探索/回溯的界面与逻辑) | 草案 |
-| `docs/prompts/` | 运行期 Agent 的 Prompt 模板与设计标准 | 现行+提议 |
-| `docs/prompts/runtime-agents.md` | 运行期 Agent 分工、现行 Prompt 与 Director/Producer 的 v2 设计 | 现行+提议 |
+| `docs/prompts/` | 运行期 Agent 的 Prompt 全文、设计标准与查阅/试验/更新手册 | 现行 |
+| `docs/prompts/runtime-agents.md` | 运行期 Agent 分工、现行 Prompt 全文、开发者查阅/试验/更新流程 | 现行 |
 | `docs/research/` | 技术 / 部署调研快照(带日期,非规格,不追改) | 参考 |
+| `docs/archive/handoffs/` | 已实现任务的交接/设计快照(带日期,不追改) | 归档 |
 
 历史上的架构决策文档(`docs/adr/` ADR-0001…0006 与 `docs/archive/design/` MVP 期设计)于
 2026-11 删除:决策均已落地为代码,原文可查 git 历史;机制要点已沉淀在 `AGENTS.md`、

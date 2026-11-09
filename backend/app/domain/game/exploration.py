@@ -2,8 +2,8 @@
 
 职责边界：只做**确定性**的事——地点注册表、在场过滤、换景与每轮结算；
 运行期世界（动态场景/新角色/拉人/世界事实，M6 §B5/B6）也在这里由事件派生。
-NPC 的提议/反应仍是 LLM（`CharacterAgent`）；导演（选项）与制作人（干涉解析）
-是工作人员 agent（`domain/agents/director.py`、`producer.py`），只经事件与
+NPC 的提议/反应仍是 LLM（`CharacterAgent`）；导演（选项）与世界构建（干涉解析）
+是工作人员 agent（`domain/agents/director.py`、`world_builder.py`），只经事件与
 本模块的世界模型交互。旧剧本（`exploration=None`）完全不走这里，保持原有
 3 轮行为。
 

@@ -21,6 +21,12 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 
 from app.domain.agents.chat_model import WenjingChatModel
+from app.domain.agents.prompting import (
+    ACTION_LABELS,
+    CHARACTER_MEMORY_LIMIT,
+    build_character_prompt,
+    build_character_system,
+)
 from app.domain.agents.tools import WorldView, build_character_tools
 from app.domain.game.event import (
     EVENT_CHARACTER_CREATED,
@@ -35,14 +41,6 @@ logger = logging.getLogger("wenjing.agents.character")
 
 #: 可见文本增量回调（同步签名；WS 出口由调用方自行缓冲/下发）。
 OnDelta = Callable[[str], None]
-
-#: 阶段任务指令（PhaseDirector 式集中，jubensha-ai 调研参考点 #4）：
-#: stage 别名 → 该阶段的任务框架。运行期所有角色通用、随阶段切换——与 identity
-#: （全场不变）的区别就在这里。新增阶段在此登记一行，不要在各调用点散装 if。
-STAGE_DIRECTIVES: dict[str, str] = {
-    "stage2": "你处于剧情还原阶段，按课文原情节行动。",
-    "stage3": "你处于剧情续写阶段，设定内自由发挥。",
-}
 
 
 @dataclass
@@ -70,6 +68,23 @@ class CharacterMemory:
         self.plot_context = data["plot_context"]
         self.current_direction = data["current_direction"]
         self.rejected = data["rejected"]
+        # 旧快照可能存着无界记忆：恢复时统一收口到读取窗口
+        self.trim()
+
+    def add_personal_note(self, text: str) -> None:
+        """记一条不会进 `rejected` 的个人事件（如干涉登场的前史）。"""
+        self.personal_log.append(text)
+        self.trim()
+
+    def trim(self) -> None:
+        """记忆是有界窗口：只保留最近 `CHARACTER_MEMORY_LIMIT` 条。
+
+        事件流才是全量权威；快照/进程内记忆只是读取窗口，有界后每命令快照
+        的存储量恒定，不再随回合数增长（O(n²) → O(n)）。
+        """
+        for entries in (self.working_memory, self.personal_log, self.rejected):
+            if len(entries) > CHARACTER_MEMORY_LIMIT:
+                del entries[:-CHARACTER_MEMORY_LIMIT]
 
     def clear(self) -> None:
         """原地清空记忆（保持对象身份——工具闭包持有本对象的引用，换对象会让
@@ -94,32 +109,14 @@ class CharacterIdentity:
         self.voice_style = ""
 
     def to_system_prompt(self) -> str:
-        parts = [
-            f"你是{self.name}。",
-            f"背景：{self.public_background}。",
-            f"性格：{'、'.join(self.personality_traits)}。",
-        ]
-        if self.speech_style:
-            parts.append(f"说话风格：{self.speech_style}。")
-        if self.knows or self.not_knows:
-            # 知识边界保持结构化、逐条列出（不压平成一句）：not_knows 是**禁出
-            # 清单**，逐条项目的显著性远高于压平叙述（jubensha-ai 调研参考点 #3
-            # 的「公开必须是显式动作」化到 prompt 层就是这份清单）。
-            parts.append("你知道的事：")
-            for item in self.knows:
-                parts.append(f"- {item}")
-            if self.not_knows:
-                parts.append(
-                    "你不知道的事（**绝不能说出、也不能据此行动**；被问及"
-                    "就以符合身份的方式回应：困惑、岔开或按你的立场表态）："
-                )
-                for item in self.not_knows:
-                    parts.append(f"- {item}")
-        parts.append(
-            "你可以调用工具查询当前世界进度与剧情上下文；需要这些信息时先查询，"
-            "再给出符合身份的行动，不要凭空编造未发生的情节。"
+        return build_character_system(
+            name=self.name,
+            public_background=self.public_background,
+            personality_traits=self.personality_traits,
+            speech_style=self.speech_style,
+            knows=self.knows,
+            not_knows=self.not_knows,
         )
-        return "\n".join(parts)
 
 
 class CharacterAgent:
@@ -130,24 +127,28 @@ class CharacterAgent:
         self.memory = CharacterMemory()
         self.llm = llm
         self._proposal_seq = 0
+        # system 一次构造、全场复用：同一角色+阶段逐字节稳定，动态内容只进 user。
+        self._system_prompt = self.identity.to_system_prompt()
         self._model = WenjingChatModel(service=llm)
         self._tools = build_character_tools(memory=self.memory, world=world)
         self._executor = create_agent(
             self._model,
             tools=self._tools,
-            system_prompt=self.identity.to_system_prompt(),
+            system_prompt=self._system_prompt,
         )
 
     def record_proposal(self, description: str) -> None:
         """记一次提议到私有记忆。实时提案与事件重放共用，防两处写法漂移。"""
         self.memory.personal_log.append(f"提议：{description}")
         self.memory.rejected.append(description)  # 记录提出过，避免重复
+        self.memory.trim()
 
     def record_speech(self, text: str) -> None:
         """记一次发言到工作记忆（实时回应与事件重放共用）。"""
         self.memory.working_memory.append(
             {"role": self.identity.name, "content": text}
         )
+        self.memory.trim()
 
     async def propose_action(self, stage: str) -> Proposal:
         """按当前世界状态提出一个行动提议（工具调用 Agent 跑一轮）。"""
@@ -175,7 +176,8 @@ class CharacterAgent:
         调用方用返回值持久化 `character_speech`，由终态规则覆盖前端已渲染的临时文本。
         """
         detail = player_action.text or f"选项 {player_action.option_id}"
-        extra = f"玩家刚刚做出了行动：{player_action.type}（{detail}）。请以角色身份回应。"
+        action_label = ACTION_LABELS.get(player_action.type, player_action.type)
+        extra = f"玩家刚刚做出了行动：{action_label}「{detail}」。请以角色身份回应。"
         if on_delta is None:
             text = await self._run(stage, instruction="react", extra=extra)
         else:
@@ -269,11 +271,12 @@ class CharacterAgent:
         return _final_text(list(merged.values()))
 
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
-        parts = [STAGE_DIRECTIVES.get(stage, "")]
-        if extra:
-            parts.append(extra)
-        parts.append(f"任务：{instruction}（必要时先用工具查询世界进度与剧情上下文）")
-        return "\n".join(p for p in parts if p)
+        return build_character_prompt(
+            system_prompt=self._system_prompt,
+            stage=stage,
+            instruction=instruction,
+            extra=extra,
+        ).user
 
 
 def _final_text(messages: list[BaseMessage]) -> str:
@@ -353,10 +356,17 @@ class CharacterAgentManager:
         return self.agents[name]
 
     def broadcast_plot_context(self, summary: str) -> None:
+        """全局广播剧情摘要到 `plot_context`。
+
+        **write-only**：当前没有任何工具/prompt 读取它。摘要包含角色不在场的
+        内容，直接暴露会破坏知识边界；若未来要接入，必须先按 viewer 裁剪。
+        角色读剧情请走 `view_plot_log`（事件派生的 visible 摘要）。
+        """
         for agent in self.agents.values():
             agent.memory.plot_context = summary
 
     def broadcast_direction(self, direction: dict[str, str]) -> None:
+        """全局广播当前处境到 `current_direction`（同样 write-only，见上）。"""
         for agent in self.agents.values():
             agent.memory.current_direction = direction
 
@@ -415,4 +425,4 @@ class CharacterAgentManager:
                 origin = payload.get("origin")
                 brief = str(payload.get("public_background", ""))
                 if origin == "player_intervention" and brief:
-                    agent.memory.personal_log.append(f"你因玩家的干涉而登场：{brief}")
+                    agent.memory.add_personal_note(f"你因玩家的干涉而登场：{brief}")

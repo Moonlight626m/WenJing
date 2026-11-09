@@ -136,6 +136,48 @@ async def test_player_action_consumed_and_recorded(make_runtime):
     assert all(a["option_id"] == 0 for a in actions)
 
 
+async def test_choose_option_records_label_and_feeds_reaction(make_runtime, fake_llm):
+    """选选项后，事件与 NPC 反应都应看到文案而不是编号。"""
+    rt = make_runtime()
+    await rt.start()
+    result = await rt.submit(
+        command_id="label-role", kind="select_role", payload={"role_name": "李白"}
+    )
+    assert result.active_interaction is not None
+    label = result.active_interaction["options"][0]["text"]
+    assert label
+
+    calls_before = len(fake_llm.calls)
+    await rt.submit(command_id="label-opt", kind="choose_option", payload={"option_id": "0"})
+
+    action = [
+        e.payload for e in rt.event_store.events if e.event_type == "player_action"
+    ][-1]
+    assert action["text"] == label
+
+    react_inputs = [
+        str(call[-1].get("content", ""))
+        for call in fake_llm.calls[calls_before:]
+        if call and "react" in str(call[-1].get("content", ""))
+    ]
+    assert react_inputs, "选择选项后应有角色反应调用"
+    assert any(label in prompt for prompt in react_inputs), "角色反应输入未带选项文案"
+
+
+async def test_choose_option_events_keep_text_for_replay(make_runtime):
+    """回放/审计口径：事件里的 player_action 必须带文案，不能只剩编号。"""
+    rt = make_runtime()
+    await play_until_terminal(rt)
+    choose_actions = [
+        event.payload
+        for event in rt.event_store.events
+        if event.event_type == "player_action"
+        and event.payload.get("type") == "choose_option"
+    ]
+    assert choose_actions
+    assert all(action.get("text") for action in choose_actions)
+
+
 # ===== command_id 幂等 =====
 
 
@@ -228,6 +270,64 @@ async def test_engine_module_free_of_web_frameworks():
 
 
 # ===== 阶段切换（D14 结局确认）=====
+
+
+async def test_state_logs_are_bounded(make_runtime):
+    """剧情/发言台账是有界窗口：快照每命令恒定大小。"""
+    from app.domain.game.game_runtime import PLOT_LOG_LIMIT, SPEECH_LOG_LIMIT
+
+    rt = make_runtime()
+    events = [
+        {
+            "event_type": "plot_advancement",
+            "payload": {"summary": f"第{i}拍", "scene_key": "scene:1"},
+        }
+        for i in range(PLOT_LOG_LIMIT + 5)
+    ] + [
+        {"event_type": "character_speech", "payload": {"speaker": "杜甫", "text": f"第{i}句"}}
+        for i in range(SPEECH_LOG_LIMIT + 5)
+    ]
+    rt.replay_from(None, events)
+
+    assert len(rt.state.plot_log) == PLOT_LOG_LIMIT
+    assert rt.state.plot_log[-1] == f"第{PLOT_LOG_LIMIT + 4}拍"
+    assert len(rt.state.speech_log) == SPEECH_LOG_LIMIT
+    assert rt.state.speech_log[-1][2] == f"第{SPEECH_LOG_LIMIT + 4}句"
+
+
+async def test_restore_clamps_legacy_oversized_logs(make_runtime):
+    """旧快照可能存着无界台账：restore 时统一收口到读取窗口。"""
+    from app.domain.agents.prompting import CHARACTER_MEMORY_LIMIT
+    from app.domain.game.game_runtime import PLOT_LOG_LIMIT, SPEECH_LOG_LIMIT
+
+    rt = make_runtime()
+    dump = rt.export_state()
+    dump["plot_log"] = [f"第{i}拍" for i in range(PLOT_LOG_LIMIT + 5)]
+    dump["speech_log"] = [
+        ["杜甫", "scene:1", f"第{i}句"] for i in range(SPEECH_LOG_LIMIT + 5)
+    ]
+    dump["character_memories"] = {
+        "杜甫": {
+            "working_memory": [
+                {"role": "杜甫", "content": f"第{i}句"}
+                for i in range(CHARACTER_MEMORY_LIMIT + 5)
+            ],
+            "personal_log": [f"条目{i}" for i in range(CHARACTER_MEMORY_LIMIT + 5)],
+            "rejected": [f"驳回{i}" for i in range(CHARACTER_MEMORY_LIMIT + 5)],
+            "plot_context": "",
+            "current_direction": {},
+        }
+    }
+
+    rt.restore(dump)
+
+    assert len(rt.state.plot_log) == PLOT_LOG_LIMIT
+    assert rt.state.plot_log[-1] == f"第{PLOT_LOG_LIMIT + 4}拍"
+    assert len(rt.state.speech_log) == SPEECH_LOG_LIMIT
+    memory = rt.characters.get("杜甫").memory
+    assert len(memory.working_memory) == CHARACTER_MEMORY_LIMIT
+    assert len(memory.personal_log) == CHARACTER_MEMORY_LIMIT
+    assert len(memory.rejected) == CHARACTER_MEMORY_LIMIT
 
 
 async def test_ending_confirm_enter_stage3(make_runtime):

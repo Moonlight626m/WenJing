@@ -82,7 +82,7 @@ from app.services.session_projection import (
     project_timeline,
     project_update,
 )
-from app.services.session_store import SessionStore
+from app.services.session_store import SNAPSHOT_KIND_COMMAND, SNAPSHOT_KIND_ROLLBACK, SessionStore
 
 logger = logging.getLogger("wenjing.session.application")
 
@@ -143,10 +143,12 @@ def _snapshot_marker(command: PlayerCommand, export: dict[str, Any]) -> tuple[st
             else None
         )
         if seq is not None:
-            return f"回溯到 #{seq}", "rollback"
-        return (f"回溯 · {scene}" if scene else "回溯"), "rollback"
+            return f"回溯到 #{seq}", SNAPSHOT_KIND_ROLLBACK
+        return (
+            f"回溯 · {scene}" if scene else "回溯"
+        ), SNAPSHOT_KIND_ROLLBACK
     word = _COMMAND_LABELS.get(command.kind, command.kind.value)
-    return (f"{word} · {scene}" if scene else word), "command"
+    return (f"{word} · {scene}" if scene else word), SNAPSHOT_KIND_COMMAND
 
 
 @dataclass

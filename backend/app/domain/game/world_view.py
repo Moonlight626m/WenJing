@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.domain.agents.screenwriter import total_beats
+from app.domain.agents.game_master import total_beats
 
 if TYPE_CHECKING:  # 仅类型提示，避免与 game_runtime 循环导入
     from app.domain.game.game_runtime import GameRuntime
@@ -45,26 +45,16 @@ class RuntimeWorldView:
 
     def plot_log(self, limit: int = 5) -> list[str]:
         state = self._runtime.state
-        entries: list[str] = []
-        # 剧情推进只记**我参与**的场景：_{viewer} 在场判定看 scene.participants
-        viewer = self._viewer
-        cursor = 0
-        for scene in self._runtime.script.scenes:
-            for beat in scene.beats:
-                if viewer is None or viewer in scene.participants:
-                    entries.append(f"{scene.title}：{beat.description}")
-                cursor += 1
-                if cursor >= state.beat_cursor:
-                    break
-            if cursor >= state.beat_cursor:
-                break
+        # 叙事摘要从活动分支事件派生（最近窗口）：Stage3 的 settle/换景摘要
+        # 与 Stage2 的 plot_advancement/replay_narration 走同一口径。
+        entries = self._runtime.plot_entries_for(self._viewer)
         # 公开发言台账：只回我在场（scene_key 的场景有我）时的发言
         spoken = [
             f"{speaker}说：{text}"
             for speaker, scene_key, text in state.speech_log
             if self._in_scene(scene_key)
         ]
-        return [*entries[:limit], *spoken[-limit:]]
+        return [*entries[-limit:], *spoken[-limit:]]
 
     def _in_scene(self, scene_key: str | None) -> bool:
         """该角色是否在 scene_key 指的场景里（viewer 未绑 = 看不到发言台账）。

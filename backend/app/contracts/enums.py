@@ -38,7 +38,7 @@ class CommandKind(StrEnum):
     ENTER_STAGE3 = "enter_stage3"
     CONFIRM_ENDING = "confirm_ending"
     EXIT_GAME = "exit_game"
-    # Stage3 玩家干涉世界（建场景/拉入角色）：自然语言 → ProducerAgent 解析。
+    # Stage3 玩家干涉世界（建场景/拉入角色）：自然语言 → WorldBuilderAgent 解析。
     INTERVENE = "intervene"
     # Stage3 换景：在已解锁的地点之间前进式切换（不回溯）。
     SWITCH_SCENE = "switch_scene"
@@ -70,7 +70,7 @@ ALLOWED_COMMANDS: dict[str, frozenset[CommandKind]] = {
             CommandKind.EXIT_GAME,
             # 换景（M5）：只切到已存在的地点的；解锁新场景走 INTERVENE（M6）
             CommandKind.SWITCH_SCENE,
-            # 玩家干涉世界（M6）：ProducerAgent 解析建场景/拉角色/新角色
+            # 玩家干涉世界（M6）：WorldBuilderAgent 解析建场景/拉角色/新角色
             CommandKind.INTERVENE,
         }
     ),

@@ -48,6 +48,14 @@ def _advance_to(rt: GameRuntime, beats: int) -> None:
     rt.state.scene_key = f"scene:{1 if beats <= 2 else 2}"
 
 
+def _emit_plot(rt: GameRuntime, summary: str, scene_key: str) -> None:
+    """写一条真实的剧情推进事件：叙事摘要的唯一权威是事件流。"""
+    rt.event_store.append(
+        "plot_advancement",
+        {"summary": summary, "scene_key": scene_key, "scene_title": "相遇"},
+    )
+
+
 def test_bind_isolates_viewer_views(two_scene_script):
     """bind(name) 各给一份；互不影响，且共享同一 runtime。"""
     rt = make_rt(two_scene_script)
@@ -67,16 +75,52 @@ def test_outline_excludes_scenes_viewer_not_in(two_scene_script):
 
 
 def test_plot_log_excludes_foreign_scene(two_scene_script):
-    """游标推进到第 3 拍（边塞场景）后：只想看 自己参与的 beats。"""
+    """只想看 自己参与的 beats：李白看不到只属于边塞的摘要。"""
     rt = make_rt(two_scene_script)
-    _advance_to(rt, 3)
+    _emit_plot(rt, "相遇", "scene:1")
+    _emit_plot(rt, "作别", "scene:1")
+    _emit_plot(rt, "出征", "scene:2")
     li_log = rt.world_view.bind("李白").plot_log()
     du_log = rt.world_view.bind("杜甫").plot_log()
-    # 李白只参与了第 1 幕的两拍
-    assert len(li_log) == 2
-    assert "边塞" not in "".join(li_log)
-    # 杜甫两幕都参与：3 条 beats
-    assert len(du_log) == 3
+    assert li_log == ["相遇", "作别"]
+    assert du_log == ["相遇", "作别", "出征"]
+
+
+def test_plot_log_returns_most_recent_window(two_scene_script):
+    """`limit` 截的是最近窗口，不是最早窗口。"""
+    rt = make_rt(two_scene_script)
+    for i in range(8):
+        _emit_plot(rt, f"第{i}拍", "scene:1")
+    log = rt.world_view.bind("李白").plot_log(limit=5)
+    assert log == [f"第{i}拍" for i in range(3, 8)]
+
+
+def test_settle_summary_visible_only_to_present(two_scene_script):
+    """Stage3 结算摘要按事件里的 present 判定，不在场的人看不到。"""
+    rt = make_rt(two_scene_script)
+    rt.event_store.append(
+        "exploration_settle",
+        {"summary": "杜甫在边塞扎营", "scene_key": "scene:2", "present": ["杜甫", "高适"]},
+    )
+    assert rt.world_view.bind("杜甫").plot_log() == ["杜甫在边塞扎营"]
+    assert rt.world_view.bind("李白").plot_log() == []
+
+
+def test_scene_switch_visible_only_to_participants(two_scene_script):
+    """换景摘要按 payload.participants 判定。"""
+    rt = make_rt(two_scene_script)
+    rt.event_store.append(
+        "scene_switch",
+        {
+            "from": "scene:1",
+            "to": "scene:2",
+            "scene_key": "scene:2",
+            "scene_title": "边塞",
+            "participants": ["杜甫", "高适"],
+        },
+    )
+    assert rt.world_view.bind("高适").plot_log() == ["来到「边塞」"]
+    assert rt.world_view.bind("李白").plot_log() == []
 
 
 def test_speech_log_only_contains_in_scene_heard(two_scene_script):

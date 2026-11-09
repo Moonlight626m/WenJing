@@ -20,7 +20,7 @@
 剧本（ScriptPackage，可含珊瑚图字段）
   ├─ 旧剧本：无 options/dialogue/endings → Stage2 线性 + 运行期 agent（行为不变）
   └─ 新剧本：有珊瑚图字段 → Stage2 纯 IO 播放（M4 落地运行期）
-Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/Producer/Painter…）
+Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/WorldBuilder/Painter…）
             不出场；探索地图与干涉（M5/M6 落地）
 事件溯源：events 是唯一权威；分支切换保留历史；快照只是缓存
 ```
@@ -29,7 +29,7 @@ Stage3 续写：参演（NPC + 玩家）在场行动，工作人员（Director/P
 Stage2 生成期（M3：珊瑚图大纲 + 台词预写 + 校验三处接线）、Stage2 运行期
 （M4：珊瑚图纯 IO 播放，旧剧本走原 agent 路径）、Stage3 确定性探索骨架
 （M5：地点/在场/结算/换景）、Stage3 工作人员与玩家干涉
-（M6：DirectorAgent 选项 + ProducerAgent 干涉 + 动态场景/角色 + world_fact）、
+（M6：DirectorAgent 选项 + WorldBuilderAgent 干涉 + 动态场景/角色 + world_fact）、
 离线 tick（M7：NPC 自主行动 + offline_hint），以及快照坐标与回溯页
 （M8：`(branch_id, sequence)` 坐标、存档点、按目标选快照、旧分支只读、游戏页入口）。
 
@@ -153,7 +153,7 @@ enter_stage3 / confirm_ending / exit_game / intervene / switch_scene`。
 
 - **Stage2 允许**：`choose_option / rollback_to_event / exit_game`（无 free_input）。
 - **Stage3 允许**：`choose_option / free_input / rollback_to_event /
-  confirm_ending / exit_game / switch_scene / intervene`（干涉由 ProducerAgent
+  confirm_ending / exit_game / switch_scene / intervene`（干涉由 WorldBuilderAgent
   解析，运行时校验预算与 canon，见 7.2）。
 - `IntervenePayload` 与 `FreeInputPayload` 共用 `TextPayload`（1–2000 字）；
   `SwitchScenePayload.scene_key` 是交互点 `scene_options[].scene_key`（`loc:{key}`）。
@@ -242,6 +242,13 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
   只对**基线之后**的事件做记忆折叠，避免与快照缓存双计。
 - 折叠入口 `CharacterAgentManager.derive_memories`，与实时写入共用
   `CharacterAgent.record_proposal / record_speech`（同一写法，防漂移）。
+- **记忆是有界窗口**：`working_memory` / `personal_log` / `rejected` 各保留最近
+  `CHARACTER_MEMORY_LIMIT`（10）条；`_RState.plot_log` / `speech_log` 各保留最近
+  50 条。事件流仍是全量权威，收口只影响读取窗口与快照大小。
+- 角色可见的叙事摘要由 `GameRuntime.plot_entries_for(viewer)` 从活动分支事件派生
+  （`plot_advancement` 按场景 participants、`exploration_settle` 按 `present`、
+  `scene_switch` 按 `participants`、`replay_*` 公开），`view_plot_log` 取最近窗口；
+  不再从剧本 beat 重建，也不再返回最早 5 拍。
 - **只喂活动分支事件**：`_restore_runtime` 统一取 `store.active_events()`；
   喂全量历史会把被放弃分支的回合折回来（游标/记忆都会错）。
 - 被驳回后的重提也写 `proposal {revised: true}`，否则重放后这份记忆消失、
@@ -263,6 +270,10 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 末尾的世界/播放位置/探索进度折叠仍遍历整条路径，但随后会被回溯的前缀重放覆盖）；
 随后 `GameRuntime.rollback` 仍按前缀整段重放（事件是唯一权威）。HEAD 阶段本来就不允许
 回溯的会话（`ended` / `stage2_complete`）不做截断，保持旧行为让运行时按 HEAD 阶段拒绝。
+
+快照保留（`SessionStore._prune_snapshots`）：每分支只留最近
+`SNAPSHOT_KEEP_PER_BRANCH`（20）个命令快照，`kind='rollback'` 全部保留。
+快照是性能优化而非真相，删旧快照只增加回溯时的重放量，不改变结果。
 
 ---
 
@@ -293,15 +304,20 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 ### 7.2 已落地：工作人员与玩家干涉（M6）
 
 - **参演 vs 工作人员**：NPC 与玩家出场、写台词、进 `speech_log`；Director（选项）、
-  Producer（干涉解析）、Painter、Verifier、Screenwriter 不出场、不写角色台词。
-  `DirectorAgent`/`ProducerAgent`（`domain/agents/director.py`、`producer.py`）都
+  WorldBuilder（干涉解析）、Painter、Verifier、GameMaster 不出场、不写角色台词。
+  `DirectorAgent`/`WorldBuilderAgent`（`domain/agents/director.py`、`world_builder.py`）都
   **不挂工具**：上下文由运行时装配，输出结构化 JSON；解析失败分别回退
   「已验证提议 + 默认行动」与「拒绝并提示」，工作人员故障不能让玩家卡住。
 - **导演选项**：Stage3 回合头收集/验证提议后调用 `DirectorAgent.design_options`
-  （地点、在场、目标、教学重点、近期剧情），交互点优先用导演的 2–4 条，其次
-  已验证提议，最后两条确定性兜底。导演失败 = 选项为空，不影响推进。
+  （地点、在场、目标、教学重点、近期剧情、最近角色回应、公开世界事实、上一轮选项），
+  交互点优先用导演的 2–4 条，其次已验证提议，最后两条确定性兜底。导演失败 = 选项为空，
+  不影响推进。玩家选选项时，选项文案写进 `PlayerAction.text` 与 `player_action` 事件，
+  NPC 反应、目标判定、回放/审计看到的是文案而不是编号。
+- **剧情主持（GameMasterAgent）不是剧本生成器**：剧本由生成期 workflow 产出。运行期
+  的 GameMaster 只负责旧剧本路径（无珊瑚图/无探索图）的确定性推进与交互设计，以及
+  进入 Stage3 时定 2–3 个续写目标；新版 Stage2 珊瑚图与 Stage3 探索主循环都不经过它。
 - **干涉管线**：`intervene {text}` → 写 `intervention_requested`（审计）→
-  `ProducerAgent.parse_intervention` 解析为 `create_scene / add_character /
+  `WorldBuilderAgent.parse_intervention` 解析为 `create_scene / add_character /
   pull_in_character / reject` → 运行时确定性校验（预算、同名、玩家角色、地点存在）→
   事件化应用；失败写 `intervention_rejected {reason}` 并保持当前交互点。
   地点参数容忍 key 或标题（LLM 只见得到标题，`_resolve_location_key` 两种都认）；
@@ -352,7 +368,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
   CAS 重试；极端失败时本批次不再补写提示，但 tick 事实不会丢）；「事件序列指针」
   以 tick id 形式给出（`world_fact.fact_id` 前缀即 tick id）。
 - 未做：关系漂移（无关系模型）、**地点变化**（确定性结算不推断）自助迁移、
-  tick 内铸新场景与画师生图（需要 Producer 式裁定）、`scheduled_facts`（v5 改为
+  tick 内铸新场景与画师生图（需要 WorldBuilder 式裁定）、`scheduled_facts`（v5 改为
   NPC 自主行动，未使用作者预写事实）。
 
 ### 7.4 已落地：快照坐标与回溯页（M8）
@@ -391,7 +407,7 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 | 运行时（重放/回溯/推进） | `backend/app/domain/game/game_runtime.py` |
 | 珊瑚图派生与纯 IO 播放 | `backend/app/domain/game/replay.py` |
 | Stage3 探索（地点/在场/结算/换景/世界） | `backend/app/domain/game/exploration.py` |
-| 导演/制作人（选项设计、干涉解析） | `backend/app/domain/agents/director.py`、`producer.py` |
+| 导演/世界构建（选项设计、干涉解析） | `backend/app/domain/agents/director.py`、`world_builder.py` |
 | 角色记忆折叠 | `backend/app/domain/agents/character.py` |
 | 恢复与命令事务 | `backend/app/services/session_runtime.py`、`session_store.py` |
 | 投影（事件→消息/状态/时间线） | `backend/app/services/session_projection.py` |

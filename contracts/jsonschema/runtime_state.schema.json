@@ -179,7 +179,7 @@
     },
     "Stage3Goal": {
       "additionalProperties": false,
-      "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。\n\n进入续写时由编剧 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件\n（`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。",
+      "description": "Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。\n\n进入续写时由剧情主持 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件\n（`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",

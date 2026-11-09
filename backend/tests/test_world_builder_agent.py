@@ -1,4 +1,4 @@
-"""制作人 Agent（M6）：干涉意图解析与 fail-closed 口径。
+"""世界构建 Agent（M6）：干涉意图解析与 fail-closed 口径。
 
 解析失败/未知类型/缺字段/未配置 LLM 一律 `reject`——运行时据事件
 `intervention_rejected` 提示玩家，绝不让模型输出直接改世界。
@@ -6,12 +6,12 @@
 
 from __future__ import annotations
 
-from app.domain.agents.producer import (
+from app.domain.agents.world_builder import (
     KIND_ADD_CHARACTER,
     KIND_CREATE_SCENE,
     KIND_PULL_IN_CHARACTER,
     KIND_REJECT,
-    ProducerAgent,
+    WorldBuilderAgent,
     parse_intent,
 )
 
@@ -93,7 +93,7 @@ def test_parse_non_json_is_rejected():
 
 
 async def test_parse_intervention_degrades_to_reject_without_llm():
-    agent = ProducerAgent(_BoomLLM())
+    agent = WorldBuilderAgent(_BoomLLM())
     intent = await agent.parse_intervention("建一个客栈", context={})
     assert intent.kind == KIND_REJECT
     assert intent.rejected
@@ -101,7 +101,7 @@ async def test_parse_intervention_degrades_to_reject_without_llm():
 
 async def test_parse_intervention_passes_world_context():
     llm = _FixedLLM('{"kind": "pull_in_character", "name": "船夫"}')
-    agent = ProducerAgent(llm)
+    agent = WorldBuilderAgent(llm)
     intent = await agent.parse_intervention(
         "叫船夫过来",
         context={

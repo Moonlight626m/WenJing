@@ -211,6 +211,22 @@ async def test_rollback_replay_equals_live_state(make_runtime):
         assert rebuilt[key] == live[key], f"全量重放后 {key} 与回溯命令现场不一致"
 
 
+async def test_plot_entries_follow_active_branch(make_runtime):
+    """叙事摘要也从活动分支事件派生：回溯后被放弃分支的摘要不再出现。"""
+    p = _RebuiltRuntime(make_runtime)
+    await p.start()
+    await p.submit(command_id="c1", kind="select_role", payload={"role_name": "李白"})
+    await _advance_one_beat(p, 2)
+    await _advance_one_beat(p, 3)
+
+    rt = p.runtime_at_head()
+    before = rt.plot_entries_for("李白")
+    assert len(before) >= 2
+
+    rt.event_store.rollback_to(_narrative_ids(p)[0])
+    assert rt.plot_entries_for("李白") == before[:1]
+
+
 async def test_revised_proposals_survive_replay(minimal_script, engine_config):
     """被驳回后重提的提议也落事件：重放记忆与实时一致（否则兜底重建会丢记忆）。"""
     from conftest import FakeLLMService

@@ -70,7 +70,7 @@ class ActiveInteraction(VersionedContract):
 class Stage3Goal(VersionedContract):
     """Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。
 
-    进入续写时由编剧 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件
+    进入续写时由剧情主持 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件
     （`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。
     """
 

@@ -38,7 +38,7 @@ class FreeInputPayload(TextPayload):
 
 
 class IntervenePayload(TextPayload):
-    """玩家干涉世界：建场景 / 拉入或新增角色，由 ProducerAgent 解析。"""
+    """玩家干涉世界：建场景 / 拉入或新增角色，由 WorldBuilderAgent 解析。"""
 
 
 class RollbackToEventPayload(CommandPayload):

@@ -15,6 +15,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.tools import BaseTool, tool
 
+from app.domain.agents.prompting import CHARACTER_MEMORY_LIMIT
+
 
 @runtime_checkable
 class WorldView(Protocol):
@@ -48,6 +50,7 @@ class MemoryView(Protocol):
 
     personal_log: list[str]
     rejected: list[str]
+    working_memory: list[dict]
 
 
 def build_character_tools(*, memory: MemoryView, world: WorldView) -> list[BaseTool]:
@@ -85,8 +88,14 @@ def build_character_tools(*, memory: MemoryView, world: WorldView) -> list[BaseT
 
     @tool
     def view_my_memory() -> str:
-        """查看你自己的私有记忆：先前提议与自我行动日志。"""
-        return _dump({"personal_log": memory.personal_log[-10:], "rejected": memory.rejected[-10:]})
+        """查看你自己的私有记忆：近期发言、先前提议与自我行动日志。"""
+        return _dump(
+            {
+                "personal_log": memory.personal_log[-CHARACTER_MEMORY_LIMIT:],
+                "rejected": memory.rejected[-CHARACTER_MEMORY_LIMIT:],
+                "recent_speech": memory.working_memory[-CHARACTER_MEMORY_LIMIT:],
+            }
+        )
 
     return [
         view_world_progress,

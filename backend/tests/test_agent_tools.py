@@ -14,8 +14,9 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.contracts.enums import UsagePurpose
-from app.domain.agents.character import CharacterAgent, _final_text
+from app.domain.agents.character import CharacterAgent, CharacterIdentity, _final_text
 from app.domain.agents.chat_model import WenjingChatModel
+from app.domain.agents.prompting import CHARACTER_MEMORY_LIMIT
 from app.domain.agents.tools import build_character_tools
 from app.domain.game.types import CharacterSetting
 from app.domain.llm import LLMReply, ToolCall
@@ -50,6 +51,7 @@ class _Memory:
     def __init__(self) -> None:
         self.personal_log: list[str] = []
         self.rejected: list[str] = []
+        self.working_memory: list[dict] = []
 
 
 class ToolCallingLLM:
@@ -115,6 +117,26 @@ def test_build_character_tools_exposes_world_progress():
     assert "view_plot_log" in by_name
 
 
+def test_view_my_memory_returns_recent_speech_only():
+    """角色能读到自己说过的话；窗口有界，且不夹带 write-only 的全局广播。"""
+    memory = _Memory()
+    memory.personal_log = [f"提议：{i}" for i in range(15)]
+    memory.rejected = [f"驳回{i}" for i in range(15)]
+    memory.working_memory = [
+        {"role": "杜甫", "content": f"第{i}句"} for i in range(15)
+    ]
+    tools = build_character_tools(memory=memory, world=_FakeWorld())
+    payload = json.loads({t.name: t for t in tools}["view_my_memory"].invoke({}))
+
+    assert len(payload["recent_speech"]) == 10
+    assert payload["recent_speech"][-1] == {"role": "杜甫", "content": "第14句"}
+    assert all(entry["role"] == "杜甫" for entry in payload["recent_speech"])
+    assert len(payload["personal_log"]) == 10
+    assert len(payload["rejected"]) == 10
+    assert "plot_context" not in payload
+    assert "current_direction" not in payload
+
+
 def test_final_text_ignores_tool_call_preamble():
     """工具轮里的引导语不得被当成最终答复（末轮为空/截断时尤其）。"""
     messages = [
@@ -151,3 +173,81 @@ async def test_character_agent_queries_world_before_proposing():
     assert proposal.proposed_by == "杜甫"
     assert llm.tool_results, "模型应收到工具执行结果"
     assert "stage2" in llm.tool_results[-1], "工具结果应包含世界进度"
+
+
+# ===== 4. 身份边界与反应体裁 =====
+
+
+def test_character_memory_is_bounded():
+    """记忆是读取窗口：写入时收口到最近 N 条，快照不会随回合线性膨胀。"""
+    agent = CharacterAgent(
+        CharacterSetting(name="杜甫", public_background="诗人"),
+        ToolCallingLLM(),
+        _FakeWorld(),
+    )
+    for i in range(CHARACTER_MEMORY_LIMIT + 5):
+        agent.record_proposal(f"提议{i}")
+        agent.record_speech(f"第{i}句")
+        agent.memory.add_personal_note(f"前史{i}")
+
+    assert len(agent.memory.personal_log) == CHARACTER_MEMORY_LIMIT
+    assert agent.memory.personal_log[-1] == f"前史{CHARACTER_MEMORY_LIMIT + 4}"
+    assert len(agent.memory.rejected) == CHARACTER_MEMORY_LIMIT
+    assert len(agent.memory.working_memory) == CHARACTER_MEMORY_LIMIT
+    assert agent.memory.working_memory[-1]["content"] == f"第{CHARACTER_MEMORY_LIMIT + 4}句"
+
+
+def test_character_memory_does_not_bleed_between_agents():
+    """A 的 `view_my_memory` 只回 A 自己的发言，不会串到别的角色。"""
+    du = CharacterAgent(
+        CharacterSetting(name="杜甫", public_background="诗人"),
+        ToolCallingLLM(),
+        _FakeWorld(),
+    )
+    li = CharacterAgent(
+        CharacterSetting(name="李白", public_background="诗人"),
+        ToolCallingLLM(),
+        _FakeWorld(),
+    )
+    du.record_speech("甫说")
+    li.record_speech("白说")
+
+    tools = {t.name: t for t in build_character_tools(memory=du.memory, world=_FakeWorld())}
+    payload = json.loads(tools["view_my_memory"].invoke({}))
+    assert payload["recent_speech"] == [{"role": "杜甫", "content": "甫说"}]
+    assert li.memory.working_memory == [{"role": "李白", "content": "白说"}]
+
+
+def test_identity_prompt_states_behavior_boundaries():
+    identity = CharacterIdentity(
+        CharacterSetting(
+            name="杜甫",
+            public_background="诗人",
+            personality_traits=["沉郁", "重情"],
+            knows=["与李白同游"],
+            not_knows=["高适的军情"],
+        )
+    )
+    prompt = identity.to_system_prompt()
+    assert "只能以这个角色的身份" in prompt
+    assert "不写旁白" in prompt
+    assert "不替玩家说话或行动" in prompt
+    assert "不编造未发生的情节" in prompt
+
+
+def test_user_message_has_react_genre_and_keeps_routing_token():
+    agent = CharacterAgent(
+        CharacterSetting(name="杜甫", public_background="诗人"),
+        ToolCallingLLM(),
+        _FakeWorld(),
+    )
+    react = agent._build_user_message(
+        "stage3", instruction="react", extra="玩家刚刚做出了行动：选择了一个行动「看看四周」。"
+    )
+    assert "【任务类型】react" in react
+    assert "只写这个角色此刻说的一句话" in react
+    assert "不要写旁白" in react
+
+    propose = agent._build_user_message("stage3", instruction="propose_action")
+    assert "【任务类型】propose_action" in propose
+    assert "react" not in propose

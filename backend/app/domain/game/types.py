@@ -61,7 +61,7 @@ class Script:
     characters: list[CharacterSetting]
     scenes: list[Scene]
     stage2_ending_beat_id: int
-    # 教学重点：续写目标据此出题（见 `ScreenwriterAgent.design_stage3_goals`）
+    # 教学重点：续写目标据此出题（见 `GameMasterAgent.design_stage3_goals`）
     teaching_focus: list[str] = field(default_factory=list)
 
 
@@ -100,7 +100,7 @@ class VerificationResult:
 
 @dataclass
 class PlotAdvancement:
-    """编剧 Agent 的单次剧情推进。"""
+    """剧情主持 Agent 的单次剧情推进。"""
 
     summary: str
     scene_description: str

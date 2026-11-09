@@ -208,7 +208,7 @@ def test_allowed_commands_semantics() -> None:
     assert CommandKind.FREE_INPUT in stage3
     # 换景（M5）：只切到已存在的地点
     assert CommandKind.SWITCH_SCENE in stage3
-    # 玩家干涉世界（M6）：ProducerAgent 已接入处理器
+    # 玩家干涉世界（M6）：WorldBuilderAgent 已接入处理器
     assert CommandKind.INTERVENE in stage3
 
 

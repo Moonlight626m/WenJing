@@ -477,7 +477,7 @@ function InteractionBody({
         </div>
       )}
 
-      {/* 干涉世界（M6）：自然语言改变世界——建场景/拉人/新增角色，制作人裁定。
+      {/* 干涉世界（M6）：自然语言改变世界——建场景/拉人/新增角色，世界构建裁定。
           旧剧本没有探索地图（scene_options 为空），引擎会拒绝，不显示入口 */}
       {canIntervene && sceneOptions.length > 0 && (
         <div className="mt-3">
@@ -509,7 +509,7 @@ function InteractionBody({
             </Button>
           </div>
           <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
-            每轮可以干涉一次；制作人可能不答应。
+            每轮可以干涉一次；世界构建可能不答应。
           </p>
           {interventionFeedback && (
             <p

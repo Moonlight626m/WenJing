@@ -40,6 +40,12 @@ from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
 
 _UNSET: Any = object()
 
+#: 每个分支保留的命令快照数（`SNAPSHOT_KIND_ROLLBACK` 不受限，全部保留）。
+#: 快照是性能优化而非真相：删旧快照只增加回溯时的重放量，不改变结果。
+SNAPSHOT_KEEP_PER_BRANCH = 20
+SNAPSHOT_KIND_COMMAND = "command"
+SNAPSHOT_KIND_ROLLBACK = "rollback"
+
 
 class _ClaimLost(Exception):
     """事务内 claim 失败（如 tick 已被并发认领）：整事务回滚，提交返回 False。"""
@@ -62,6 +68,30 @@ def snapshot_sequence_on_path(row: SnapshotRecord, path: list[GameEvent]) -> int
     if context.get("latest_event_id") != path[sequence].event_id:
         return None
     return sequence
+
+
+async def _prune_snapshots(
+    s: AsyncSession, session_id: uuid.UUID, branch_id: uuid.UUID
+) -> None:
+    """每分支只留最近 `SNAPSHOT_KEEP_PER_BRANCH` 个命令快照；回溯快照全留。"""
+    ids = (
+        (
+            await s.execute(
+                select(SnapshotRecord.id)
+                .where(
+                    SnapshotRecord.session_id == session_id,
+                    SnapshotRecord.branch_id == branch_id,
+                    SnapshotRecord.kind != SNAPSHOT_KIND_ROLLBACK,
+                )
+                .order_by(SnapshotRecord.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    stale = ids[SNAPSHOT_KEEP_PER_BRANCH:]
+    if stale:
+        await s.execute(delete(SnapshotRecord).where(SnapshotRecord.id.in_(stale)))
 
 
 @dataclass
@@ -289,7 +319,7 @@ class SessionStore:
         ended: bool = False,
         runtime_state: Callable[[], dict[str, Any]] | None = None,
         snapshot_label: str | None = None,
-        snapshot_kind: str = "command",
+        snapshot_kind: str = SNAPSHOT_KIND_COMMAND,
         claim: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> bool:
         """事件 + 命令 + head/branch/stage/快照，同一事务。
@@ -392,6 +422,8 @@ class SessionStore:
                             schema_version=EVENTS_SCHEMA_VERSION,
                         )
                     )
+                    await s.flush()
+                    await _prune_snapshots(s, session_id, branch)
                 await s.commit()
             return True
         except _ClaimLost:

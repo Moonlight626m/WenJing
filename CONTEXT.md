@@ -91,10 +91,12 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 可配 `WENJING_MEDIA_IMAGE_GEN_STYLE`）与构图尾巴由 `build_generation_prompt` 确定性
 追加；转写失败回退确定性描述（场景永远有图）。
 
-### 编剧 Agent / DM
+### 剧情主持 Agent / DM
 
-编剧 Agent（`screenwriter`）是剧情推进的"主持人"角色；"DM"仅口语别名，不是独立术语，
-代码与契约沿用 `screenwriter`。
+剧情主持 Agent（`game_master`，旧名 `screenwriter`）是运行期剧情推进的"主持人"角色：
+旧剧本路径（无珊瑚图/无探索图）的确定性推进与交互设计，以及进入 Stage3 时定 2–3 个
+续写目标。**不是剧本生成器**——剧本由生成期 workflow 产出。"DM"仅口语别名，不是独立
+术语。
 
 ### 还原（Stage2 珊瑚图）
 
@@ -122,13 +124,14 @@ Stage2 是**纯 IO 的珊瑚形还原**（设计见 `docs/design/play-through-re
 
 Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC）与人类玩家，
 出场、写台词、进 `speech_log`；**工作人员**是 `DirectorAgent`（设计玩家选项）、
-`ProducerAgent`（解析玩家干涉）、`PainterAgent`/`VerifierAgent`/`ScreenwriterAgent`
-（既有能力），不出场、不写角色台词，输出只进系统事件/选项/资产。
+`WorldBuilderAgent`（解析玩家干涉）、`VerifierAgent`、`GameMasterAgent`，以及
+画师层 `PromptWriter`（由 `SceneDesigner` 注入，不是独立会话 agent），不出场、
+不写角色台词，输出只进系统事件/选项/资产。
 
 ### 干涉（Intervene）
 
 Stage3 玩家用自然语言改变世界的命令（`intervene` + `IntervenePayload`，已进
-Stage3 允许列表）：建场景、从角色池拉人、新增角色。`ProducerAgent` 解析为结构化
+Stage3 允许列表）：建场景、从角色池拉人、新增角色。`WorldBuilderAgent` 解析为结构化
 意图（解析失败 fail-closed 成拒绝），运行时做确定性 canon/预算校验——新场景 ≤3/会话、
 新角色 ≤2/会话、每轮 ≤1 次。应用结果全部事件化（`scene_created`/`character_created`/
 `pull_in_character`），因此**可回溯**——回到创建之前，该场景/角色等于从未存在。
@@ -148,6 +151,16 @@ claim-first 唯一键保证同一 tick 只执行一次，认领行与事件同�
 `world_fact {fact_id, kind, text, visibility, audience, location_key}`：世界层面的
 事实（M6 起事件化）。`public` 进公屏与所有角色视图；`private` **只**进 `audience`
 角色的 `view_world_facts` 工具结果——投影层与时间线显式过滤，绝不当系统消息广播。
+
+### 角色记忆（Character Memory）
+
+角色 Agent 的分层私有记忆（`CharacterMemory`）：`working_memory`（本人发言）、
+`personal_log`（提议/登场前史）、`rejected`（提出过的提议，防重复）、
+`plot_context` / `current_direction`（工作人员全局广播，**write-only**，不接工具）。
+前三个列表是**有界读取窗口**（最近 10 条）；事件流才是全量权威，记忆由
+`proposal` / `character_speech` / `character_created` 事件折叠重建，快照里的记忆
+只是恢复基线。角色经 `view_my_memory` 读自身记忆、经 `view_plot_log` 读活动分支
+派生的可见叙事摘要（按事件发生时的在场者裁剪）。
 
 ### 回溯（Rollback）与回溯页
 
@@ -172,7 +185,8 @@ claim-first 唯一键保证同一 tick 只执行一次，认领行与事件同�
 下标**（含从父分支继承的前缀），与 WS `seq`、`sessions.head_sequence`、回溯
 `target_sequence` 同一口径；它不等于 `events.sequence`（那是分支自有行的序号，
 回溯出的子分支从 0 重数）。快照只是加速恢复的缓存：回溯命令按目标前最近的存档点
-恢复，事件仍是唯一权威。
+恢复，事件仍是唯一权威。每个分支只保留最近 20 个命令快照，`kind='rollback'`
+的回溯快照全部保留；删旧快照只增加重放量，不改变结果。
 
 ### 流式（Streaming）
 

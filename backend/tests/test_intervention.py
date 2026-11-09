@@ -1,4 +1,4 @@
-"""玩家干涉世界（M6）：Producer 解析 → 确定性校验 → 事件化应用 → 可回滚。
+"""玩家干涉世界（M6）：WorldBuilder 解析 → 确定性校验 → 事件化应用 → 可回滚。
 
 覆盖 design play-through-redesign §B5：建场景/新增角色/拉人入场、预算
 （每会话 3 场景 / 2 角色、每轮 ≤1 次）、驳回路径、回溯到创建之前即不存在。
@@ -9,7 +9,7 @@ from __future__ import annotations
 from conftest import FakeLLMService
 from test_exploration import _events, _map, _script, _to_stage3
 
-from app.domain.agents.producer import (
+from app.domain.agents.world_builder import (
     KIND_ADD_CHARACTER,
     KIND_CREATE_SCENE,
     KIND_PULL_IN_CHARACTER,
@@ -30,21 +30,21 @@ from app.domain.game.game_runtime import GameRuntime
 
 
 def _make_runtime(
-    *, producer_output: str = '{"kind":"reject","reason":"测试环境不做干涉"}',
+    *, world_builder_output: str = '{"kind":"reject","reason":"测试环境不做干涉"}',
     rounds: int = 10,
 ) -> GameRuntime:
     return GameRuntime(
         session_id="intervene-session",
         script=_script(),
-        llm=FakeLLMService(producer_output=producer_output),
+        llm=FakeLLMService(world_builder_output=world_builder_output),
         event_store=EventStore(),
         exploration_map=_map(),
         config=EngineConfig(stage3_rounds=rounds),
     )
 
 
-class _IntentProducer:
-    """按顺序返回预设意图的 Producer 桩（绕过 LLM，把校验/应用留给运行时）。"""
+class _IntentWorldBuilder:
+    """按顺序返回预设意图的 WorldBuilder 桩（绕过 LLM，把校验/应用留给运行时）。"""
 
     def __init__(self, intents: list[InterventionIntent]) -> None:
         self._intents = list(intents)
@@ -89,7 +89,7 @@ async def _intervene(rt: GameRuntime, cid: str, text: str = "干涉一下"):
 
 
 async def test_create_scene_applies_event_and_joins_scene_options():
-    rt = _make_runtime(producer_output=(
+    rt = _make_runtime(world_builder_output=(
         '{"kind":"create_scene","title":"雨夜客栈","participants":["乙"],'
         '"visual_summary":"油灯照着小院"}'
     ))
@@ -110,7 +110,7 @@ async def test_create_scene_applies_event_and_joins_scene_options():
 
 
 async def test_switch_into_created_scene_and_settle_there():
-    rt = _make_runtime(producer_output=(
+    rt = _make_runtime(world_builder_output=(
         '{"kind":"create_scene","title":"雨夜客栈","participants":["乙"],'
         '"visual_summary":"油灯照着小院"}'
     ))
@@ -137,7 +137,7 @@ async def test_switch_into_created_scene_and_settle_there():
 
 async def test_create_scene_budget_caps_at_three_per_session():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(  # type: ignore[method-assign]
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(  # type: ignore[method-assign]
         [_create_scene(f"新地{i}") for i in range(4)]
     ).parse_intervention
     await _to_stage3(rt)
@@ -157,7 +157,7 @@ async def test_create_scene_budget_caps_at_three_per_session():
 
 
 async def test_add_character_joins_present_with_provenance_memory():
-    rt = _make_runtime(producer_output=(
+    rt = _make_runtime(world_builder_output=(
         '{"kind":"add_character","name":"老乞丐",'
         '"brief":"在渡口讨生活的老乞丐","personality":"狡黠"}'
     ))
@@ -179,7 +179,7 @@ async def test_add_character_joins_present_with_provenance_memory():
 
 async def test_add_character_rejects_existing_and_player_names():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer([  # type: ignore[method-assign]
+    rt.world_builder.parse_intervention = _IntentWorldBuilder([  # type: ignore[method-assign]
         _add_character(name="甲"),  # 玩家自己
         _add_character(name="乙"),  # 剧本角色同名
     ]).parse_intervention
@@ -198,7 +198,7 @@ async def test_add_character_rejects_existing_and_player_names():
 
 async def test_add_character_budget_caps_at_two_per_session():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(  # type: ignore[method-assign]
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(  # type: ignore[method-assign]
         [_add_character(f"新人{i}") for i in range(3)]
     ).parse_intervention
     await _to_stage3(rt)
@@ -216,7 +216,7 @@ async def test_add_character_budget_caps_at_two_per_session():
 
 async def test_pull_in_brings_absent_character_and_rejects_present_one():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(
         [_pull_in("丙"), _pull_in("乙")]
     ).parse_intervention
     await _to_stage3(rt)
@@ -236,7 +236,7 @@ async def test_pull_in_brings_absent_character_and_rejects_present_one():
 
 
 async def test_rejected_intervention_keeps_interaction_point():
-    rt = _make_runtime()  # 默认 producer_output = reject
+    rt = _make_runtime()  # 默认 world_builder_output = reject
     result = await _to_stage3(rt)
     before = result.active_interaction
 
@@ -250,7 +250,7 @@ async def test_rejected_intervention_keeps_interaction_point():
 
 
 async def test_intervention_does_not_consume_round_budget():
-    rt = _make_runtime(producer_output='{"kind":"create_scene","title":"雨夜客栈"}')
+    rt = _make_runtime(world_builder_output='{"kind":"create_scene","title":"雨夜客栈"}')
     result = await _to_stage3(rt)
     rounds_before = result.state["stage3_round_taken"]
 
@@ -261,7 +261,7 @@ async def test_intervention_does_not_consume_round_budget():
 
 async def test_only_one_intervention_per_round():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(
         [_create_scene(), _create_scene("另一处")]
     ).parse_intervention
     await _to_stage3(rt)
@@ -269,7 +269,7 @@ async def test_only_one_intervention_per_round():
     await _intervene(rt, "c-i1")
     assert len(_events(rt, EVENT_SCENE_CREATED)) == 1
 
-    await _intervene(rt, "c-i2")  # 同一轮第二次：确定性拒绝，不调 Producer
+    await _intervene(rt, "c-i2")  # 同一轮第二次：确定性拒绝，不调 WorldBuilder
     rejections = _events(rt, EVENT_INTERVENTION_REJECTED)
     assert len(rejections) == 1 and "本轮" in rejections[0]["reason"]
     assert len(_events(rt, EVENT_SCENE_CREATED)) == 1
@@ -282,7 +282,7 @@ async def test_only_one_intervention_per_round():
 
 async def test_rollback_before_intervention_erases_created_scene():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer([_create_scene()]).parse_intervention
+    rt.world_builder.parse_intervention = _IntentWorldBuilder([_create_scene()]).parse_intervention
     await _to_stage3(rt)
 
     # 拍 = exploration_settle：回溯到它之前，之后创建的场景不再存在
@@ -307,7 +307,7 @@ async def test_rollback_before_intervention_erases_created_scene():
 
 async def test_rollback_before_intervention_erases_created_character():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer([_add_character()]).parse_intervention
+    rt.world_builder.parse_intervention = _IntentWorldBuilder([_add_character()]).parse_intervention
     await _to_stage3(rt)
 
     await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
@@ -329,7 +329,7 @@ async def test_rollback_before_intervention_erases_created_character():
 
 async def test_create_scene_duplicate_title_rejected():
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(
         [
             _create_scene(title="渡口"),
             _create_scene(title="雨夜客栈"),
@@ -351,9 +351,9 @@ async def test_create_scene_duplicate_title_rejected():
 
 
 async def test_add_character_accepts_title_or_key_location():
-    """Producer 的 location_key 可能回标题（LLM 只见标题）：两种都认（§B5 修复）。"""
+    """WorldBuilder 的 location_key 可能回标题（LLM 只见标题）：两种都认（§B5 修复）。"""
     rt = _make_runtime()
-    rt.producer.parse_intervention = _IntentProducer(
+    rt.world_builder.parse_intervention = _IntentWorldBuilder(
         [
             _add_character(name="阿四", location_key="客栈"),  # 标题
             _add_character(name="阿五", location_key="market"),  # key

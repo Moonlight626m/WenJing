@@ -25,15 +25,15 @@ from app.contracts.enums import ALLOWED_COMMANDS, StageValue
 from app.contracts.script import AssetRef, ExplorationMap
 from app.domain.agents.character import CharacterAgentManager
 from app.domain.agents.director import DirectorAgent
-from app.domain.agents.producer import (
+from app.domain.agents.game_master import GameMasterAgent, total_beats
+from app.domain.agents.verifier import VerifierAgent
+from app.domain.agents.world_builder import (
     KIND_ADD_CHARACTER,
     KIND_CREATE_SCENE,
     KIND_PULL_IN_CHARACTER,
     InterventionIntent,
-    ProducerAgent,
+    WorldBuilderAgent,
 )
-from app.domain.agents.screenwriter import ScreenwriterAgent, total_beats
-from app.domain.agents.verifier import VerifierAgent
 from app.domain.game import event as evt
 from app.domain.game.assets import RuntimeAssets
 from app.domain.game.engine_config import EngineConfig
@@ -78,6 +78,28 @@ _STAGE_ALIASES: dict[str, str] = {
 # 干涉预算（design §B5）：每会话新场景 ≤3、新角色 ≤2；每轮 ≤1 次由事件判定。
 MAX_DYNAMIC_SCENES = 3
 MAX_NEW_CHARACTERS = 2
+
+# 内存台账是有界窗口（事件流才是全量权威）：每命令快照因此恒定大小，
+# 不再随回合数线性增长（会话总存储 O(n²) → O(n)）。
+PLOT_LOG_LIMIT = 50
+SPEECH_LOG_LIMIT = 50
+
+
+def _append_bounded(items: list, item: Any, limit: int) -> None:
+    items.append(item)
+    if len(items) > limit:
+        del items[:-limit]
+
+
+def _switch_summary(payload: dict) -> str:
+    """换景摘要的唯一拼写（实时折叠与只读视图共用，防两处漂移）。"""
+    title = str(payload.get("scene_title") or payload.get("to") or "")
+    return f"来到「{title}」" if title else ""
+
+
+def _ending_summary(payload: dict) -> str:
+    """结局摘要的唯一拼写（实时折叠与只读视图共用）。"""
+    return f"结局：{payload.get('title', '')}".rstrip("：")
 
 
 def _setting_from_payload(payload: dict) -> CharacterSetting:
@@ -180,11 +202,11 @@ class GameRuntime:
         # 角色 Agent 经只读 WorldView 按需查询世界进度（ADR-0004）；
         # 视图惰性读取 self.state，故可在状态初始化后、开始推进前构造。
         self.world_view = RuntimeWorldView(self)
-        self.screenwriter = ScreenwriterAgent(llm)
+        self.game_master = GameMasterAgent(llm)
         self.verifier = VerifierAgent(llm)
         # 工作人员（M6）：只设计选项/解析干涉，不出场、不写台词
         self.director = DirectorAgent(llm)
-        self.producer = ProducerAgent(llm)
+        self.world_builder = WorldBuilderAgent(llm)
         self.characters = CharacterAgentManager(llm, self.world_view)
         self.characters.create_agents(script.characters)
         # 珊瑚图纯 IO 播放（M4）：有图就走确定性路径，不建 agent、不调 LLM
@@ -198,8 +220,10 @@ class GameRuntime:
         )
         # 运行期世界（M6）：动态场景/新角色/拉人/世界事实，全部由事件派生
         self._world = WorldState()
-        # 本轮导演设计的选项（M6）；空 = 回退到已验证提议/默认项
+        # 本轮导演设计的选项（M6）；空 = 回退到已验证提议/默认项。
+        # `_last_director_options` 只服务下一轮 prompt 的「不要重复」，不进事件/快照。
         self._director_options: list[str] = []
+        self._last_director_options: list[str] = []
         self._processed_commands: dict[str, StepResult] = {}
         # 本次命令追加的全部事件（#5：WS 实时消息投影的完整来源）
         self._command_events: list[dict] = []
@@ -241,7 +265,7 @@ class GameRuntime:
     def _beat_ctx(self, cursor: int) -> Scene | None:
         """beat 游标 → 当前场景；尚未开播（cursor<=0）/空剧本返回 None。
 
-        **游标是「下一个待播 beat」，不是「当前 beat」**（`ScreenwriterAgent.advance_plot`
+        **游标是「下一个待播 beat」，不是「当前 beat」**（`GameMasterAgent.advance_plot`
         先读 `beat_index` 播报、再 `beat_index += 1`），所以刚播完的那拍是
         `cursor - 1`——场景切换/背景解析必须用它，否则会提前跳到下一场景。
         游标 0 表示一拍未播，此时没有「当前场景」（`scene_key` 也尚未写入），
@@ -320,19 +344,24 @@ class GameRuntime:
 
     def restore(self, state_dump: dict) -> None:
         """从显式状态快照重建运行时（快照 + 重放前缀；记忆由事件折叠）。"""
+        # 上一轮选项是提示词用的运行期缓存，不随快照/分支继承——回溯后清空，
+        # 避免把旧分支的选项当成「上一轮」。
+        self._last_director_options = []
         s = self.state
         s.stage = state_dump.get("stage", StageValue.INIT.value)
         s.phase = state_dump.get("phase")
         s.player_role = state_dump.get("player_role")
         s.beat_cursor = int(state_dump.get("beat_cursor", 0))
         s.stage3_round_taken = int(state_dump.get("stage3_round_taken", 0))
-        s.plot_log = list(state_dump.get("plot_log", []))
-        s.speech_log = [tuple(entry) for entry in state_dump.get("speech_log", [])]
+        s.plot_log = list(state_dump.get("plot_log", []))[-PLOT_LOG_LIMIT:]
+        s.speech_log = [
+            tuple(entry) for entry in state_dump.get("speech_log", [])
+        ][-SPEECH_LOG_LIMIT:]
         s.direction = dict(state_dump.get("direction") or {})
         s.scene_key = state_dump.get("scene_key")
         s.ended = bool(state_dump.get("ended", False))
 
-        self.screenwriter.beat_index = s.beat_cursor
+        self.game_master.beat_index = s.beat_cursor
         self.characters.restore_memories(state_dump.get("character_memories") or {})
         if s.player_role:
             self.characters.player_role = s.player_role
@@ -382,8 +411,9 @@ class GameRuntime:
             )
         else:
             self.state = _RState()
-            self.screenwriter.beat_index = 0
+            self.game_master.beat_index = 0
             self.active_interaction = None
+            self._last_director_options = []
             # 原地清空（保持对象身份）：工具闭包持有 memory 引用，换对象会让
             # view_my_memory 读到旧记忆
             self.characters.clear_memories()
@@ -402,9 +432,9 @@ class GameRuntime:
             if int(ev.get("event_id", 0) or 0) > memory_base_event_id
         )
 
-        # 使 state_machine / screenwriter 与重放结果一致
+        # 使 state_machine / game_master 与重放结果一致
         self.state_machine.restore({"stage": self.state.stage, "phase": self.state.phase})
-        self.screenwriter.beat_index = self.state.beat_cursor
+        self.game_master.beat_index = self.state.beat_cursor
         if self.state.player_role:
             self.characters.player_role = self.state.player_role
         if self.replay is not None:
@@ -432,7 +462,7 @@ class GameRuntime:
             summary = payload.get("summary", "")
             self.state.beat_cursor += 1
             if summary:
-                self.state.plot_log.append(summary)
+                _append_bounded(self.state.plot_log, summary, PLOT_LOG_LIMIT)
                 self.characters.broadcast_plot_context(summary)
             # 场景键重建（#53）：plot_advancement payload 携带 scene_key，
             # 重连/重放据此恢复当前场景（背景随 export_state 按游标解析）
@@ -464,8 +494,10 @@ class GameRuntime:
             # 什么」据此重建；speaker 与当前 scene_key 是事件自带/状态现有的。
             speaker = payload.get("speaker")
             if speaker:
-                self.state.speech_log.append(
-                    (str(speaker), self.state.scene_key, str(payload.get("text", "")))
+                _append_bounded(
+                    self.state.speech_log,
+                    (str(speaker), self.state.scene_key, str(payload.get("text", ""))),
+                    SPEECH_LOG_LIMIT,
                 )
         elif etype == evt.EVENT_REPLAY_NODE_ENTERED:
             scene_key = payload.get("scene_key")
@@ -475,11 +507,11 @@ class GameRuntime:
             # 旁白进入剧情上下文：续写目标/角色视图靠它了解演到哪了
             text = str(payload.get("text", ""))
             if text:
-                self.state.plot_log.append(text)
+                _append_bounded(self.state.plot_log, text, PLOT_LOG_LIMIT)
                 self.characters.broadcast_plot_context(text)
         elif etype == evt.EVENT_REPLAY_ENDING_REACHED:
-            summary = f"结局：{payload.get('title', '')}".rstrip("：")
-            self.state.plot_log.append(summary)
+            summary = _ending_summary(payload)
+            _append_bounded(self.state.plot_log, summary, PLOT_LOG_LIMIT)
             self.characters.broadcast_plot_context(summary)
             # 游标对齐末尾：无快照恢复时 Stage3 也从结局之后续写，而非从头复读
             self.state.beat_cursor = total_beats(self.script)
@@ -506,7 +538,7 @@ class GameRuntime:
             self.state.scene_key = scene_key
         summary = str(payload.get("summary", ""))
         if summary:
-            self.state.plot_log.append(summary)
+            _append_bounded(self.state.plot_log, summary, PLOT_LOG_LIMIT)
             self.characters.broadcast_plot_context(summary)
         conflict = str(payload.get("conflict", "") or "")
         context = str(payload.get("context", "") or "")
@@ -524,10 +556,10 @@ class GameRuntime:
         scene_key = payload.get("scene_key")
         if isinstance(scene_key, str):
             self.state.scene_key = scene_key
-        title = str(payload.get("scene_title") or key)
-        summary = f"来到「{title}」"
-        self.state.plot_log.append(summary)
-        self.characters.broadcast_plot_context(summary)
+        summary = _switch_summary(payload)
+        if summary:
+            _append_bounded(self.state.plot_log, summary, PLOT_LOG_LIMIT)
+            self.characters.broadcast_plot_context(summary)
 
     def _move_exploration(self, location_key: str) -> None:
         if self.exploration is None or self._exploration_progress is None:
@@ -648,7 +680,7 @@ class GameRuntime:
         """进入续写时定下小目标并写成事件。本分支已有目标（不应发生）就不重定。"""
         if self._stage3_goals():
             return
-        descriptions = await self.screenwriter.design_stage3_goals(
+        descriptions = await self.game_master.design_stage3_goals(
             self.script,
             player_role=self.state.player_role,
             plot_log=self.state.plot_log,
@@ -697,19 +729,21 @@ class GameRuntime:
         elif isinstance(option_raw, int):
             option_val = option_raw
 
-        action = PlayerAction(
-            type=action_type,
-            option_id=option_val,
-            text=payload.get("text"),
-        )
-        # 续写目标判定要知道学生做了什么：选项只带编号，先趁交互点还在把文字取出来
-        action_text = action.text or next(
+        # 选项命令只带编号；趁交互点还在把文案取出来，写进动作本身。角色反应、
+        # 目标判定、回放/审计因此都看到玩家实际选了什么，而不是「选项 2」。
+        option_label = next(
             (
                 str(o.get("text", ""))
                 for o in self.active_interaction.options
                 if o.get("id") == option_val
             ),
             "",
+        )
+        action_text = str(payload.get("text") or option_label).strip()
+        action = PlayerAction(
+            type=action_type,
+            option_id=option_val,
+            text=action_text or None,
         )
         self._append(
             evt.EVENT_PLAYER_ACTION,
@@ -872,6 +906,44 @@ class GameRuntime:
             return set(self.exploration.participants_at(location, self._world))
         return set()
 
+    def plot_entries_for(self, viewer: str | None) -> list[str]:
+        """活动分支上 viewer 可见的叙事摘要（事件顺序，最近的在尾部）。
+
+        事件是权威：回溯后 `active_events()` 不含被放弃分支，摘要自动回退。
+        可见性按**事件发生时的参与者**判定，不做「当前地点」回溯删除——
+        角色离开旧地点后仍记得自己经历过的事；不在场的人看不到。
+        `viewer=None` 是引擎内部/调试视图，返回全部。
+        """
+        entries: list[str] = []
+        for ev in self.event_store.active_events():
+            payload = ev.payload or {}
+            if ev.event_type == evt.EVENT_PLOT_ADVANCEMENT:
+                # 旧事件（#53 前）可能没有 scene_key：无法做 viewer 裁剪，
+                # 保守地只给未绑定视图；新事件都带场景键。
+                if viewer is None or viewer in self._scene_participants(
+                    payload.get("scene_key")
+                ):
+                    text = str(payload.get("summary", ""))
+                    if text:
+                        entries.append(text)
+            elif ev.event_type == evt.EVENT_EXPLORATION_SETTLE:
+                if viewer is None or viewer in payload.get("present", []):
+                    text = str(payload.get("summary", ""))
+                    if text:
+                        entries.append(text)
+            elif ev.event_type == evt.EVENT_SCENE_SWITCH:
+                if viewer is None or viewer in payload.get("participants", []):
+                    text = _switch_summary(payload)
+                    if text:
+                        entries.append(text)
+            elif ev.event_type == evt.EVENT_REPLAY_NARRATION:
+                text = str(payload.get("text", ""))
+                if text:
+                    entries.append(text)
+            elif ev.event_type == evt.EVENT_REPLAY_ENDING_REACHED:
+                entries.append(_ending_summary(payload))
+        return entries
+
     def _scene_options(self) -> list[dict]:
         """交互点的换景列表（只在探索地图 + 续写阶段给出）。"""
         if (
@@ -974,7 +1046,22 @@ class GameRuntime:
             )
             for name in self._exploration_present()
         ]
-        return await self.director.design_options(
+        # 最近角色回应只取当前地点：跨地点的旧台词会让选项与现场脱节。
+        # 条数上限由 prompting.DIRECTOR_SLOTS / build_director_prompt 统一截断。
+        recent_speeches = [
+            (speaker, text)
+            for speaker, scene_key, text in self.state.speech_log
+            if scene_key == self.state.scene_key
+        ]
+        if not recent_speeches:
+            recent_speeches = [
+                (speaker, text) for speaker, _key, text in self.state.speech_log
+            ]
+        # 公开世界事实只给 public：private 事实只进 audience 角色的工具视图。
+        public_facts = [
+            fact.text for fact in self._world.facts if fact.visibility == "public"
+        ]
+        options = await self.director.design_options(
             location_title=location.title,
             visual_summary=location.visual_summary,
             player_role=self.state.player_role,
@@ -983,7 +1070,16 @@ class GameRuntime:
             direction=self.state.direction,
             goals=[(g.description, g.achieved) for g in self._stage3_goals()],
             teaching_focus=list(self.script.teaching_focus),
+            recent_speeches=recent_speeches,
+            last_options=self._last_director_options,
+            public_facts=public_facts,
         )
+        labels = [option.label for option in options]
+        if labels:
+            # 只更新「上一次成功产出」；本轮失败要返回空，让交互点走已验证提议/兜底，
+            # 但下一轮 prompt 仍应知道上一次真正展示过的导演选项，避免重复。
+            self._last_director_options = labels
+        return labels
 
     def _stage3_interaction(self) -> InteractionPoint:
         """续写交互点：导演选项优先，其次已验证提议，最后给兜底行动。"""
@@ -1052,7 +1148,7 @@ class GameRuntime:
     # ===== 玩家干涉世界（M6；design play-through-redesign §B5）=====
 
     async def _on_intervene(self, cid: str, payload: dict) -> StepResult:
-        """玩家自然语言干涉：Producer 解析 → 确定性校验 → 事件化应用。
+        """玩家自然语言干涉：WorldBuilder 解析 → 确定性校验 → 事件化应用。
 
         与换景同构：不消耗续写回合预算、全部走事件（回溯到创建之前 =
         该场景/角色从未存在）、解析/校验失败 fail-closed 成 `intervention_rejected`。
@@ -1071,12 +1167,12 @@ class GameRuntime:
 
         self._append(evt.EVENT_INTERVENTION_REQUESTED, {"text": text})
         if self._was_intervened_this_round():
-            # 每轮 ≤1 次（§B5）：确定性拒绝，不调 Producer（本次请求也是审计）
+            # 每轮 ≤1 次（§B5）：确定性拒绝，不调 WorldBuilder（本次请求也是审计）
             self._reject_intervention("本轮已经干涉过一次了，推进一轮后再试。")
             await self._flush_events()
             return await self._result_at_point(new_events=[])
 
-        intent = await self.producer.parse_intervention(
+        intent = await self.world_builder.parse_intervention(
             text, context=self._intervention_context()
         )
         applied = self._apply_intervention(intent)
@@ -1109,7 +1205,7 @@ class GameRuntime:
         return len(prior) > 1
 
     def _intervention_context(self) -> dict:
-        """制作人的输入装配（staff 不挂工具，design §B1）：全量世界单次打包。"""
+        """世界构建的输入装配（staff 不挂工具，design §B1）：全量世界单次打包。"""
         current = self.exploration.location(
             self._exploration_progress.current_location_key, self._world
         )
@@ -1124,7 +1220,7 @@ class GameRuntime:
         return {
             "location_title": current.title if current is not None else "",
             "visited_titles": visited_titles,
-            # 地点 key 与标题分开给：Producer 的 location_key 字段要填 key，
+            # 地点 key 与标题分开给：WorldBuilder 的 location_key 字段要填 key，
             # 但 LLM 只见过标题——运行时两种都认（见 `_resolve_location_key`）
             "locations": [
                 {"key": loc.location_key, "title": loc.title}
@@ -1139,7 +1235,7 @@ class GameRuntime:
         }
 
     def _resolve_location_key(self, raw: str | None) -> str | None:
-        """Producer 的地点参数可能是 key 也可能是标题（LLM 输出）——两种都认。"""
+        """WorldBuilder 的地点参数可能是 key 也可能是标题（LLM 输出）——两种都认。"""
         if not raw:
             return None
         if self.exploration.location(raw, self._world) is not None:
@@ -1257,7 +1353,7 @@ class GameRuntime:
             # 来源场景可推断就记（审计/迁移动画用），推断不到留空
             "from_scene": self._character_current_scene(intent.name),
             "to_scene": here.scene_key,
-            # Producer 生成的到场理由（§B5）：写进事件，重放/投影同源
+            # WorldBuilder 生成的到场理由（§B5）：写进事件，重放/投影同源
             "reason": intent.reason or "他闻讯赶来了。",
         }
         self._append(evt.EVENT_PULL_IN_CHARACTER, payload)
@@ -1314,7 +1410,7 @@ class GameRuntime:
             if stage_name == "stage3" and self.exploration is not None:
                 interaction = self._stage3_interaction()
             else:
-                interaction = self.screenwriter.design_interaction(
+                interaction = self.game_master.design_interaction(
                     stage=stage_name,
                     proposals=self._valid_proposals,
                     reached_ending=reached_ending,
@@ -1329,9 +1425,9 @@ class GameRuntime:
             await self._stage3_exploration_head(stage, sink)
             return
         self.state.phase = InteractionPhase.NARRATIVE.value
-        adv = self.screenwriter.advance_plot(self.script, stage)
-        # 进度游标显式同步：state 是权威，screenwriter 游标是派生
-        self.state.beat_cursor = self.screenwriter.beat_index
+        adv = self.game_master.advance_plot(self.script, stage)
+        # 进度游标显式同步：state 是权威，game_master 游标是派生
+        self.state.beat_cursor = self.game_master.beat_index
         ctx = self._beat_ctx(self.state.beat_cursor)
         self.state.scene_key = f"scene:{ctx.scene_id}" if ctx is not None else None
         # 事件索引优先（§9）：重连/回溯重放后，已就绪的运行期配图必须随叙事一同下发，
@@ -1353,11 +1449,11 @@ class GameRuntime:
             },
             sink=sink,
         )
-        self.state.plot_log.append(adv.summary)
+        _append_bounded(self.state.plot_log, adv.summary, PLOT_LOG_LIMIT)
         self.characters.broadcast_plot_context(adv.summary)
 
         self.state.phase = InteractionPhase.DIRECTION.value
-        direction = self.screenwriter.confirm_direction(self.script, stage)
+        direction = self.game_master.confirm_direction(self.script, stage)
         direction_payload = {"conflict": direction.conflict, "context": direction.context}
         self.state.direction = dict(direction_payload)
         self._append(
@@ -1541,7 +1637,11 @@ class GameRuntime:
             # 落库的永远是**最终答复**；前端屏幕上已经滚过的那份是临时文本，
             # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
             self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
-            self.state.speech_log.append((name, self.state.scene_key, res))
+            _append_bounded(
+                self.state.speech_log,
+                (name, self.state.scene_key, res),
+                SPEECH_LOG_LIMIT,
+            )
             reactions.append((name, res))
         return reactions
 

@@ -19,7 +19,7 @@
 
 - Stage2 线性 beat + 运行期 agent；`branches/interaction_point` 只生成不消费
   （`script_adapter.py:49-59`）；玩家选项不改变走向。
-- Stage3 用 `advance_plot` clamp 复读最后一拍（`screenwriter.py:46-55`），
+- Stage3 用 `advance_plot` clamp 复读最后一拍（`game_master.py:46-55`），
   `stage3_rounds=3` 到顶即结束；无世界模型、无导演、无离线推进。
 - 回溯生产 bug：`_memory_marks` 不落库，生产每条命令重建运行时
   （`session_runtime.py:761-813`），回溯只切事件分支、记忆不回退。
@@ -195,17 +195,17 @@ scripts（content_version/format/replay_ready）
 | **参演** | `CharacterAgent`（NPC×N） | 按人设/记忆/目标提出言行、回应玩家 | scoped WorldView（在场/公开信息） | 是 |
 | **参演** | 人类玩家 | 选项、场景切换、自由发言、干涉请求 | 前端可见 | 是 |
 | **工作人员** | `DirectorAgent` | **设计并提供玩家行为选项**；需要时产出 `SceneBrief`；指挥画师 | 引擎装配的全量上下文 | 否 |
-| **工作人员** | `ProducerAgent`（制作人） | **解析玩家干涉/解锁新场景请求**（建场景/拉角色/引入地点）、canon 校验、派发画师与角色创建 | 全量剧本/世界/可用角色池 | 否 |
+| **工作人员** | `WorldBuilderAgent`（世界构建） | **解析玩家干涉/解锁新场景请求**（建场景/拉角色/引入地点）、canon 校验、派发画师与角色创建 | 全量剧本/世界/可用角色池 | 否 |
 | **工作人员** | `PainterAgent`（现有 `PromptWriter`） | 画面主体转写（场景背景/新角色头像） | 场景/外貌锚点 | 否 |
 | **工作人员** | `VerifierAgent`（现有） | 审核 NPC 提案/选项合法性 | 剧本/规则 | 否 |
-| **工作人员** | `ScreenwriterAgent`（现有） | Stage3 剧情推进/方向（确定性优先） | 全量剧本 | 否 |
+| **工作人员** | `GameMasterAgent`（现有） | Stage3 剧情推进/方向（确定性优先） | 全量剧本 | 否 |
 
 原则：
 - 工作人员**不出场、不写角色台词、不进 `speech_log`**；输出只进系统事件/选项/资产。
 - 参演只看到 scoped 视图；staff 看全量，但不得把系统信息泄漏给参演。
-- **DirectorAgent 不审核**（审核是 Verifier）；**ProducerAgent 不设计选项**（选项是
+- **DirectorAgent 不审核**（审核是 Verifier）；**WorldBuilderAgent 不设计选项**（选项是
   Director）；两者职责分离，避免一个 agent 既当裁判又当编剧。
-- Director/Producer 都**不挂工具**：输入由运行时装配，输出结构化 JSON；解析失败走
+- Director/WorldBuilder 都**不挂工具**：输入由运行时装配，输出结构化 JSON；解析失败走
   确定性回退（选项：已验证提案 + 地点；干涉：拒绝并提示）。
 
 ### B2. 在线回合数据流
@@ -242,9 +242,9 @@ scripts（content_version/format/replay_ready）
   不建事件分支；交互点带 `scene_options`（当前地点置灰），前端在交互卡里渲染「前往」。
 - **与草案的差异**：M5 的地图是**平铺地点表**，没有地点间连边——地图里的地点
   都可前往；「解锁新场景 / 未连通地点不可见」与固定项「解锁新场景」随 M6 的
-  Producer 落地。换景的「人物到场衔接」文案也归 M6（当前由目标在场者直接反应）。
+  WorldBuilder 落地。换景的「人物到场衔接」文案也归 M6（当前由目标在场者直接反应）。
 - 场景列表来源当前只有 `exploration_map.locations`；**静态剧本场景与运行期
-  `scene_created` 动态场景的接入归 M6**（与配图槽位、Producer 一起做）。
+  `scene_created` 动态场景的接入归 M6**（与配图槽位、WorldBuilder 一起做）。
   地点背景图也留到 M6 的画师接线：换景时前端按无图降级为渐变。
 - `switch_scene` 在契约里按**阶段**允许（Stage3 全局），但旧剧本没有地图，
   引擎会以 `ENG_PLAYER_ACTION_INVALID` 拒绝；前端只在 `scene_options` 非空时
@@ -267,16 +267,16 @@ scripts（content_version/format/replay_ready）
 - **切到已存在场景**：
   - 只列「已访问或与当前场景连通」的场景（未解锁不出现，避免跳过剧情）；
   - 人物到场衔接：目标场景的 `participants` 视为已在场；若玩家希望某角色从别处赶来，
-    由 `ProducerAgent` 生成一句合理过渡（LLM）；无生产者时回退确定性模板；
+    由 `WorldBuilderAgent` 生成一句合理过渡（LLM）；无世界构建时回退确定性模板；
     写 `scene_switch {from, to, participants}` 事件，目标场景 NPC 以「你走进来」反应；
   - 场景切换是前进式，不触发事件回溯。
 - **解锁新场景**：
-  - 玩家选择/输入方向 → `ProducerAgent` 生成合理 `SceneBrief`（地点、视觉摘要、
+  - 玩家选择/输入方向 → `WorldBuilderAgent` 生成合理 `SceneBrief`（地点、视觉摘要、
     在场角色、玩家为何能到、**锚定的父地点** `parent_location_key`）→ 写
     `scene_created` → `PainterAgent` **立即作画**；新场景进入列表；
   - 新场景**必须锚定在一个已访问/当前地点上**（地图保持连通，不能凭空跳到未解锁区域）；
     `kind=dynamic`，上限 3/会话；完全新造的地点也走这条路径；
-  - Producer 判定不合理 → `scene_unlock_rejected` + 提示，不铸场景。
+  - WorldBuilder 判定不合理 → `scene_unlock_rejected` + 提示，不铸场景。
 - **场景列表来源**：`script_scenes` + `script_locations` + 动态 `scene_created`；
   Stage2 不提供（还原期是固定图）。
 - **AgentSociety 对照（调研结论）**：
@@ -297,7 +297,7 @@ scripts（content_version/format/replay_ready）
 
 - 新命令 `CommandKind.INTERVENE` + `IntervenePayload{text}`（Stage3 允许）：
   玩家在「干涉输入框」里写自然语言，如「创建一个雨夜的客栈场景」「让一个乞丐加入」。
-- `ProducerAgent` 解析为结构化 `InterventionIntent`：
+- `WorldBuilderAgent` 解析为结构化 `InterventionIntent`：
   - `create_scene {title, participants?, visual_summary}`；
   - `add_character {name, brief, personality?, location_key?}`（**新角色**）；
   - `pull_in_character {name}`（从剧本角色池/已创建角色中拉入当前场景）；
@@ -311,27 +311,27 @@ scripts（content_version/format/replay_ready）
     PainterAgent 生成视觉（惰性/后台）。
   - `character_created {profile, avatar_brief, location_key, origin}`：运行时
     `CharacterAgentManager.add_character(profile)` 新增一个 NPC；PainterAgent 生成头像；
-    **初始记忆为空 + 一条「为何在此」的 provenance 记忆**（可由 Producer 附带
+    **初始记忆为空 + 一条「为何在此」的 provenance 记忆**（可由 WorldBuilder 附带
     与既有角色的初始关系种子，默认不生成）；写入在场列表。
   - `pull_in_character {name, from_scene, to_scene}`：从剧本角色池/已创建角色中拉人；
-    Producer 生成一句到场理由（如「他闻讯赶来」），写事件并让该角色入场。
+    WorldBuilder 生成一句到场理由（如「他闻讯赶来」），写事件并让该角色入场。
   - `intervention_requested/rejected`：审计与玩家反馈。
 - **回滚/重放**：动态场景与角色由 `scene_created/character_created` 事件派生；回溯到
   创建前 = 该场景/角色从未存在（运行时重建 manager/registry 时不加载）；快照不需要
   额外字段。
-- **中心 agent 拉入角色**：`ProducerAgent` 可直接从剧本角色池（`script_characters`）
+- **中心 agent 拉入角色**：`WorldBuilderAgent` 可直接从剧本角色池（`script_characters`）
   拉一个当前不在场的角色进入场景（`pull_in_character`），无需新建 profile；新建角色
   走 `add_character` 生成 profile（staff LLM）→ 入池 + 入场。
 
 **实现注记（2026-11-07，M6 已落地）**：
 - 命令 `intervene {text}` 进 Stage3 允许列表（契约加法，**3.3.0**）；前端交互卡
   增加「干涉世界」输入框（Enter 提交，草稿随卡切换保留）。
-- `ProducerAgent.parse_intervention` 只做解析（不挂工具、上下文由运行时装配），
+- `WorldBuilderAgent.parse_intervention` 只做解析（不挂工具、上下文由运行时装配），
   失败/未知 kind/缺字段一律 `reject`（fail-closed）；`pull_in_character` 的
-  到场理由由 Producer 生成、写进事件，缺省「他闻讯赶来了」。
+  到场理由由 WorldBuilder 生成、写进事件，缺省「他闻讯赶来了」。
 - 运行时校验在 `GameRuntime`：预算（新场景 ≤3、新角色 ≤2、每轮 ≤1 次干涉）、
   同名/玩家角色、地点存在、可拉入名单；**所有拒绝都写 `intervention_rejected`**，
-  且不调 Producer（每轮上限）或保持当前交互点（世界没变）。
+  且不调 WorldBuilder（每轮上限）或保持当前交互点（世界没变）。
 - 干涉**不写 `player_action`**、不消耗 `stage3_round_taken`——否则重放会把一次
   干涉多算一拍、提前收束。每轮上限由「最近一次 settle/switch 之后的
   `intervention_requested` 数」判定（事件折叠，回溯自动回退）。
@@ -356,12 +356,12 @@ scripts（content_version/format/replay_ready）
 - **SceneBrief 的落法**：没有单独立类型——新场景的「地点/视觉摘要/在场」
   就是 `scene_created` 载荷，画师输入就是同一份 `SceneAssetIntent`（描述取
   `visual_summary`）；场景实体的唯一真相仍是事件。
-- **Producer 地点参数容错**：上下文同时给「标题=key」映射；运行时的
+- **WorldBuilder 地点参数容错**：上下文同时给「标题=key」映射；运行时的
   `_resolve_location_key` key 与标题都认（LLM 输出不可靠，fail-closed 只用于
   地点不存在）。`parent_location_key` 解析后写入 `scene_created` 作锚点，
   连通性过滤后置。
 - **未做**：新角色头像生成（`character_created` 已带 `avatar_brief`，资产管线只
-  接了 `scene_montage`）；独立文本内容安全过滤（复用 Producer 的 prompt 规则与
+  接了 `scene_montage`）；独立文本内容安全过滤（复用 WorldBuilder 的 prompt 规则与
   fail-closed 解析；canon 的「不得改写已发生事实」目前只靠 prompt 约束，
   确定性校验仅覆盖玩家角色/同名/预算）；地点间连通性过滤仍未实现。
 
@@ -374,7 +374,7 @@ scripts（content_version/format/replay_ready）
 `offline_hint` 指路时间线。行动者是**全体 cast**（事实锚在各自地点），上限硬夹
 3（配置只能更小）；已知边界：LLM 提议发生在 claim 之前（并发重复花费但效果幂等）、
 `offline_hint` 在 tick 事务外单独提交。关系漂移、地点变化、tick 内新场景与作者预写的
-`scheduled_facts` 按 v5 口径未实现（需要关系模型/Producer 式裁定）。
+`scheduled_facts` 按 v5 口径未实现（需要关系模型/WorldBuilder 式裁定）。
 
 - 触发：`session_init` 按 `last_tick_at` 补算，clamp `max_offline_ticks=3`；无定时器。
 - 每 tick：Cast NPC 自主提案/行动（LLM，并行）→ Verifier → 确定性结算
@@ -565,7 +565,7 @@ assets（+subject_type, +subject_key；运行期资产仍记 script_id，不记 
 | M3 Stage2 生成期 | `divide_events` v4 + `write_dialogue` + `validate_replay` + gate 校验 + 预生成图 | 生成带选项/分支/结局/台词/图 |
 | M4 Stage2 运行期 | `ReplayDirector` 珊瑚播放 + 事件/投影 + 前端；删 Stage2 free_input | 纯 IO 可玩；旧剧本不变 |
 | M5 Stage3 骨架 | `exploration.py` + settle + 在场过滤 + 地点/场景切换 | 换景/切场景/目标收束可玩 |
-| M6 工作人员 | DirectorAgent（选项）+ ProducerAgent（干涉）+ Painter 接线 + world_fact | 选项来自导演；建场景/拉角色可回滚；私密事实不泄漏 |
+| M6 工作人员 | DirectorAgent（选项）+ WorldBuilderAgent（干涉）+ Painter 接线 + world_fact | 选项来自导演；建场景/拉角色可回滚；私密事实不泄漏 |
 | M7 离线 tick | NPC 自主行动 + 画师新场景 + offline_hint + claim-first ≤3 | 幂等、预算内、跳过玩家行为 |
 | M8 回溯/快照 | 快照列 + 坐标统一 + 回溯页 + 入口 | 存档点/回跳正确 |
 
@@ -595,7 +595,7 @@ M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询
 - 新库：baseline 升级/降级、seed、空库启动。
 - 新测试：`test_rollback_*`（生产路径）、`test_replay_director.py`、
   `test_game_exploration.py`、`test_director_agent.py`（选项设计）、
-  `test_producer_agent.py`（干涉解析/预算/canon）、`test_dynamic_cast.py`
+  `test_world_builder_agent.py`（干涉解析/预算/canon）、`test_dynamic_cast.py`
   （新角色创建/回滚/重放）、`test_world_facts.py`（private 不泄漏）、
   `test_exploration_ticks.py`、`test_script_repository.py`。
 - 事件登记表测试：枚举 `EVENT_*`，断言重放与投影都有分支。
@@ -613,7 +613,7 @@ M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询
 | S1 | 非法 dialogue/options 落库 | save_package 前 validate_all；gate 后重跑 |
 | S1 | 动态角色/场景回滚不干净 | 全事件化 + 重放测试 + 快照前重建 manager |
 | S1 | 新事件漏登记 | 事件枚举登记测试 |
-| S2 | 玩家干涉破坏 canon | Producer 校验 + 预算 + 关键事件不可改 + 内容安全 |
+| S2 | 玩家干涉破坏 canon | WorldBuilder 校验 + 预算 + 关键事件不可改 + 内容安全 |
 | S2 | 导演选项质量/延迟 | 结构化输出 + 确定性回退 + 每轮 1 次 |
 | S2 | 离线 tick 费用 | 3 tick 上限 + 每 tick 预算 + 惰性/后台生图 |
 | S3 | 场景切换与地点移动语义重叠 | M1 合并为地点切换，M2 再拆 |
@@ -624,8 +624,8 @@ M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询
 ## 附录：已定与待确认
 
 已定：
-- ProducerAgent 独立于 Director，命名 `ProducerAgent`（制作人）；
-- 场景切换提供「已存在场景列表 + 解锁新场景」；解锁由 Producer 生成合理地点并作画；
+- WorldBuilderAgent 独立于 Director，命名 `WorldBuilderAgent`（世界构建）；
+- 场景切换提供「已存在场景列表 + 解锁新场景」；解锁由 WorldBuilder 生成合理地点并作画；
 - 离线新场景图立即生成；
 - LLM 额度不敏感，预算只作防失控软上限（每轮 ≤1 次干涉、新场景/新角色数量上限
   仍保留用于叙事一致性，不用于省钱）。
@@ -634,8 +634,8 @@ M4 运行期先从 `scripts.script_data` 整包派生珊瑚图；等真实查询
 1. 解锁新场景的边界：已定「必须锚定已访问/当前地点，`kind=dynamic`，上限 3/会话」，
    是否允许完全新造的地点独立于探索地图（当前：不允许，必须挂父地点）。
 2. 新角色的初始关系种子：默认只给「为何在此」的 provenance，不生成与既有角色的关系；
-   若需要更好的戏剧性，可由 Producer 附带 1–2 条初始关系（建议后置为可选）。
-3. 到场过渡：已定「切已有场景用 Producer 生成一句衔接（失败回退确定性模板）；
-   拉人由 Producer 生成到场理由」。
+   若需要更好的戏剧性，可由 WorldBuilder 附带 1–2 条初始关系（建议后置为可选）。
+3. 到场过渡：已定「切已有场景用 WorldBuilder 生成一句衔接（失败回退确定性模板）；
+   拉人由 WorldBuilder 生成到场理由」。
 4. AgentSociety 场景/到场调研已完成，结论已并入 B4（无场景抽象、无到场广播、
    不能运行时加模块/角色；借成员集合 + 全局广播 + 读后验证）。

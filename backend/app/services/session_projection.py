@@ -303,7 +303,7 @@ def _system_text(event_type: str, p: dict[str, Any]) -> str:
     if event_type == EVENT_INTERVENTION_REQUESTED:
         return f"你的干涉：{p.get('text', '')}"
     if event_type == EVENT_INTERVENTION_REJECTED:
-        return f"制作人没有应允：{p.get('reason', '')}"
+        return f"世界构建没有应允：{p.get('reason', '')}"
     if event_type == EVENT_SCENE_CREATED:
         return f"新地点「{p.get('title', '')}」出现了，可在「前往」里选它。"
     if event_type == EVENT_CHARACTER_CREATED:

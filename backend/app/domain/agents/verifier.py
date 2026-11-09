@@ -1,20 +1,30 @@
-"""验证 Agent：质量门禁（精简版）。
+"""验证 Agent：质量门禁。
 
-design_01 §3：验证不生产内容，只评估合规。MVP 阶段输出可被 mock 的确定性
-verdict，聚焦"通过/条件通过/驳回 + 重试（≤2 次）+ 僵局检测"机制本身，
-不评估真实剧情质量。
+两个职责：
+- `verify_proposal`：评估角色提议是否合规、可执行，输出结构化判定；
+- `judge_stage3_goals`：每轮之后判断哪些续写目标已经达成。
+
+验证不生产内容，只评估合规；LLM 失败或输出无法解析时按「不阻塞主流程」降级：
+提议验证退回条件通过，目标判定视为本轮未达成。
+
+Prompt 组装在 `domain/agents/prompting.py`（`build_verify_prompt` /
+`build_goal_judge_prompt`）。
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.contracts.enums import UsagePurpose
-from app.domain.game.goals import GoalState, parse_achieved
+from app.domain.agents.prompting import build_goal_judge_prompt, build_verify_prompt
+from app.domain.game.goals import GoalState, extract_json_object, parse_achieved
 from app.domain.game.types import Proposal, Rejection, VerificationResult
 from app.domain.llm import LLMService
 
 logger = logging.getLogger("wenjing.agents.verifier")
+
+_VERDICTS = frozenset({"pass", "conditional_pass", "reject"})
 
 
 class VerifierAgent:
@@ -22,24 +32,24 @@ class VerifierAgent:
         self.llm = llm
 
     async def verify_proposal(self, proposal: Proposal, stage: str) -> VerificationResult:
-        """验证单个角色提议。MVP 以 mock LLM 输出判定；默认 pass。"""
+        """验证单个角色提议；LLM 失败时按条件通过，不阻塞主流程。"""
+        bundle = build_verify_prompt(proposal, stage)
         try:
-            raw = await self.llm.chat(
-                [
-                    {"role": "system", "content": "你是验证 Agent，评估剧情提议是否合规。"},
-                    {"role": "user", "content": f"stage={stage}\nproposal={proposal.description}"},
-                ],
-                purpose=UsagePurpose.VERIFY,
-            )
+            raw = await self.llm.chat(bundle.messages(), purpose=UsagePurpose.VERIFY)
         except Exception:
             # LLM 失败降级（design_00 D4）：按条件通过，不阻塞主流程
             logger.warning("verify_degraded", extra={"proposal": proposal.proposal_id})
             return VerificationResult(verdict="conditional_pass", score=0.5)
 
-        verdict, score = _parse_verdict(raw)
-        rejections = []
+        verdict, score, reason, suggestion = _parse_verdict(raw)
+        rejections: list[Rejection] = []
         if verdict == "reject":
-            rejections = [Rejection(reason="mock 驳回", suggestion="请调整行动方向")]
+            rejections = [
+                Rejection(
+                    reason=reason or "提议不符合当前剧情。",
+                    suggestion=suggestion or "请调整行动方向。",
+                )
+            ]
         logger.debug(
             "verify_proposal",
             extra={"proposal": proposal.proposal_id, "verdict": verdict, "score": score},
@@ -49,7 +59,6 @@ class VerifierAgent:
             score=score,
             rejections=rejections,
         )
-
 
     async def judge_stage3_goals(
         self,
@@ -67,36 +76,47 @@ class VerifierAgent:
         pending = [g for g in goals if not g.achieved]
         if not pending:
             return [], ""
-        listing = "\n".join(f"{g.goal_id}. {g.description}" for g in pending)
-        said = "\n".join(f"{name}：{text}" for name, text in reactions) or "（无人回应）"
+        bundle = build_goal_judge_prompt(
+            pending,
+            player_role=player_role,
+            action=action,
+            reactions=reactions,
+        )
         try:
-            raw = await self.llm.chat(
-                [
-                    {"role": "system", "content": "你是验证 Agent，判断续写目标是否已经达成。"},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"未达成的续写目标：\n{listing}\n\n"
-                            f"这一轮学生（扮演{player_role or '某角色'}）的行动：{action}\n"
-                            f"各角色的回应：\n{said}\n\n"
-                            "只依据这一轮实际发生的内容，判断哪些目标已经达成；没有把握就不算。"
-                            '只输出 JSON：{"achieved": [目标编号], "reason": "一句话说明"}'
-                        ),
-                    },
-                ],
-                purpose=UsagePurpose.VERIFY,
-            )
+            raw = await self.llm.chat(bundle.messages(), purpose=UsagePurpose.VERIFY)
         except Exception:
             logger.warning("goal_judge_degraded", extra={"pending": len(pending)})
             return [], ""
         return parse_achieved(raw, {g.goal_id for g in pending})
 
 
-def _parse_verdict(raw: str) -> tuple[str, float]:
-    """解析 mock 输出为 (verdict, score)。不严格，供机制测试。"""
-    s = raw.strip().lower()
-    if "reject" in s:
-        return "reject", 0.2
-    if "conditional" in s or "warning" in s:
-        return "conditional_pass", 0.5
-    return "pass", 0.9
+def _parse_verdict(raw: str) -> tuple[str, float, str, str]:
+    """解析验证输出为 (verdict, score, reason, suggestion)。
+
+    兼容旧的纯文本输出（`reject` / `conditional` / 其他视为通过）：真实 LLM 应走
+    JSON；确定性 LLM 与遗留测试仍可能返回文本，不能因此改变既有机制。
+    """
+    data = extract_json_object(raw)
+    if data is not None:
+        verdict = str(data.get("verdict", "")).strip().lower()
+        reason = str(data.get("reason") or "").strip()[:120]
+        suggestion = str(data.get("suggestion") or "").strip()[:120]
+        if verdict not in _VERDICTS:
+            # 结构不对也不阻塞推进：按条件通过，保留模型给的理由供排障
+            return "conditional_pass", 0.5, reason, suggestion
+        return verdict, _score(data.get("score"), verdict), reason, suggestion
+
+    text = raw.strip().lower()
+    if "reject" in text:
+        return "reject", 0.2, "", "请调整行动方向。"
+    if "conditional" in text or "warning" in text:
+        return "conditional_pass", 0.5, "", ""
+    return "pass", 0.9, "", ""
+
+
+def _score(value: Any, verdict: str) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return {"pass": 0.9, "conditional_pass": 0.5, "reject": 0.2}[verdict]
+    return min(1.0, max(0.0, score))

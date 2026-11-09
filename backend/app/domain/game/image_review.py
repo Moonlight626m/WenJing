@@ -9,7 +9,8 @@
   绝不采用未经审核的开放版权素材。
 
 当前 `LLMService` 为纯文本端口，审核依据候选的标题/描述/尺寸元数据（非视觉）。
-分层：domain 只依赖 `LLMService` 端口；prompt 内联（与 verifier/screenwriter 同）。
+分层：domain 只依赖 `LLMService` 端口；prompt 内联在生成期审核侧，独立于运行期
+`domain/agents/prompting.py` 的对话 Agent prompt。
 """
 
 from __future__ import annotations

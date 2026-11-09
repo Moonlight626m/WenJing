@@ -556,7 +556,7 @@ export function ShowcaseGallery() {
 
             <Specimen
               title="续写目标"
-              note="进入续写时由编剧定下，每轮判定达成；全部达成即收束。点标题可收起"
+              note="进入续写时由剧情主持定下，每轮判定达成；全部达成即收束。点标题可收起"
             >
               <div data-surface="stage" className="bg-canvas p-6">
                 <MotionRoot>

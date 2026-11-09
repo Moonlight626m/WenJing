@@ -20,7 +20,7 @@ class _ReviseProbeLLM:
         self.calls.append(joined)
         if "验证 Agent" in joined:
             # 按提议文本判定；revise 轮文本也是「验证 Agent」调用，须区分轮次
-            return "reject" if "proposal=原提议" in joined else "pass"
+            return "reject" if "提议：原提议" in joined else "pass"
         if "已被驳回" in joined:
             return "调整后的新提议"
         return "原提议"

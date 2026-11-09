@@ -47,6 +47,8 @@
 
 续写目标（Stage3）同样**只存在于事件里**：进入续写时写 `stage3_goals_set`，每轮判定达成写 `stage3_goal_achieved`，`domain/game/goals.py::derive_goals` 从活动分支事件折叠出当前状态，不进 `_RState`——回溯换分支后达成状态自动回退。全部达成即收束，`stage3_rounds` 降为兜底上限；出题/判定的 LLM 输出解析不了时分别退回「按教学重点出题」与「本轮未达成」，所以确定性 LLM 下行为与改动前一致。
 
+角色记忆同理：`CharacterMemory`（`working_memory` / `personal_log` / `rejected`）是**有界读取窗口**（最近 10 条），由 `proposal` / `character_speech` / `character_created` 事件折叠重建；`RuntimeState.plot_log` / `speech_log` 各留最近 50 条。快照只是缓存：每分支只保留最近 20 个命令快照（`kind='rollback'` 全留），删旧快照只增加重放量、不改变结果。角色可见叙事摘要由 `plot_entries_for(viewer)` 从活动分支事件派生，`view_my_memory` / `view_plot_log` 是唯一读取口；`plot_context` / `current_direction` 仍是 write-only 的全局广播，不得直接暴露。
+
 运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
 
 ### 运行期流式与音频
@@ -107,6 +109,8 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 5. 同文件 `safe_message`：整数码 → 用户可见中文。**漏了用户只看到「服务内部错误」**
 
 **改代码里的 prompt 文本对已 seed 的库不生效**：system/准则/判据类文案存 `prompts` 表，键为 `(stage, node, version, section)`，代码默认在 `domain/prompts/defaults.py`，DB 无行/禁用/异常时回退默认。DB 覆盖行按 version 匹配，所以**必须升 `VERSION`** 才会落到新键上并回退到新默认；`make seed` 只幂等补新行，不覆盖已启用行。字段类型说明类文本（`_OUTPUT_CONTRACT`）留在代码、不落库。
+
+**运行期 Agent prompt 是代码内联的，不走 `prompts` 表**：改 `domain/agents/prompting.py` 的 `build_*_prompt` / 常量即生效，不要 `make seed`、不要升 `VERSION`。所有 prompt 经 `PromptBundle{system,user,version}` 组装：system 稳定、动态内容只进 user；槽位（来源/可见性/上限/降级）声明在 `*_SLOTS`，system 指纹由 `tests/test_prompt_bundles.py` 钉住。Full 清单与「查阅/试验/更新」流程见 `docs/prompts/runtime-agents.md`。三条易踩的耦合：`tests/conftest.py::FakeLLMService` 扫 system+user 全文，按「验证 Agent」「世界构建 Agent」「导演 Agent」路由；`fake.py::DeterministicAgentLLM` 只看最后一条 user，识别 `react` 与「验证 Agent」，Director/WorldBuilder 在确定性模式下解析失败后走兜底。改标记必须同步两处与测试；`choose_option` 的文案会写进 `PlayerAction.text` 与 `player_action` 事件，NPC 反应/目标判定/回放都据此；Director 的 `dimension` 只记日志、不强校验（`director_dimension_thin`）。
 
 **契约单源四处，但只有三处受保护**：`backend/app/contracts/`（Pydantic，唯一事实源）→ `contracts/fixtures/`（**手工维护的样例载荷**，不是生成物）→ `contracts/jsonschema/`（`scripts/export_contracts.py` 的导出产物）→ `frontend/src/lib/contracts/types.ts`（手工镜像）。改契约后跑 `cd backend && uv run python -m scripts.export_contracts`；`tests/test_contracts.py` 断言导出与 fixtures 都不过期，但**完全不管 `types.ts`**——它没有生成器，得自己同步。流程见 `docs/contract-change-process.md`。
 
