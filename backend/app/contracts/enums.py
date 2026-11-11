@@ -94,7 +94,7 @@ class EventType(StrEnum):
     STAGE_TRANSITIONED = "stage_transitioned"
     ROLLBACK_EXECUTED = "rollback_executed"
     ASSET_READY = "asset_ready"
-    # 续写目标（Stage3）：定下目标 / 某个目标达成
+    # 旧 Stage3 目标事件（已停止写入；枚举仅为历史会话投影保留）
     STAGE3_GOALS_SET = "stage3_goals_set"
     STAGE3_GOAL_ACHIEVED = "stage3_goal_achieved"
     # 伪分支播放（方案 branch-montage-dm §6）：分支进入/完成，分支内
@@ -117,6 +117,7 @@ class EventType(StrEnum):
     INTERVENTION_REQUESTED = "intervention_requested"
     INTERVENTION_REJECTED = "intervention_rejected"
     WORLD_FACT = "world_fact"
+    WORLD_CHRONICLE = "world_chronicle"
     # 离线 tick 的提示（§B6）：不写详细摘要，只指路时间线。
     OFFLINE_HINT = "offline_hint"
 

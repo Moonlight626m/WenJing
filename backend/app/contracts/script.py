@@ -82,8 +82,13 @@ class Appearance(VersionedContract):
 
     未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——
     严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。
+
+    `gender` / `age` 是**硬锚点**（2026-11 增补）：性别与年龄段决定生图模型的
+    人物先验，只靠 face/clothing 推断会出「男画成女、中年画成青年」的事故。
     """
 
+    gender: str = ""
+    age: str = ""
     face: str = ""
     hair: str = ""
     clothing: str = ""

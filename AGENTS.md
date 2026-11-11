@@ -45,9 +45,11 @@
 
 事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）。生产侧的调用点只有一处：`GameRuntime._current_background`（#56），解析顺序是**事件索引优先、剧本槽位兜底**——槽位是 Stage2 离线预生成的图（那时还没有 `asset_ready` 事件），运行期配图必须压过它，否则续写阶段的实时图永远显示不出来。
 
-续写目标（Stage3）同样**只存在于事件里**：进入续写时写 `stage3_goals_set`，每轮判定达成写 `stage3_goal_achieved`，`domain/game/goals.py::derive_goals` 从活动分支事件折叠出当前状态，不进 `_RState`——回溯换分支后达成状态自动回退。全部达成即收束，`stage3_rounds` 降为兜底上限；出题/判定的 LLM 输出解析不了时分别退回「按教学重点出题」与「本轮未达成」，所以确定性 LLM 下行为与改动前一致。
+续写（Stage3）**没有目标、没有轮次上限、没有自动结局**：`stage3_goals_set` / `stage3_goal_achieved` 已停止写入（枚举与投影仅为历史会话保留读兼容），`stage3_rounds` 已删除。运行时每轮在 NPC 反应之后、导演出选项之前写一条 `world_chronicle {round, text, present, location_key, covers_event_id}` 增量事件；`domain/game/chronicle.py::derive_chronicle(events, viewer=…)` 拼接全量/限知视图，角色只拿 `viewer` 限知视角，全量只给 staff/教师。结束只由客户端 `exit_game`（关闭本局）或教师结束课堂触发，不产生叙事结局。
 
 角色记忆同理：`CharacterMemory`（`working_memory` / `personal_log` / `rejected`）是**有界读取窗口**（最近 10 条），由 `proposal` / `character_speech` / `character_created` 事件折叠重建；`RuntimeState.plot_log` / `speech_log` 各留最近 50 条。快照只是缓存：每分支只保留最近 20 个命令快照（`kind='rollback'` 全留），删旧快照只增加重放量、不改变结果。角色可见叙事摘要由 `plot_entries_for(viewer)` 从活动分支事件派生，`view_my_memory` / `view_plot_log` 是唯一读取口；`plot_context` / `current_direction` 仍是 write-only 的全局广播，不得直接暴露。
+
+**实例记忆存储**（stage3-chronicle-redesign §1.3）：`domain/game/memory.py` 的 `MemoryStore` 端口 + `infrastructure/memory_store.py` 的文件系统实现（`WENJING_MEMORY_BACKEND=fs` 启用，默认 `null` = 纯进程内事件派生）。实例目录 `<root>/<session_id>/`：`events.jsonl` 是事件流镜像（按 `(branch_id, event_id)` 增量去重、`O_APPEND`+`fsync`、崩溃残行下次打开时隔断），`instance.lock` 是 `O_CREAT|O_EXCL` 单写者锁（持锁进程已死时按 PID 接管，仅 POSIX；Windows 上 `os.kill(pid,0)` 会终止进程，故保守拒绝接管，空锁按年龄回收），`memory/<character>.json` 是角色记忆派生缓存（命令收尾刷新，失败只记日志）。事件仍是唯一权威；目录里的东西删掉可从事件流重建。`CharacterInstance` = agent + 实例记忆句柄，`CharacterFactory` 是角色唯一创建路径（剧本角色与运行期新增角色都走它）。
 
 运行期配图的**持久台账**在 `asset_jobs`（#57）：每会话生图上限与崩溃恢复都建在它上面，因为 `assets` 行的归属必须落在**剧本**名下（写 `session_id` 会让 `AssetAccessService` 改按会话鉴权，跨会话缓存复用直接 403）。`Container.open()` 会调 `SessionApplication.recover_asset_jobs()`——先把上次进程留下的 `pending` 票据判死，再把 TTL 内的在途任务重排。
 
@@ -82,11 +84,17 @@ LLM token 流 ──StreamTee──┬─ StreamChannel → JSON 帧 `stream_*`�
 ```
 collect_materials → verify_materials → [materials_gate] → divide_events
   → design_characters ⇉ Send 扇出 N → design_one_character×N → merge_characters(join)
-  → [pre_write_gate] → write_script → write_dialogue → final_audit → design_assets → [final_gate] → END
+  → [pre_write_gate] → write_script → write_dialogue → final_audit
+  → design_exploration → design_assets → [final_gate] → END
   （reject 按重试预算打回；耗尽 → fail）
 ```
 
+`design_exploration` 在总审通过后从主场景派生 `ExplorationMap`（起点、地点、在场、
+画面摘要），让所有新剧本都带探索地图；它也是后续删除旧剧本线性路径的前置条件。
+
 配图在总审**之后**（#48 选项 A：不为一篇可能被打回的剧本付图片钱）；教师对配图槽位的四操作（重新生成/检索替换/上传/删除）经 `GateEdits.asset_ops` 随 final_gate 的 approve 生效（#49）——reject 路径忽略 ops，重写后 design_assets 重跑。
+
+**配图一致性靠「头像先行 + 参考图」**：`design_assets` 先生成人物头像，再用 `SceneDesigner.asset_bytes` 取回头像字节，作为该角色所在场景/分支的 `reference_images` 下发给生图 provider（Ark `image`，base64 data URL，最多 10 张）；prompt 末尾追加「外观须与参考图一致」。运行期 Stage3 配图同样带参考图：引擎从剧本包的 `avatar_asset` 取在场角色头像 id（`SceneAssetIntent.reference_asset_ids`），调度器读字节后下发。`Appearance` 的 `gender`/`age` 是硬锚点（七要素），画师层渲染时排在五官之前。带参考图的去重键追加 `+ref` 后缀——同一描述带不带参考图是两种产出。设计见 `docs/design/image-generation-quality.md`。
 
 教师闸门靠 `interrupt()` 暂停、`Command(resume=directives)` 恢复，**必须**有 AsyncPostgresSaver checkpointer 才启用。注意这层耦合：没有 `WENJING_LLM_API_KEY` 就没有 checkpointer，`workflow_enabled=False`、闸门不启用，生成退回旧确定性合成路径（仅测试/E2E 依赖，随 #33 退役）——生产链路只走 workflow + 真实 LLM。
 
@@ -119,6 +127,8 @@ collect_materials → verify_materials → [materials_gate] → divide_events
 **单次 LLM 调用的超时与重试**（#65）：`llm_timeout_seconds`（缺省 240）是**整次** non-streaming 调用的预算，流式另有 `STREAM_IDLE_TIMEOUT_CAP = 150.0` 封顶相邻 chunk 的空闲间隔——**调大前者不会顺带拉长后者**。超时单列 `LLM_TIMEOUT`（4004），只重试超时（默认 1 次、指数退避 2s，置 `llm_timeout_retries=0` 可关），provider 报错不重试。流式**只在还没交出任何一片时**才重试，守卫是「是否 yield 过」而非「可见文本段数」——工具分片的 `content` 为空，只数文本会漏判，重开一条流会让消费端把同一段工具参数累加两遍。
 
 **超时/失败异常的措辞一律走 `errx.exc_reason`（`类型: 消息`）**，不要用 `str(e)`：`str(TimeoutError())` 是空串，日志与对外信封会一起丢掉现场。同理，`errx.Error` 已被 `domain/` 包过的地方（如 `agents/character.py`）要 `except Error: raise`——再包一层会把码抹平成 `LLM_CALL_FAILED`，上层就看不出该调超时还是该换 key。
+
+**契约 payload 必须经 `SessionApplication._engine_payload` 翻译到引擎**：它是契约命令 → 运行时 payload 的唯一翻译点。新增带参 `CommandKind` 时忘了加分支会被静默丢成 `{}`——`switch_scene` 曾因此永远拿不到 `scene_key`、换景命令在 REST/WS 上全部失效（`tests/test_command_payloads.py` 钉住映射）。
 
 **游戏输入只有 REST `POST /api/sessions/{id}/commands` 这一个入口**（`contracts/commands.py` 的模块 docstring 这么写），语音、WS 都只是它的包装。请求体不合 `PlayerCommand` 时返回 `PROTOCOL_MALFORMED_MESSAGE` 信封（400），不是裸 500——`pydantic.ValidationError` 不在 `except WJError` 的作用域内，新增 `model_validate` 时记得翻译（#66）。
 

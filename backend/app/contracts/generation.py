@@ -39,6 +39,7 @@ class GenerationNode(StrEnum):
     WRITE_SCRIPT = "write_script"
     WRITE_DIALOGUE = "write_dialogue"
     FINAL_AUDIT = "final_audit"
+    DESIGN_EXPLORATION = "design_exploration"
     DESIGN_ASSETS = "design_assets"
 
 

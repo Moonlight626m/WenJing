@@ -14,8 +14,8 @@ import logging
 from dataclasses import dataclass
 
 from app.contracts.enums import UsagePurpose
+from app.domain.agents.parsing import extract_json_object
 from app.domain.agents.prompting import build_director_prompt
-from app.domain.game.goals import extract_json_object
 from app.domain.llm import LLMService
 
 logger = logging.getLogger("wenjing.agents.director")
@@ -48,7 +48,7 @@ class DirectorAgent:
         present: list[tuple[str, str]],
         plot_log: list[str],
         direction: dict[str, str],
-        goals: list[tuple[str, bool]],
+        chronicle_tail: str = "",
         teaching_focus: list[str],
         recent_speeches: list[tuple[str, str]] | None = None,
         last_options: list[str] | None = None,
@@ -63,7 +63,7 @@ class DirectorAgent:
                 "present": present,
                 "plot_log": plot_log,
                 "direction": direction,
-                "goals": goals,
+                "chronicle_tail": chronicle_tail,
                 "teaching_focus": teaching_focus,
                 "recent_speeches": recent_speeches or [],
                 "last_options": last_options or [],

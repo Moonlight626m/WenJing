@@ -11,44 +11,34 @@ import hashlib
 from app.domain.agents.prompting import (
     CHARACTER_MEMORY_LIMIT,
     CHARACTER_SLOTS,
+    CHRONICLER_SLOTS,
     DIRECTOR_LAST_OPTIONS_LIMIT,
     DIRECTOR_PLOT_LIMIT,
     DIRECTOR_PUBLIC_FACTS_LIMIT,
     DIRECTOR_RECENT_SPEECH_LIMIT,
     DIRECTOR_SLOTS,
-    GOAL_JUDGE_SLOTS,
-    STAGE3_GOALS_SLOTS,
     VERIFIER_SLOTS,
     WORLD_BUILDER_SLOTS,
+    build_character_prompt,
     build_character_system,
+    build_chronicler_prompt,
     build_director_prompt,
-    build_goal_judge_prompt,
-    build_stage3_goals_prompt,
     build_verify_prompt,
     build_world_builder_prompt,
 )
-from app.domain.game.goals import GoalState
-from app.domain.game.types import Beat, CharacterSetting, Proposal, Scene, Script
+from app.domain.game.types import Proposal
 
 FINGERPRINTS = {
-    "character": "14f6c4b3e540f779b77ce9d64aeeefc1cd6c8b55c9da8ba155813084b40b1d1e",
-    "director": "ec08fd83a6f71494e3bc559dce2f054ab45a790de4e0176e2e19efb989112202",
+    "character": "c63aec53bf63fffa201870595b856208fe0a1b3c0aec91f4f662ff36ea56be0a",
+    "director": "0987240d856be917fd3f38ae50b00b4ccf6f13d473dc5d20fcd9922aa6073779",
     "world_builder": "ed4bb34355b1b1084ff310fe9829cdb25ab7f750e4956dbaf945db5fcb3d1130",
     "verify": "c64f9583f351e61aa4f2800b7a9673dba5255faf2ea37fa04243b6bc09e90bbd",
-    "goal_judge": "e5cf73ba51fe7cf595794386878f19e1102142f927319c74d6e85b0c6dc2c00f",
-    "stage3_goals": "9469f9edc39546e47d65b269566241f082147bd46194c4bae2325230e5772d83",
+    "chronicler": "d56cc9f7dd9e663f98aa16d540eea3736f99cb3bb0dfb5377b3701eb771ef743",
 }
 
 
 def _character_system() -> str:
-    return build_character_system(
-        name="杜甫",
-        public_background="诗人，与李白同游",
-        personality_traits=["沉郁", "重情"],
-        speech_style="自称「甫」",
-        knows=["与李白同游"],
-        not_knows=["高适的军情"],
-    )
+    return build_character_system()
 
 
 def _director_context() -> dict:
@@ -59,7 +49,7 @@ def _director_context() -> dict:
         "present": [("乙", "船夫")],
         "plot_log": ["船靠岸"],
         "direction": {"conflict": "船要走了"},
-        "goals": [("劝船夫再等一会儿", False)],
+        "chronicle_tail": "渡口起风了，船夫把船绳收紧。",
         "teaching_focus": ["同舟共济"],
         "recent_speeches": [("船夫", "再不走就涨潮了")],
         "last_options": ["看看四周"],
@@ -78,32 +68,12 @@ def _world_builder_context() -> dict:
     }
 
 
-def _script() -> Script:
-    return Script(
-        title="最小集测试剧本",
-        characters=[CharacterSetting(name="李白", public_background="诗人")],
-        scenes=[Scene(scene_id=1, title="相遇", beats=[Beat(beat_id=1, description="相遇")])],
-        stage2_ending_beat_id=1,
-        teaching_focus=["同舟共济"],
-    )
-
-
-def _pending_goals() -> list[GoalState]:
-    return [GoalState(1, "劝船夫留下"), GoalState(2, "让船夫改变态度")]
-
-
 def test_system_prompt_fingerprints_are_golden():
     verify = build_verify_prompt(
         Proposal(proposal_id=1, proposed_by="杜甫", description="把船拉回岸边"), "stage3"
     )
-    goal_judge = build_goal_judge_prompt(
-        _pending_goals(),
-        player_role="甲",
-        action="向船夫道歉",
-        reactions=[("船夫", "好吧，再等一会儿。")],
-    )
-    stage3_goals = build_stage3_goals_prompt(
-        _script(), player_role="李白", plot_log=["船靠岸"]
+    chronicler = build_chronicler_prompt(
+        chronicle_tail="上一段", events_text="本轮发生的事"
     )
     fingerprints = {
         "character": hashlib.sha256(_character_system().encode()).hexdigest(),
@@ -112,8 +82,7 @@ def test_system_prompt_fingerprints_are_golden():
             "叫船夫过来", _world_builder_context()
         ).system_fingerprint(),
         "verify": verify.system_fingerprint(),
-        "goal_judge": goal_judge.system_fingerprint(),
-        "stage3_goals": stage3_goals.system_fingerprint(),
+        "chronicler": chronicler.system_fingerprint(),
     }
     assert fingerprints == FINGERPRINTS
 
@@ -126,6 +95,7 @@ def test_dynamic_context_never_leaks_into_system():
             "recent_speeches": [("丙", "另外一个人说的话")],
             "public_facts": ["另一个世界事实"],
             "last_options": ["另一个选项"],
+            "chronicle_tail": "另一段编年史",
         }
     )
     assert base.system == changed.system
@@ -142,25 +112,37 @@ def test_prompt_bundle_messages_shape_and_purity():
     assert bundle == build_director_prompt(_director_context())
 
 
-def test_character_system_is_stable_and_identity_sensitive():
-    first = _character_system()
-    assert first == _character_system()
-    other = build_character_system(
-        name="高适",
-        public_background="边塞诗人",
-        personality_traits=["豪迈"],
-        speech_style="",
-        knows=[],
-        not_knows=[],
+def test_character_system_is_shared_and_persona_lives_in_user():
+    system = build_character_system()
+    first = build_character_prompt(
+        name="甲",
+        background="渡客",
+        knows=["甲知道船夫收了官府的银子"],
+        chronicle="甲在渡口看见船夫收了一封信。",
+        instruction="propose_action",
     )
-    assert other != first
+    other = build_character_prompt(
+        name="乙",
+        background="船夫",
+        knows=["乙收了官府的银子"],
+        chronicle="乙在渡口收了一封信。",
+        instruction="react",
+    )
+    assert first.system == other.system == system
+    assert "甲" in first.user
+    assert "乙" not in first.user
+    assert "船夫收了官府的银子" in first.user
+    assert "不知道的事" not in first.user
+    assert "剧情还原" not in first.user
+    assert "甲在渡口看见" in first.user
 
 
 def test_slot_declarations_cover_required_memory_layers():
     character_names = {slot.name for slot in CHARACTER_SLOTS}
     assert {
         "persona",
-        "knowledge_boundary",
+        "private_knowledge",
+        "chronicle",
         "recent_speech",
         "personal_log",
         "rejected_proposals",
@@ -168,7 +150,8 @@ def test_slot_declarations_cover_required_memory_layers():
         "world_facts",
         "long_term_summary",
     } <= character_names
-    assert {slot.name for slot in DIRECTOR_SLOTS} >= {
+    director_names = {slot.name for slot in DIRECTOR_SLOTS}
+    assert {
         "location",
         "visual_summary",
         "present",
@@ -178,13 +161,16 @@ def test_slot_declarations_cover_required_memory_layers():
         "recent_speeches",
         "public_facts",
         "last_options",
-        "goals",
+        "chronicle_tail",
         "teaching_focus",
-    }
+    } <= director_names
+    assert "goals" not in director_names
     assert {slot.name for slot in WORLD_BUILDER_SLOTS} >= {"current_location", "budgets"}
     assert {slot.name for slot in VERIFIER_SLOTS} >= {"proposal"}
-    assert {slot.name for slot in GOAL_JUDGE_SLOTS} >= {"pending_goals", "reactions"}
-    assert {slot.name for slot in STAGE3_GOALS_SLOTS} >= {"teaching_focus", "recent_plot"}
+    assert {slot.name for slot in CHRONICLER_SLOTS} >= {
+        "previous_chronicle",
+        "round_events",
+    }
     recent_speech = next(slot for slot in CHARACTER_SLOTS if slot.name == "recent_speech")
     assert recent_speech.limit == CHARACTER_MEMORY_LIMIT
     long_term = next(slot for slot in CHARACTER_SLOTS if slot.name == "long_term_summary")
@@ -197,8 +183,7 @@ def test_slot_metadata_uses_known_values():
         *DIRECTOR_SLOTS,
         *WORLD_BUILDER_SLOTS,
         *VERIFIER_SLOTS,
-        *GOAL_JUDGE_SLOTS,
-        *STAGE3_GOALS_SLOTS,
+        *CHRONICLER_SLOTS,
     ]
     for slot in slots:
         assert slot.visibility in {"self", "public", "scoped", "staff", "n/a"}, slot.name
@@ -233,3 +218,15 @@ def test_director_slot_limits_are_applied():
     assert f"选项{DIRECTOR_LAST_OPTIONS_LIMIT + 2}" in user
     assert "选项0" not in user
     assert CHARACTER_MEMORY_LIMIT == 10
+
+
+def test_chronicler_prompt_is_incremental():
+    bundle = build_chronicler_prompt(
+        chronicle_tail="渡口起风了。", events_text="- 乙：船要走了。"
+    )
+    assert "只写本轮" in bundle.user
+    assert "渡口起风了" in bundle.user
+    assert "船要走了" in bundle.user
+    assert bundle.system == build_chronicler_prompt(
+        chronicle_tail="", events_text=""
+    ).system

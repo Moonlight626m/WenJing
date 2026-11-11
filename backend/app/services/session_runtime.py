@@ -48,6 +48,7 @@ from app.domain.game.media import (
     AssetRepositoryPort,
     SceneAssetRequest,
 )
+from app.domain.game.memory import MemoryStore
 from app.domain.game.offline_ticks import (
     MAX_OFFLINE_TICKS,
     offline_hint_payload,
@@ -57,8 +58,9 @@ from app.domain.game.offline_ticks import (
 from app.domain.game.replay import build_replay_graph
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.game.streaming import SpeechStreamSink
+from app.domain.game.types import MemoryBackend
 from app.domain.llm import LLMService
-from app.infrastructure.config import get_settings
+from app.infrastructure.config import DEFAULT_MEMORY_FS_ROOT, get_settings
 from app.infrastructure.db.event_store import (
     PersistentEventStore,
     branch_uuid,
@@ -187,6 +189,8 @@ class SessionApplication:
         asset_scheduler: SceneAssetScheduler | None = None,
         event_hub: SessionEventHub | None = None,
         assets: AssetRepositoryPort | None = None,
+        memory_backend: MemoryBackend = "null",
+        memory_fs_root: str = "",
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
@@ -203,6 +207,12 @@ class SessionApplication:
         # 强引用兜住 Task 的 GC，进程崩溃时进程内的这里自然消失；台账上的
         # 孤儿 RECEIVED 由 `submit_async` 的 "stale" 语义承接（重发可复原）。
         self._async_inflight: dict[uuid.UUID, asyncio.Task[None]] = {}
+        # 实例记忆后端（§1.3）："fs" 时每个运行时挂自己的 FileMemoryStore
+        # （实例目录 = memory_fs_root/<session_id>/）。事件权威仍在事件存储。
+        self._memory_backend: MemoryBackend = memory_backend
+        self._memory_fs_root = memory_fs_root or DEFAULT_MEMORY_FS_ROOT
+        # fs 后端的会话级句柄缓存：同会话每命令复用同一实例目录锁
+        self._memory_stores: dict[uuid.UUID, MemoryStore] = {}
 
     # ===== 创建 =====
 
@@ -301,7 +311,7 @@ class SessionApplication:
                 codes.SESS_NOT_FOUND,
                 extra={"id": str(session_id), "reason": "script not generated"},
             )
-        runtime, store = self._build_runtime(
+        runtime, store = await self._build_runtime(
             session_id,
             package,
             usage_context=self._usage_context(session_id, sess),
@@ -720,6 +730,7 @@ class SessionApplication:
                     user_id=sess.owner_user_id,
                     kind=_asset_kind(req.kind),
                     prompt_context=req.prompt_context or {},
+                    reference_asset_ids=req.reference_asset_ids,
                 ),
                 on_ready=self._apply_asset_ready,
             )
@@ -841,7 +852,7 @@ class SessionApplication:
             "last_sequence": state.last_sequence,
             "plot_log": state.plot_context.get("plot_log", []),
             "player_role": state.plot_context.get("player_role"),
-            # 续写目标（从活动分支事件派生）：重连即恢复目标与达成状态
+            # 旧续写目标（已停止写入）：恒为空，仅为历史会话保留字段
             "stage3_goals": [g.model_dump(mode="json") for g in state.stage3_goals],
             # 场景切换背景（#53）：稳定引用 + 键 + 标题，前端据此签 URL / 判淡入
             "scene_key": state.scene_key,
@@ -1038,7 +1049,7 @@ class SessionApplication:
             session_id,
             until_resolver=resolve_until if rollback is not None else None,
         )
-        runtime, store = self._build_runtime(
+        runtime, store = await self._build_runtime(
             session_id,
             loaded.package,
             store=loaded.store,
@@ -1090,7 +1101,7 @@ class SessionApplication:
 
     # ===== 内部工具 =====
 
-    def _build_runtime(
+    async def _build_runtime(
         self,
         session_id: uuid.UUID,
         package: ScriptPackage,
@@ -1114,8 +1125,49 @@ class SessionApplication:
             replay_graph=build_replay_graph(package),
             # Stage3 探索地图（M5）：旧剧本无 exploration = 原 3 轮行为
             exploration_map=package.exploration,
+            # fs 实例记忆（§1.3）：单实例部署的角色私有记忆载体；
+            # "null" 后端为 None = 纯进程内事件派生（服务端形态）。
+            memory_store=await self._memory_store_for(
+                session_id, script_name=package.title
+            ),
         )
         return runtime, store
+
+    async def _memory_store_for(
+        self, session_id: uuid.UUID, *, script_name: str = ""
+    ) -> MemoryStore | None:
+        """按后端配置取会话的记忆存储句柄（惰性创建并加单写者锁）。"""
+        if self._memory_backend != "fs":
+            return None
+        cached = self._memory_stores.get(session_id)
+        if cached is not None:
+            return cached
+        from app.infrastructure.memory_store import open_file_memory_store
+
+        store = await open_file_memory_store(
+            self._memory_fs_root,
+            str(session_id),
+            script_name=script_name,
+        )
+        self._memory_stores[session_id] = store
+        return store
+
+    async def aclose(self) -> None:
+        """释放全部会话级实例目录句柄（lifespan 关闭时调用）。
+
+        不释放会让 `instance.lock` 与 fd 跟随进程直到退出；长跑进程重启后
+        只能靠 PID 探测接管。关锁失败不阻塞退出。
+        """
+        stores = list(self._memory_stores.values())
+        self._memory_stores.clear()
+        for store in stores:
+            try:
+                await store.close()
+            except Exception as exc:  # noqa: BLE001 - 关锁失败不阻塞退出
+                logger.warning(
+                    "memory_store_close_failed",
+                    extra={"wj_extra": {"reason": exc_reason(exc)}},
+                )
 
     def _usage_context(self, session_id: uuid.UUID, sess: SessionRecord):
         """构造该会话的 LLM 用量归属上下文（无 recorder 时返回 None）。"""
@@ -1143,6 +1195,10 @@ class SessionApplication:
             return {"option_id": p.option_id}
         if kind is CommandKind.FREE_INPUT:
             return {"text": p.text}
+        if kind is CommandKind.INTERVENE:
+            return {"text": p.text}
+        if kind is CommandKind.SWITCH_SCENE:
+            return {"scene_key": p.scene_key}
         if kind is CommandKind.ROLLBACK_TO_EVENT:
             path = store.active_events()
             index = _rollback_target_index(session_id, path, p)

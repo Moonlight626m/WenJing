@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from io import BytesIO
 
 import httpx
@@ -187,8 +187,18 @@ class OpenAIImageGen:
             return self._preset_sizes["portrait"]
         return self._preset_sizes["square"]
 
-    def _build_payload(self, prompt: str, size: str) -> dict[str, object]:
-        """请求体（OpenAI 形状）：子类可覆盖以适配 provider 差异（如 Ark 无 `n`）。"""
+    def _build_payload(
+        self,
+        prompt: str,
+        size: str,
+        *,
+        reference_images: Sequence[bytes] = (),
+    ) -> dict[str, object]:
+        """请求体（OpenAI 形状）：子类可覆盖以适配 provider 差异（如 Ark 无 `n`）。
+
+        `reference_images` 在 OpenAI Images 形状里没有对应字段——基类忽略；
+        Ark 子类覆写为 `image`（base64 data URL 数组）。
+        """
         payload: dict[str, object] = {
             "model": self._model,
             "prompt": prompt,
@@ -214,11 +224,16 @@ class OpenAIImageGen:
         kind: AssetKind,
         width: int = 0,
         height: int = 0,
+        reference_images: Sequence[bytes] = (),
     ) -> GeneratedImage:
         # 生成前：本地确定性过滤（命中即拒，绝不发往 provider——付费调用前的闸门）。
         screen_generation_prompt(prompt, max_chars=self._max_prompt_chars)
         w, h = self._resolve_size(kind, width, height)
-        payload = self._build_payload(prompt, self._provider_size(w, h, kind=kind))
+        payload = self._build_payload(
+            prompt,
+            self._provider_size(w, h, kind=kind),
+            reference_images=reference_images,
+        )
 
         try:
             resp = await self._post(payload)

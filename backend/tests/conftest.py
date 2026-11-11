@@ -127,12 +127,14 @@ class FakeLLMService:
         # 导演默认 None = 回落到 proposal_text（解析不出 → 选项回退到已验证提议），
         # 保住既有 M5 测试对回退选项文本的断言。
         director_output: str | None = None,
+        chronicler_output: str = "众人沉默片刻，天色渐渐暗了下来。",
     ) -> None:
         self._proposal_text = proposal_text
         self._react_text = react_text
         self._verifier_output = verifier_output
         self._world_builder_output = world_builder_output
         self._director_output = director_output
+        self._chronicler_output = chronicler_output
         self.call_count = 0
         self.calls: list[list[dict]] = []
 
@@ -146,6 +148,8 @@ class FakeLLMService:
             return self._verifier_output
         if "世界构建 Agent" in joined:
             return self._world_builder_output
+        if "编年史作者" in joined:
+            return self._chronicler_output
         if "导演 Agent" in joined and self._director_output is not None:
             return self._director_output
         user = messages[-1]["content"] if messages else ""
@@ -197,7 +201,7 @@ def minimal_script() -> Script:
 
 @pytest.fixture
 def engine_config() -> EngineConfig:
-    return EngineConfig(stage3_rounds=2)
+    return EngineConfig()
 
 
 @pytest.fixture
@@ -237,6 +241,7 @@ async def play_until_terminal(rt: GameRuntime, *, end_at_ending: bool = False):
 
     result = await rt.start()
     assert result.state["stage"] in ("stage1_complete",)
+    stage3_rounds = 0
 
     while True:
         if result.terminal:
@@ -257,6 +262,11 @@ async def play_until_terminal(rt: GameRuntime, *, end_at_ending: bool = False):
         elif stage == "stage2_complete":
             result = await send("enter_stage3")
         elif stage == "stage3_extending":
-            result = await send("choose_option", {"option_id": "0"})
+            # 自由探索没有自动终点：跑两轮后由客户端 exit_game 关闭本局
+            stage3_rounds += 1
+            if stage3_rounds > 2:
+                result = await send("exit_game")
+            else:
+                result = await send("choose_option", {"option_id": "0"})
         else:
             raise AssertionError(f"非预期阶段 {stage}")

@@ -32,15 +32,26 @@ logger = logging.getLogger("wenjing.game.prompt_writer")
 
 # 转写产物版本：由组合根并入 SceneDesigner.provider_version——改 prompt/schema
 # 必须 bump，否则同描述命中旧图缓存。去重键主体仍是确定性 description（本模块
-# 输出不进键，见模块 docstring）。v2：笔调改为课本插画/水墨（配合默认画风）。
-SCENE_PROMPT_VERSION = "scene_prompt.v2"
+# 输出不进键，见模块 docstring）。v3：性别/年龄升为硬锚点，头像构图去证件照化。
+SCENE_PROMPT_VERSION = "scene_prompt.v3"
 
 # 外貌锚点字段（契约 `Appearance` 的同名投影）：appearance 片段与本模块的
-# 渲染共用一份字段清单，避免第三个副本漂移。
-APPEARANCE_FIELDS: tuple[str, ...] = ("face", "hair", "clothing", "accessories", "build")
+# 渲染共用一份字段清单，避免第三个副本漂移。gender/age 排在最前：它们是
+# 生图模型的人物先验，先于五官/服饰被采信。
+APPEARANCE_FIELDS: tuple[str, ...] = (
+    "gender",
+    "age",
+    "face",
+    "hair",
+    "clothing",
+    "accessories",
+    "build",
+)
 
 # 未交代降级词：appearance 的「原文未交代」/空字段按此渲染——绝不把
 # 「原文未交代」四个字送 provider（对生图模型是噪声，对预算是浪费）。
+_DEFAULT_GENDER = "性别按原文身份与称谓确定，不得改换"
+_DEFAULT_AGE = "年龄按原文身份与辈分确定"
 _DEFAULT_FACE = "面容端正，符合人物身份"
 _DEFAULT_HAIR = "符合时代与身份的常见发式"
 _DEFAULT_CLOTHING = "符合时代与身份的常见衣着"
@@ -58,9 +69,16 @@ class ScenePromptWriterPort(Protocol):
 
 @dataclass
 class CharacterAppearance:
-    """单个人物的外貌锚点集合（渲染为 prompt 片段）。"""
+    """单个人物的外貌锚点集合（渲染为 prompt 片段）。
+
+    `gender` / `age` 是硬锚点：渲染时排在姓名之后、五官之前——生图模型先
+    定人物先验（性别/年龄段），再采信五官与服饰；顺序反了，模型会按服饰
+    先验反推性别年龄（「穿深色长衫」被画成老人）。
+    """
 
     name: str
+    gender: str = ""
+    age: str = ""
     face: str = ""
     hair: str = ""
     clothing: str = ""
@@ -77,6 +95,8 @@ class CharacterAppearance:
     def fragment(self) -> str:
         """渲染为一段画面语：已交代的原样用，未交代的降级为时代中性词。"""
         parts = [self.name]
+        parts.append(self.gender if self.gender else _DEFAULT_GENDER)
+        parts.append(self.age if self.age else _DEFAULT_AGE)
         parts.append(f"面容{self.face if self.face else _DEFAULT_FACE}")
         parts.append(f"发型{self.hair if self.hair else _DEFAULT_HAIR}")
         parts.append(f"穿着{self.clothing if self.clothing else _DEFAULT_CLOTHING}")
@@ -183,7 +203,7 @@ class LLMPromptWriter:
 
 
 _KIND_HINT: dict = {
-    "avatar": "1:1 半身头像，单人正面",
+    "avatar": "1:1 半身肖像，四分之三侧身，姿态自然",
     "fullbody": "3:4 竖版全身立绘，单人直立",
     "background": "16:9 空镜环境，画面中不出现任何人物",
     "scene_montage": "16:9 横版完整场面：在场人物在环境中做出情节里的动作",
@@ -248,7 +268,9 @@ COMPOSITION = """\
 - 写清画面里有什么：环境（建筑/器物/光线）、人物（谁在做什么）、位置关系；\
 一段连贯的中文描述，不是关键字罗列；
 - 完整场面图：人物置于画面中，动作按【情节】呈现，环境作背景层次；
-- 头像：只画单人正面半身，神情按人物身份给中性沉着的面容；
+- 头像：单人半身肖像，四分之三侧身或微微侧头，姿态与神情符合人物身份与\
+当下心境；背景简洁但可带一点环境暗示（窗、桌、院墙），不要证件照式正面\
+大头照，不要对称呆板站姿；
 - 全身立绘：单人直立全身像，可带外貌锚点或情节里的标志性动作；
 - 空镜环境图：不出现任何人物，只写环境与氛围。
 
@@ -260,6 +282,11 @@ ANCHOR_RULES = """\
 【外貌锚点纪律】
 - 在场人物的描述**必须**采用给定锚点，禁止自行补写或替换；\
 锚点留白的字段一律以「符合时代与身份的常见形象」表达；
+- **性别与年龄是硬锚点**：人物的性别、年龄段必须与锚点一致，不得按服饰、\
+场景或情节自行改换（如把中年父亲画成青年、把男性画成女性）；
+- **同一角色跨图一致**：同一人物在本剧本的所有画面（头像、场面图、分支图）\
+里必须是同一张脸、同一年龄段、同一发式与同一套服装；锚点原文原样写入，\
+不得在某一幅里换造型、换年龄或换性别；
 - 多人在场时，每人的外貌锚点逐个写入画面描述，位置关系用方位词交代\
 （如「父亲在前，儿子在后」），画中人数与在场人物一致。\
 """

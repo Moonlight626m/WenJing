@@ -37,7 +37,7 @@ OUTPUT_CONTRACT = """\
      "speech_style": {"era_layer": "语言时代层", "sentence_rhythm": "句长与节奏",
        "address_terms": "称谓习惯", "catchphrases": "口头禅与语气词",
        "emotion_expression": "情绪表达方式", "sample_lines": ["示例台词"]} 或 null,
-     "knowledge_boundary": {"knows": ["知道的事"], "not_knows": ["不知道的事"]},
+     "knowledge_boundary": {"knows": ["知道的事"]},
      "is_player_playable": {"value": 布尔值, "reason": "判断理由"}}
   ],
   "scenes": [

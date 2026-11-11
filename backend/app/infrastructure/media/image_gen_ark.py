@@ -25,13 +25,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+from collections.abc import Sequence
 
 import httpx
 
 from app.domain.game.media import AssetKind, GeneratedImage
 from app.infrastructure.errx import codes, new, wrap
-from app.infrastructure.media.image_gen_openai import OpenAIImageGen
+from app.infrastructure.media.image_gen_openai import OpenAIImageGen, sniff_image_mime
 
 logger = logging.getLogger("wenjing.media.image_gen_ark")
 
@@ -53,6 +55,15 @@ _ARK_LIFT_SIZES: dict[AssetKind, tuple[int, int]] = {
     AssetKind.AVATAR: (1024, 1024),
     AssetKind.FULLBODY: (864, 1152),
 }
+
+# 参考图张数上限（官方文档：seedream 5.0 pro/flash 最多 10 张）。
+_ARK_MAX_REFERENCES = 10
+
+
+def _data_url(data: bytes) -> str:
+    """参考图字节 → base64 data URL（Ark 接受 URL 或 data URL）。"""
+    mime = sniff_image_mime(data) or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
 class ArkImageGen(OpenAIImageGen):
@@ -101,8 +112,18 @@ class ArkImageGen(OpenAIImageGen):
         lift = _ARK_LIFT_SIZES.get(kind or AssetKind.SCENE_MONTAGE, (1424, 800))
         return f"{lift[0]}x{lift[1]}"
 
-    def _build_payload(self, prompt: str, size: str) -> dict[str, object]:
+    def _build_payload(
+        self,
+        prompt: str,
+        size: str,
+        *,
+        reference_images: Sequence[bytes] = (),
+    ) -> dict[str, object]:
         """Ark 请求体：无 `n` 字段（官方 SDK 类型无此参数）；显式控水印。
+
+        `image`（参考图，2026-11 官方文档核验 + 实测）：string 或 string[]，
+        接受 URL 或 base64 data URL；seedream 5.0 pro/flash 最多 10 张。
+        角色一致性靠它：已生成的头像作为后续场面图的参考输入。
 
         `sequential_image_generation`（组图开关）不是所有 seedream 档都收：
         flash 单图档 400 InvalidParameter。首次命中该错误就记下来不再发
@@ -114,6 +135,10 @@ class ArkImageGen(OpenAIImageGen):
             "size": size,
             "watermark": self._watermark,
         }
+        if reference_images:
+            payload["image"] = [
+                _data_url(data) for data in reference_images[:_ARK_MAX_REFERENCES]
+            ]
         if self._send_sequential:
             payload["sequential_image_generation"] = "disabled"
         if self._response_format:
@@ -121,7 +146,13 @@ class ArkImageGen(OpenAIImageGen):
         return payload
 
     async def generate(
-        self, *, prompt: str, kind: AssetKind, width: int = 0, height: int = 0
+        self,
+        *,
+        prompt: str,
+        kind: AssetKind,
+        width: int = 0,
+        height: int = 0,
+        reference_images: Sequence[bytes] = (),
     ) -> GeneratedImage:
         """408/429/5xx 退避重试（≤2 次）；4xx 配置/审核错误立即抛。
 
@@ -139,7 +170,11 @@ class ArkImageGen(OpenAIImageGen):
 
         screen_generation_prompt(prompt, max_chars=self._max_prompt_chars)
         w, h = self._resolve_size(kind, width, height)
-        payload = self._build_payload(prompt, self._provider_size(w, h, kind=kind))
+        payload = self._build_payload(
+            prompt,
+            self._provider_size(w, h, kind=kind),
+            reference_images=reference_images,
+        )
 
         last_reason = ""
         for attempt in range(_MAX_RETRIES + 1):

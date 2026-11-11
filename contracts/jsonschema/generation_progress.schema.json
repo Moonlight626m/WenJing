@@ -49,6 +49,7 @@
         "write_script",
         "write_dialogue",
         "final_audit",
+        "design_exploration",
         "design_assets"
       ],
       "title": "GenerationNode",

@@ -34,9 +34,10 @@ from app.contracts.script import AssetRef
 from app.domain.game.media_safety import MAX_PROMPT_CHARS, screen_generation_prompt
 from app.infrastructure.errx import Error
 
-# 仅为类型标注：image_review 反向 import 本模块，运行期 import 会成环。
+# 仅为类型标注：image_review / vision_review 反向 import 本模块，运行期 import 会成环。
 if TYPE_CHECKING:
     from app.domain.game.image_review import ImageReviewerPort
+    from app.domain.game.vision_review import VisionReviewVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -193,20 +194,28 @@ class MediaUsage:
 
 @runtime_checkable
 class ObjectStoragePort(Protocol):
-    """对象存储端口（ADR-0005 §2）：put / presign。
+    """对象存储端口（ADR-0005 §2）：put / get / presign。
 
-    `delete` 待生命周期立项（#57 之后）再定义；读取仅供 infra 内部处理使用。
-    预签名 URL 由鉴权端点签发（M1-3 #42），本端口只负责生成。
+    `get` 只服务服务端内部读取（角色参考图复用：已生成的头像字节作为后续
+    场面图的参考输入），**不经对外契约**——字节与 URL 仍只走鉴权端点。
+    `delete` 待生命周期立项（#57 之后）再定义。
     """
 
     async def put(self, *, object_key: str, data: bytes, content_type: str) -> None: ...
+
+    async def get(self, *, object_key: str) -> bytes: ...
 
     async def presign(self, *, object_key: str, ttl_seconds: int = 900) -> str: ...
 
 
 @runtime_checkable
 class ImageGenPort(Protocol):
-    """文生图端口（外部 provider）：背景 16:9、头像 1:1，不含人物。"""
+    """文生图端口（外部 provider）：背景 16:9、头像 1:1。
+
+    `reference_images`（2026-11）：角色一致性参考图（自有生成的头像字节）。
+    Ark Seedream 5.0 以 `image`（base64 data URL 数组）接收，最多 10 张；
+    空序列 = 纯文生图。参考图只用于人物外观对齐，不改变画风段。
+    """
 
     async def generate(
         self,
@@ -215,6 +224,7 @@ class ImageGenPort(Protocol):
         kind: AssetKind,
         width: int = 0,
         height: int = 0,
+        reference_images: Sequence[bytes] = (),
     ) -> GeneratedImage: ...
 
 
@@ -302,6 +312,10 @@ class SceneAssetRequest:
     #: 画师层转写上下文（dict 形态：节拍/visual_notes/appearance 锚点）。
     #: 随票据落 asset_jobs.prompt_context——崩溃恢复重排时不再丢失。
     prompt_context: dict = field(default_factory=dict)
+    #: 角色参考图资产 id（2026-11）：在场角色头像，作为一致性参考输入。
+    #: **不落 asset_jobs**（恢复重排时丢参考图、退化为纯文生图是可接受降级，
+    #: 不值得为它加一列迁移）。
+    reference_asset_ids: tuple[uuid.UUID, ...] = ()
 
 
 class AssetJobStatus(StrEnum):
@@ -440,11 +454,37 @@ _REASON_MAX_CHARS = 200
 # SCENE_MONTAGE 同理必须**含**人在场（完整场面图的语义核心）。
 _KIND_TAILS: dict[AssetKind, str] = {
     AssetKind.BACKGROUND: "环境插画，画面中不出现任何人物，无文字无 logo",
-    AssetKind.AVATAR: "角色头像，半身正面，纯色简洁背景，无文字无 logo",
+    AssetKind.AVATAR: (
+        "角色半身肖像，四分之三侧身，姿态自然，背景简洁可带环境暗示，"
+        "非证件照式正面大头照，无文字无 logo"
+    ),
     AssetKind.FULLBODY: "角色全身立绘，直立全身，简洁背景，无文字无 logo",
     AssetKind.SCENE_MONTAGE: "完整场面插画，包含在场人物及其动作，无文字无 logo",
 }
 _DEFAULT_SEARCH_LIMIT = 4
+
+# 参考图约束尾巴（2026-11）：只在带角色参考图时追加，计入 prompt 长度预算。
+_REFERENCE_TAIL = (
+    "人物外观须与参考图一致：脸型、发型、服装、性别与年龄段不得改换"
+)
+
+
+@runtime_checkable
+class VisionReviewerPort(Protocol):
+    """生成图视觉评审端口（P2，2026-11；`VisionReviewAgent` 是它的实现）。
+
+    与 `ImageReviewerPort`（检索候选的元数据审核）互补：这里审**已生成的字节**。
+    **不抛异常**：视觉模型失败返回降级结论（`degraded=True`），调用方放行原图。
+    """
+
+    async def review(
+        self,
+        image_bytes: bytes,
+        *,
+        character_anchors: str,
+        scene_description: str,
+        kind: AssetKind,
+    ) -> VisionReviewVerdict: ...
 
 
 class _Described(Protocol):
@@ -479,11 +519,13 @@ def build_generation_prompt(
     kind: AssetKind,
     style: str = DEFAULT_STYLE,
     max_chars: int = MAX_PROMPT_CHARS,
+    extra_tail: str = "",
 ) -> str:
     """场景/角色描述 → 文生图 prompt（按 kind 取构图约束，并收敛到长度预算内）。
 
     `style` 是**完整画风段**（原样进 prompt，不再拼「画风」后缀）：默认值见
-    `DEFAULT_STYLE`（课本插画/水墨/手绘/非照片写实）。
+    `DEFAULT_STYLE`（课本插画/水墨/手绘/非照片写实）。`extra_tail`（参考图约束）
+    与构图尾巴同权：都进后缀、都计入长度预算。
 
     预算必须在这里守住：adapter 侧的 `screen_generation_prompt` 命中超长会抛**不可重试**
     的 `MEDIA_IMAGE_GEN_BLOCKED`，结果是该场景永远没有配图。Stage2 的场景描述由 beats
@@ -491,7 +533,7 @@ def build_generation_prompt(
     """
     subject = " ".join((description or "").split())
     tail = _KIND_TAILS.get(kind, _KIND_TAILS[AssetKind.BACKGROUND])
-    suffix = "，".join(part for part in (style, tail) if part)
+    suffix = "，".join(part for part in (style, tail, extra_tail) if part)
 
     separator = "，" if subject and suffix else ""
     budget = max(1, max_chars - len(suffix) - len(separator))
@@ -524,6 +566,46 @@ class _GenOutcome:
 
     picked: _Picked | None = None
     reason: str = ""
+    #: 采出候选的视觉评审结论（P2；无评审路径为 None）。`verdict.accepted=False`
+    #: 且 picked 非空 = 全候选落选采用最高分兜底——上游可据此提示教师重绘。
+    verdict: VisionReviewVerdict | None = None
+
+
+def _outcome_reason(rejections: Sequence[str]) -> str:
+    """候选全灭时的失败原因（截到 reason 列宽；空列表兜底）。"""
+    if not rejections:
+        return "no usable image"
+    return "；".join(rejections)[:_REASON_MAX_CHARS]
+
+
+def _anchors_text(prompt_context: object | None) -> str:
+    """画师层上下文 → 视觉评审用的人物锚点文本（无上下文返回空串）。
+
+    接受 dict（JSON 通道）或 ScenePromptContext 对象——与 `_writer_subject`
+    同一宽容度，避免评审侧再造一份形态判断。
+    """
+    if prompt_context is None:
+        return ""
+    participants = getattr(prompt_context, "participants", None)
+    if participants is None and isinstance(prompt_context, dict):
+        participants = prompt_context.get("participants")
+    if not participants:
+        return ""
+    fragments: list[str] = []
+    for item in participants:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "")
+            parts = [f"{k}={v}" for k, v in item.items() if k != "name" and v]
+        else:
+            name = str(getattr(item, "name", "") or "")
+            parts = [
+                f"{f}={getattr(item, f, '')}"
+                for f in ("gender", "age", "face", "hair", "clothing", "build")
+                if getattr(item, f, "")
+            ]
+        if name or parts:
+            fragments.append(f"{name}（{'，'.join(parts)}）")
+    return "；".join(fragments)
 
 
 class _UnusableCandidate(Exception):
@@ -563,6 +645,9 @@ class SceneDesigner:
         provider_version: str = "",
         generation_model: str = "",
         search_limit: int = _DEFAULT_SEARCH_LIMIT,
+        vision_reviewer: VisionReviewerPort | None = None,
+        candidates: int = 1,
+        max_regen_rounds: int = 0,
     ) -> None:
         self.storage = storage
         self.image_gen = image_gen
@@ -584,6 +669,12 @@ class SceneDesigner:
             f"{type(image_gen).__name__}:{generation_model}".rstrip(":")
         )
         self.search_limit = search_limit
+        # 视觉评审（P2，2026-11）：None = 不启用（每张图只生成一次，不评审）。
+        # `candidates` 是每次编辑生成的候选数；`max_regen_rounds` 是全候选
+        # 落选后带评审意见重绘的轮数。0 张候选×0 轮 = P1 行为。
+        self.vision_reviewer = vision_reviewer
+        self.candidates = max(1, candidates)
+        self.max_regen_rounds = max(0, max_regen_rounds)
 
     async def design_scene(
         self,
@@ -602,8 +693,13 @@ class SceneDesigner:
         exclude_content_hashes: Sequence[str] = (),
         search_replace: bool = False,
         prompt_context: object | None = None,
+        reference_images: Sequence[bytes] = (),
     ) -> AssetRecord:
         """为某个场景/角色产出资产记录（`READY` 可签发 URL；`FAILED` 由上层降级）。
+
+        `reference_images`（2026-11）：角色一致性参考图——已生成的头像字节。
+        参与去重键（`+ref` 后缀）：同描述、同风格但带参考图是不同产出，不能
+        命中旧的纯文生图缓存。
 
         `exclude_asset_ids` / `exclude_content_hashes`（#49 教师重生成/检索替换）：
         把教师明确否掉的旧图排除在缓存命中与检索候选之外——同一去重键下教师
@@ -619,12 +715,16 @@ class SceneDesigner:
         """
         del scene_key  # 保留在签名里给审计/日志用；去重键由 subject_key 承担
         resolved_style = self.style if style is None else style
+        effective_provider_version = provider_version or self.provider_version
+        if reference_images:
+            # 带参考图是不同产出：不能让旧的纯文生图缓存命中。
+            effective_provider_version = f"{effective_provider_version}+ref"
         dedup_key = build_dedup_key(
             org_id=org_id,
             subject_key=subject_key,
             description_summary=description,
             style=resolved_style,
-            provider_version=provider_version or self.provider_version,
+            provider_version=effective_provider_version,
             kind=kind,
             scope=_ownership_scope(script_id=script_id, session_id=session_id),
         )
@@ -686,7 +786,8 @@ class SceneDesigner:
                 style=resolved_style,
                 exclude_content_hashes=hash_exclusions,
                 prompt_context=prompt_context,
-                provider_version=provider_version or self.provider_version,
+                provider_version=effective_provider_version,
+                reference_images=reference_images,
             )
         )
         picked = outcome.picked
@@ -822,6 +923,7 @@ class SceneDesigner:
         exclude_content_hashes: Sequence[str] = (),
         prompt_context: object | None = None,
         provider_version: str = "",
+        reference_images: Sequence[bytes] = (),
     ) -> _GenOutcome:
         """付费回退生成。
 
@@ -836,11 +938,20 @@ class SceneDesigner:
         替换 prompt 主体，任何失败（LLM 异常/空输出/转写被安全过滤命中）都回退
         原描述拼装；`provider_version` 由调用方并入 scene_prompt 版本，改转写
         提示词时 bump 让缓存失效。
+
+        `reference_images`（2026-11）：角色一致性参考图。prompt 末尾追加
+        「外观须与参考图一致」的约束段（计入长度预算）；provider 支持时作为
+        `image` 输入，不支持时基类忽略（退化为纯文生图）。
         """
         subject = await self._writer_subject(
             description, kind, prompt_context, style=style
         )
-        prompt = build_generation_prompt(description=subject, kind=kind, style=style)
+        prompt = build_generation_prompt(
+            description=subject,
+            kind=kind,
+            style=style,
+            extra_tail=_REFERENCE_TAIL if reference_images else "",
+        )
         try:
             # 本地安全过滤（#46 的确定性闸）必须在**预扣配额之前**：被拦下的 prompt
             # 根本没送去 provider，白吃一次 org 预算的话，预算是拿真实付费喂出来的，
@@ -850,33 +961,57 @@ class SceneDesigner:
             logger.warning("scene_asset_prompt_blocked reason=%s", exc.msg)
             return _GenOutcome(reason=f"blocked: {exc.msg}")
 
-        # 原子预扣：check+consume 两步在并发下会双双通过而超额（quota.py 明确要求
-        # 付费方走 try_acquire）。
-        if self.quota is not None and not await self.quota.try_acquire(
-            org_id=org_id, kind=MediaKind.IMAGE
-        ):
-            logger.warning("scene_asset_quota_exhausted org=%s", org_id)
-            return _GenOutcome(reason="org quota exhausted")
-
-        try:
-            image = await self.image_gen.generate(prompt=prompt, kind=kind)
-        except Error as exc:
-            logger.warning("scene_asset_generation_failed reason=%s", exc.msg)
-            return _GenOutcome(reason=f"provider: {exc.msg}")
-        if not image.image_bytes:
-            logger.warning("scene_asset_generation_empty prompt=%r", prompt[:80])
-            return _GenOutcome(reason="provider returned no bytes")
-        if (
-            exclude_content_hashes
-            and content_hash(image.image_bytes) in set(exclude_content_hashes)
-        ):
-            logger.warning(
-                "scene_asset_generation_duplicate subject_desc=%r", description[:60]
-            )
-            return _GenOutcome(reason="duplicate of excluded image")
-
-        return _GenOutcome(
-            picked=_Picked(
+        anchors = _anchors_text(prompt_context)
+        excluded = set(exclude_content_hashes)
+        # 多候选（P2）：评审可用时平行生成 N 张挑最好；没有评审就只生成 1 张
+        # （多生成没人挑等于烧钱）。
+        rounds = self.candidates if self.vision_reviewer is not None else 1
+        best: tuple[float, _Picked] | None = None
+        best_feedback = ""
+        rejected_reasons: list[str] = []
+        for round_no in range(rounds + self.max_regen_rounds):
+            if round_no >= rounds:
+                # 重绘轮：全候选落选后，带最差评审意见重画一次。
+                feedback = best_feedback or "；".join(rejected_reasons)
+                logger.info(
+                    "scene_asset_regen_round round=%s feedback=%s",
+                    round_no,
+                    feedback[:120],
+                )
+            # 原子预扣：check+consume 两步在并发下会双双通过而超额（quota.py 明确
+            # 要求付费方走 try_acquire）。每个候选独立扣（各自是真实付费）。
+            if self.quota is not None and not await self.quota.try_acquire(
+                org_id=org_id, kind=MediaKind.IMAGE
+            ):
+                logger.warning("scene_asset_quota_exhausted org=%s", org_id)
+                if best is None:
+                    return _GenOutcome(reason="org quota exhausted")
+                break
+            try:
+                image = await self.image_gen.generate(
+                    prompt=prompt, kind=kind, reference_images=reference_images
+                )
+            except Error as exc:
+                logger.warning("scene_asset_generation_failed reason=%s", exc.msg)
+                if best is None:
+                    rejected_reasons.append(f"provider: {exc.msg}")
+                    continue
+                break
+            if not image.image_bytes:
+                logger.warning("scene_asset_generation_empty prompt=%r", prompt[:80])
+                if best is None:
+                    rejected_reasons.append("provider returned no bytes")
+                    continue
+                break
+            if excluded and content_hash(image.image_bytes) in excluded:
+                logger.warning(
+                    "scene_asset_generation_duplicate subject_desc=%r", description[:60]
+                )
+                if best is None:
+                    rejected_reasons.append("duplicate of excluded image")
+                    continue
+                break
+            picked = _Picked(
                 image_bytes=image.image_bytes,
                 content_type=image.content_type,
                 source=AssetSource.GENERATED,
@@ -885,9 +1020,61 @@ class SceneDesigner:
                 width=image.width,
                 height=image.height,
             )
-        )
+            if self.vision_reviewer is None:
+                return _GenOutcome(picked=picked)
+            verdict = await self.vision_reviewer.review(
+                image.image_bytes,
+                character_anchors=anchors,
+                scene_description=description,
+                kind=kind,
+            )
+            if verdict.degraded:
+                # 评审通道故障：这张图已经白生成了一次，别再因为评审坏掉重画——
+                # 直接收下。完整性优先于质量（与 prompt_writer 降级同一取向）。
+                logger.warning("scene_asset_vision_review_degraded")
+                return _GenOutcome(picked=picked)
+            if verdict.accepted:
+                return _GenOutcome(picked=picked, verdict=verdict)
+            rejected_reasons.append(
+                f"{verdict.reason.value}: {verdict.feedback}"[:_REASON_MAX_CHARS]
+            )
+            if best is None or verdict.score > best[0]:
+                # 兜底候选：全部落选时最终采用评分最高的那张（闭着眼睛也比空手强）。
+                best = (verdict.score, picked)
+                best_feedback = verdict.feedback
+        if best is not None:
+            logger.info(
+                "scene_asset_no_candidate_accepted_using_best score=%s reasons=%d",
+                best[0],
+                len(rejected_reasons),
+            )
+            return _GenOutcome(
+                picked=best[1],
+                reason="all candidates rejected; using best",
+            )
+        return _GenOutcome(reason=_outcome_reason(rejected_reasons))
 
     # ===== 存储与收尾 =====
+
+    async def asset_bytes(self, asset_id: uuid.UUID) -> bytes | None:
+        """读取已 READY 资产的原始字节（角色参考图复用）。
+
+        只服务服务端内部（生成期把头像作为后续场面图的参考输入）；读取失败
+        返回 None 让调用方退化为纯文生图，不把配图链路拖垮。
+        """
+        record = await self.assets.get_by_id(asset_id)
+        if record is None or record.status is not AssetStatus.READY:
+            return None
+        try:
+            data = await self.storage.get(object_key=record.object_key)
+        except Error as exc:  # noqa: BLE001 - 参考图缺失不阻断生成
+            logger.warning(
+                "scene_asset_reference_unavailable asset=%s reason=%s",
+                asset_id,
+                exc.msg,
+            )
+            return None
+        return data or None
 
     async def _publish(
         self, record: AssetRecord, picked: _Picked, *, org_id: uuid.UUID, user_id: uuid.UUID | None

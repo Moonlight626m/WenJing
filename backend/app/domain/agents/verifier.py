@@ -1,14 +1,11 @@
 """验证 Agent：质量门禁。
 
-两个职责：
-- `verify_proposal`：评估角色提议是否合规、可执行，输出结构化判定；
-- `judge_stage3_goals`：每轮之后判断哪些续写目标已经达成。
+只做一件事：`verify_proposal` 评估角色提议是否合规、可执行，输出结构化判定。
 
 验证不生产内容，只评估合规；LLM 失败或输出无法解析时按「不阻塞主流程」降级：
-提议验证退回条件通过，目标判定视为本轮未达成。
+提议验证退回条件通过，不阻塞主流程。
 
-Prompt 组装在 `domain/agents/prompting.py`（`build_verify_prompt` /
-`build_goal_judge_prompt`）。
+Prompt 组装在 `domain/agents/prompting.py`（`build_verify_prompt`）。
 """
 
 from __future__ import annotations
@@ -17,8 +14,8 @@ import logging
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
-from app.domain.agents.prompting import build_goal_judge_prompt, build_verify_prompt
-from app.domain.game.goals import GoalState, extract_json_object, parse_achieved
+from app.domain.agents.parsing import extract_json_object
+from app.domain.agents.prompting import build_verify_prompt
 from app.domain.game.types import Proposal, Rejection, VerificationResult
 from app.domain.llm import LLMService
 
@@ -59,36 +56,6 @@ class VerifierAgent:
             score=score,
             rejections=rejections,
         )
-
-    async def judge_stage3_goals(
-        self,
-        goals: list[GoalState],
-        *,
-        player_role: str | None,
-        action: str,
-        reactions: list[tuple[str, str]],
-    ) -> tuple[list[int], str]:
-        """判定这一轮之后哪些续写目标已经达成，返回 (目标编号, 一句理由)。
-
-        只看还没达成的目标。LLM 失败或输出无法解析时视为本轮没有达成——宁可少判，
-        不让续写被一次异常输出提前收掉。
-        """
-        pending = [g for g in goals if not g.achieved]
-        if not pending:
-            return [], ""
-        bundle = build_goal_judge_prompt(
-            pending,
-            player_role=player_role,
-            action=action,
-            reactions=reactions,
-        )
-        try:
-            raw = await self.llm.chat(bundle.messages(), purpose=UsagePurpose.VERIFY)
-        except Exception:
-            logger.warning("goal_judge_degraded", extra={"pending": len(pending)})
-            return [], ""
-        return parse_achieved(raw, {g.goal_id for g in pending})
-
 
 def _parse_verdict(raw: str) -> tuple[str, float, str, str]:
     """解析验证输出为 (verdict, score, reason, suggestion)。

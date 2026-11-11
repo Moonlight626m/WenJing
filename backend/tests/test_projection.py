@@ -58,10 +58,11 @@ def test_script_package_to_script_maps_engine_fields():
 
 
 def test_script_package_preserves_structured_knowledge_boundary():
-    """知识边界**保持结构化**透传（knows/not_knows 列表），identity 层逐条列出。
+    """知识边界**保持结构化**透传（knows/not_knows 列表）。
 
-    压平成一句 persona 文本的显著性损失是 jubensha-ai 调研引出的改点：not_knows
-    是禁出清单，逐条项目才配得上「绝不能说出」这条约束。
+    2026-11 起：`not_knows` 不再注入 prompt（角色只需要知道自己知道什么；「不许
+    说出的清单」靠限知编年史 + 私有知识自然约束）。`knows` 作为私有知识进 user，
+    不进稳定 system——system 全角色逐字节一致，便于前缀缓存。
     """
     from app.contracts.script import (
         Beat,
@@ -96,14 +97,17 @@ def test_script_package_preserves_structured_knowledge_boundary():
         stage2_ending_beat_id=1,
     )
     from app.domain.agents.character import CharacterIdentity
+    from app.domain.agents.prompting import build_character_prompt
 
     setting = script_package_to_script(pkg).characters[0]
     assert setting.knows == ["家里近期困难", "父亲送我到浦口"]
     assert setting.not_knows == ["父亲为此卖了什么东西", "家中具体欠款数额"]
-    prompt = CharacterIdentity(setting).to_system_prompt()
-    assert "你不知道的事" in prompt
-    assert "- 父亲为此卖了什么东西" in prompt  # 逐条列出，不压平
-    assert "绝不能说出" in prompt
+    identity = CharacterIdentity(setting)
+    system = identity.to_system_prompt()
+    assert "家里近期困难" not in system, "私有知识不进稳定 system"
+    private = build_character_prompt(name=setting.name, knows=setting.knows).user
+    assert "- 家里近期困难" in private
+    assert "父亲为此卖了什么东西" not in private, "not_knows 不再注入 prompt"
 
 
 async def test_project_update_from_runtime_step(make_runtime):

@@ -33,6 +33,7 @@
         "intervention_requested",
         "intervention_rejected",
         "world_fact",
+        "world_chronicle",
         "offline_hint"
       ],
       "title": "EventType",

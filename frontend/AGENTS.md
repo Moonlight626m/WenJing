@@ -84,9 +84,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **特效档位**：`uiStore.effects`（本机 localStorage 记住），`useEffectsLevel()` 取实际档位，
   系统「减少动态效果」时强制简洁。简洁档下粒子、视差、墨晕不渲染，CSS 循环停住，毛玻璃
   换成不模糊的实底（`[data-effects="lite"]`）。档位写在 `GameScreen` 与选角页的根节点上。
-- **续写目标**（`GoalTracker`）只在续写阶段与终局出现。目标快照随 `session_init` 与三类
-  系统消息（定下目标、达成目标、回溯）的 `payload.stage3_goals` 下发，store 见到就整份替换
-  （`asGoals`）；回溯消息也带快照，回到续写之前会清空。
+- **没有续写目标**：Stage3 已删除 goals / 轮次上限；`GoalTracker` 与 `payload.stage3_goals`
+  不再存在（契约里的空字段只为历史会话保留读兼容）。
+- **结局卡只服务 Stage2**：进入过 Stage3 的会话关闭时不弹 `EndingCard`；判定用系统消息
+  携带的结构化 `stage` 字段（`stage === "stage3_extending"`），不解析中文文案。
 - **剧情回顾的「原文」页**只列已经演到的场景（`scene:{id}` 定位当前场景），还没演到的课文
   不提前展示；续写与终局时全部展开。`paragraph_index` 从 0 起，显示时加 1。
 - **选项的 `proposed_by`** 标出「谁的主意」；系统选项（进入续写 / 到此结束）为 null。

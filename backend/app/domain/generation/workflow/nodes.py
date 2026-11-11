@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from langgraph.types import Send, interrupt
@@ -34,6 +34,8 @@ from app.contracts.script import (
     AssetRef,
     BranchScene,
     CharacterProfile,
+    ExplorationLocation,
+    ExplorationMap,
     Scene,
     ScriptPackage,
 )
@@ -391,6 +393,53 @@ def _parse_verdict(raw: str) -> DoubterVerdict:
     if verdict.verdict == "pass" and must_fix:
         raise ValueError("must_fix issue present but verdict is pass")
     return verdict
+
+
+def derive_exploration_map(package: ScriptPackage) -> ExplorationMap:
+    """主场景 → 平铺地点表（确定性、可重跑）。
+
+    - `location_key = scene_{scene_id}`，稳定且与 `loc:` 场景键同一拼法；
+    - 地点标题/在场直接取场景；
+    - 视觉摘要取 `visual_notes` 的非空片段，没有则退回场景标题；
+    - 起点 = 第一个场景；`ending_brief` 用教学重点收束。
+    """
+    locations: list[ExplorationLocation] = []
+    seen: set[str] = set()
+    known_names = {c.name for c in package.characters}
+    for scene in package.scenes:
+        key = f"scene_{scene.scene_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        notes = scene.visual_notes
+        visual = ""
+        if notes is not None:
+            visual = "；".join(
+                part
+                for part in (
+                    notes.location,
+                    notes.time_of_day,
+                    notes.weather,
+                    notes.mood,
+                )
+                if part
+            )
+        locations.append(
+            ExplorationLocation(
+                location_key=key,
+                title=scene.title,
+                # 只保留剧本里真实存在的角色，避免地点名册出现幽灵人物
+                participants=[n for n in scene.participants if n in known_names],
+                visual_summary=visual or f"{scene.title}的场景",
+            )
+        )
+    if not locations:
+        raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "no scenes for exploration"})
+    return ExplorationMap(
+        start_location_key=locations[0].location_key,
+        locations=locations,
+        ending_brief="；".join(package.teaching_focus[:3]),
+    )
 
 
 class WorkflowNodes:
@@ -859,62 +908,9 @@ class WorkflowNodes:
             len(s.branches) for s in package.scenes
         )
         done = 0
-        for scene in package.scenes:
-            done += 1
-            await self._report(
-                "design_assets", f"配图 {done}/{total}：场景「{scene.title}」"
-            )
-            picked = await self._design_one(
-                designer,
-                subject_key=f"scene:{scene.scene_id}",
-                scene_key=f"script:{script_id}:scene:{scene.scene_id}",
-                description=scene_visual_description(scene),
-                kind=generation_kind,
-                org_id=org_id,
-                script_id=script_id,
-                user_id=user_id,
-                label=f"场景「{scene.title}」",
-                prompt_context=_scene_prompt_context(
-                    scene,
-                    scene.participants,
-                    profiles_by_name,
-                    era_hint=_era_hint(state),
-                    kind=generation_kind,
-                ),
-            )
-            if picked is not None:
-                # 降级：失败主体不进剧本包，该场景以纯文本游玩
-                ref, credit = picked
-                updated_scenes[scene.scene_id] = ref
-                scene_credits[scene.scene_id] = credit
-            for branch in scene.branches:
-                done += 1
-                await self._report(
-                    "design_assets", f"配图 {done}/{total}：分支「{branch.title}」"
-                )
-                picked = await self._design_one(
-                    designer,
-                    subject_key=f"scene:{scene.scene_id}::branch:{branch.branch_id}",
-                    scene_key=f"script:{script_id}:scene:{scene.scene_id}"
-                    f"::branch:{branch.branch_id}",
-                    description=scene_visual_description(branch),
-                    kind=generation_kind,
-                    org_id=org_id,
-                    script_id=script_id,
-                    user_id=user_id,
-                    label=f"分支「{branch.title}」",
-                    prompt_context=_scene_prompt_context(
-                        branch,
-                        branch.participants or scene.participants,
-                        profiles_by_name,
-                        era_hint=_era_hint(state),
-                        kind=generation_kind,
-                    ),
-                )
-                if picked is not None:
-                    ref, credit = picked
-                    updated_branches[(scene.scene_id, branch.branch_id)] = ref
-                    branch_credits[(scene.scene_id, branch.branch_id)] = credit
+        # 人物头像先生成（2026-11 角色一致性）：头像字节作为后续所有场面图/
+        # 分支图的参考图（Ark `image`），保证同一角色跨图「同一张脸」。
+        refs_by_name: dict[str, bytes] = {}
         for profile in package.characters:
             done += 1
             await self._report("design_assets", f"配图 {done}/{total}：人物「{profile.name}」")
@@ -938,6 +934,75 @@ class WorkflowNodes:
                 ref, credit = picked
                 updated_profiles[profile.name] = ref
                 profile_credits[profile.name] = credit
+                # 参考图能力是可选的：测试假件只实现 design_scene 时跳过
+                # （退化为纯文生图），真实 SceneDesigner 恒有 asset_bytes。
+                fetch_bytes = getattr(designer, "asset_bytes", None)
+                data = await fetch_bytes(ref.asset_id) if fetch_bytes else None
+                if data:
+                    refs_by_name[profile.name] = data
+
+        def _refs_for(names: list[str]) -> list[bytes]:
+            return [refs_by_name[n] for n in names if n in refs_by_name]
+
+        for scene in package.scenes:
+            done += 1
+            await self._report(
+                "design_assets", f"配图 {done}/{total}：场景「{scene.title}」"
+            )
+            picked = await self._design_one(
+                designer,
+                subject_key=f"scene:{scene.scene_id}",
+                scene_key=f"script:{script_id}:scene:{scene.scene_id}",
+                description=scene_visual_description(scene),
+                kind=generation_kind,
+                org_id=org_id,
+                script_id=script_id,
+                user_id=user_id,
+                label=f"场景「{scene.title}」",
+                prompt_context=_scene_prompt_context(
+                    scene,
+                    scene.participants,
+                    profiles_by_name,
+                    era_hint=_era_hint(state),
+                    kind=generation_kind,
+                ),
+                reference_images=_refs_for(scene.participants),
+            )
+            if picked is not None:
+                # 降级：失败主体不进剧本包，该场景以纯文本游玩
+                ref, credit = picked
+                updated_scenes[scene.scene_id] = ref
+                scene_credits[scene.scene_id] = credit
+            for branch in scene.branches:
+                done += 1
+                await self._report(
+                    "design_assets", f"配图 {done}/{total}：分支「{branch.title}」"
+                )
+                participants = branch.participants or scene.participants
+                picked = await self._design_one(
+                    designer,
+                    subject_key=f"scene:{scene.scene_id}::branch:{branch.branch_id}",
+                    scene_key=f"script:{script_id}:scene:{scene.scene_id}"
+                    f"::branch:{branch.branch_id}",
+                    description=scene_visual_description(branch),
+                    kind=generation_kind,
+                    org_id=org_id,
+                    script_id=script_id,
+                    user_id=user_id,
+                    label=f"分支「{branch.title}」",
+                    prompt_context=_scene_prompt_context(
+                        branch,
+                        participants,
+                        profiles_by_name,
+                        era_hint=_era_hint(state),
+                        kind=generation_kind,
+                    ),
+                    reference_images=_refs_for(participants),
+                )
+                if picked is not None:
+                    ref, credit = picked
+                    updated_branches[(scene.scene_id, branch.branch_id)] = ref
+                    branch_credits[(scene.scene_id, branch.branch_id)] = credit
 
         out: dict[str, Any] = {
             "package": _apply_assets(
@@ -982,6 +1047,7 @@ class WorkflowNodes:
         user_id: uuid.UUID | None,
         label: str,
         prompt_context: ScenePromptContextDict | None = None,
+        reference_images: Sequence[bytes] = (),
     ) -> tuple[AssetRef, AssetCredit | None] | None:
         """单个主体的配图：READY → (AssetRef, 契约署名)；FAILED/异常 → None。
 
@@ -991,6 +1057,8 @@ class WorkflowNodes:
         `prompt_context` 随请求传给画师层（转写结构化外貌/锚点）；场景、分支与
         人物头像都携带，全员共用同一画风段。生成期自动配图不经检索
         （`design_scene` 默认路径即画师生成，`search_replace` 才是检索入口）。
+        `reference_images`（2026-11）：在场角色的头像字节，作为角色一致性参考图
+        随生成请求下发（Ark `image`）；空序列退化为纯文生图。
         """
         try:
             record = await designer.design_scene(
@@ -1002,6 +1070,7 @@ class WorkflowNodes:
                 script_id=script_id,
                 user_id=user_id,
                 prompt_context=prompt_context,
+                reference_images=reference_images,
             )
         except Exception as exc:  # noqa: BLE001 - 单主体失败不拖垮整单剧本
             logger.warning(
@@ -1871,11 +1940,34 @@ class WorkflowNodes:
             ),
         }
 
+    async def design_exploration(self, state: WorkflowState) -> dict[str, Any]:
+        """为定稿剧本派生 Stage3 自由探索地图（M4 生成期）。
+
+        当前实现是**确定性派生**：每个主场景对应一个地点，标题/在场/视觉锚点
+        直接取自场景；不额外花 LLM 钱，也不会因模型发挥产生不存在的地点。
+        教师已编辑或重跑带回地图时保持原样（幂等）。
+
+        位置在 final_audit 之后、design_assets 之前：只有故事事实通过总审的包才
+        配地图；打回轮次不产生地图。
+        """
+        package = state.get("package")
+        if package is None:
+            raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
+        if package.exploration is not None:
+            return {"package": package}
+        exploration = derive_exploration_map(package)
+        logger.info(
+            "[script-gen][design_exploration] locations=%d start=%s",
+            len(exploration.locations),
+            exploration.start_location_key,
+        )
+        return {"package": package.model_copy(update={"exploration": exploration})}
+
     def route_after_audit(self, state: WorkflowState) -> str:
         verdict = state.get("audit_verdict", "pass")
         if verdict == "pass":
-            # #48：总审通过先配图；design_assets 再按拓扑接终审闸（gate on）或 END
-            return "design_assets"
+            # 总审通过先派生探索地图，再配图；design_assets 之后接终审闸或 END
+            return "design_exploration"
         if state.get("write_retries", 0) <= MAX_WRITE_RETRIES:
             return "write_script"
         return "fail"

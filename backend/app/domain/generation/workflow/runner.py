@@ -51,6 +51,7 @@ _NODE_MAP: dict[str, GenerationNode] = {
     "write_dialogue": GenerationNode.WRITE_DIALOGUE,
     "final_audit": GenerationNode.FINAL_AUDIT,
     FINAL_GATE_NODE: GenerationNode.FINAL_AUDIT,
+    "design_exploration": GenerationNode.DESIGN_EXPLORATION,
     "design_assets": GenerationNode.DESIGN_ASSETS,
 }
 
@@ -62,6 +63,7 @@ _NODE_ORDER: list[GenerationNode] = [
     GenerationNode.WRITE_SCRIPT,
     GenerationNode.WRITE_DIALOGUE,
     GenerationNode.FINAL_AUDIT,
+    GenerationNode.DESIGN_EXPLORATION,
     GenerationNode.DESIGN_ASSETS,
 ]
 

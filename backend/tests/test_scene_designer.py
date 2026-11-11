@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from io import BytesIO
 
 import pytest
@@ -38,6 +39,7 @@ from app.domain.game.media import (
 )
 from app.domain.game.media_safety import MAX_PROMPT_CHARS
 from app.domain.game.prompt_writer import ScenePromptContext
+from app.domain.game.vision_review import VisionReviewReason, VisionReviewVerdict
 from app.infrastructure.errx import codes, new
 
 _ORG = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -75,6 +77,9 @@ class FakeStorage:
 
     async def presign(self, *, object_key: str, ttl_seconds: int = 900) -> str:
         return f"https://cdn/{object_key}"
+
+    async def get(self, *, object_key: str) -> bytes:
+        return b""
 
 
 class FakeAssets:
@@ -142,14 +147,25 @@ class FakeGen:
         self._error = error
         self.calls = 0
         self.prompts: list[str] = []
+        self.last_image = b""
 
-    async def generate(self, *, prompt: str, kind: AssetKind, width: int = 0, height: int = 0):
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        kind: AssetKind,
+        width: int = 0,
+        height: int = 0,
+        reference_images: Sequence[bytes] = (),
+    ):
         self.calls += 1
         self.prompts.append(prompt)
+        self.references = list(reference_images)
         if self._error:
             raise new(codes.MEDIA_IMAGE_GEN_FAILED, extra={"reason": "provider down"})
+        self.last_image = f"img-{self.calls:03d}".encode()
         return GeneratedImage(
-            image_bytes=_png(), content_type="image/png", width=64, height=36
+            image_bytes=self.last_image, content_type="image/png", width=64, height=36
         )
 
 
@@ -178,14 +194,21 @@ class FakeWriter:
 
 
 class FakeQuota:
-    def __init__(self, *, allowed: bool = True) -> None:
+    """`remaining` 模拟按次递减的配额（P2 多候选每张独立扣）。"""
+
+    def __init__(self, *, allowed: bool = True, remaining: int | None = None) -> None:
         self.allowed = allowed
+        self.remaining = remaining
         self.consumed = 0
 
     async def try_acquire(self, *, org_id: uuid.UUID, kind, units: int = 1) -> bool:
         if not self.allowed:
             return False
+        if self.remaining is not None and self.remaining < units:
+            return False
         self.consumed += units
+        if self.remaining is not None:
+            self.remaining -= units
         return True
 
     async def check(self, *, org_id: uuid.UUID, kind, units: int = 1) -> bool:
@@ -229,6 +252,9 @@ def _designer(
     provider_version: str = "",
     prompt_writer=None,
     style: str = DEFAULT_STYLE,
+    vision_reviewer=None,
+    candidates: int = 1,
+    max_regen_rounds: int = 0,
 ) -> SceneDesigner:
     return SceneDesigner(
         storage=storage or FakeStorage(),
@@ -242,6 +268,9 @@ def _designer(
         prompt_writer=prompt_writer,
         style=style,
         provider_version=provider_version,
+        vision_reviewer=vision_reviewer,
+        candidates=candidates,
+        max_regen_rounds=max_regen_rounds,
     )
 
 
@@ -358,6 +387,22 @@ async def test_second_run_hits_cache_and_skips_paid_calls():
     assert second.asset_id == first.asset_id
     assert gen.calls == 1, "第二次必须命中缓存，不得再次付费生成"
     assert search.calls == 0, "自动配图根本不该走检索"
+
+
+async def test_reference_images_forwarded_and_bust_cache():
+    """角色参考图：透传给 provider，且带参考图是不同产出（不命中纯文生图缓存）。"""
+    gen = FakeGen()
+    designer = _designer(gen=gen)
+
+    first = await _design(designer)
+    assert gen.references == []
+
+    second = await _design(designer, reference_images=[b"avatar-bytes"])
+
+    assert gen.references == [b"avatar-bytes"]
+    assert gen.calls == 2
+    assert second.asset_id != first.asset_id
+    assert "参考图" in gen.prompts[-1]
 
 
 async def test_cache_hit_skips_paid_calls():
@@ -1108,3 +1153,129 @@ async def test_generation_failure_reason_is_recorded():
 
     assert record.status is AssetStatus.FAILED
     assert record.reason
+
+
+# ===== P2：视觉评审 + 多候选 + 重绘回路（2026-11）=====
+
+
+class _FakeVisionReviewer:
+    """评审假件：按脚本顺序返回结论，记录每次收到的图与锚点。"""
+
+    def __init__(self, *, verdicts: list[VisionReviewVerdict] | None = None) -> None:
+        self._verdicts = list(verdicts or [])
+        self.images: list[bytes] = []
+        self.anchors: list[str] = []
+
+    async def review(self, image_bytes, *, character_anchors, scene_description, kind):
+        self.images.append(image_bytes)
+        self.anchors.append(character_anchors)
+        if len(self.images) <= len(self._verdicts):
+            return self._verdicts[len(self.images) - 1]
+        return _accepted()
+
+    def verdicts_used(self) -> int:
+        return len(self.images)
+
+
+def _accepted(score: float = 0.9) -> VisionReviewVerdict:
+    return VisionReviewVerdict(
+        accepted=True, reason=VisionReviewReason.ACCEPTED, score=score
+    )
+
+
+def _rejected(
+    reason=VisionReviewReason.CHARACTER_MISMATCH, score=0.3, feedback="性别不符"
+) -> VisionReviewVerdict:
+    return VisionReviewVerdict(
+        accepted=False, reason=reason, score=score, feedback=feedback
+    )
+
+
+async def test_no_reviewer_single_generation_unchanged():
+    """未启用评审：行为与 P1 完全一致（一张直出，不评审）。"""
+    gen = FakeGen()
+    designer = _designer(gen=gen)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 1
+
+
+async def test_multi_candidates_reviewed_pick_first_accepted():
+    """两候选：第一张就过 → 生成 1 张、评审 1 次、不再生成。"""
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(verdicts=[_accepted()])
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 1 and reviewer.verdicts_used() == 1
+
+
+async def test_first_rejected_second_accepted():
+    """第一张落选 → 生成第二张并被采纳；失败原因不含落选记录。"""
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(
+        verdicts=[_rejected(), _accepted(score=0.85)]
+    )
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 2 and reviewer.verdicts_used() == 2
+    assert record.reason == ""
+
+
+async def test_all_rejected_regen_with_feedback_then_accept():
+    """两候选全灭 → 带「性别不符」意见重绘一轮 → 重绘图被采纳。"""
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(
+        verdicts=[_rejected(), _rejected(), _accepted(score=0.8)]
+    )
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2, max_regen_rounds=1)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 3 and reviewer.verdicts_used() == 3
+
+
+async def test_all_rounds_rejected_uses_best_score_fallback():
+    """预算耗尽全灭：采用评分最高的那张（0.5 优于 0.2），记录带原因。"""
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(
+        verdicts=[_rejected(score=0.2), _rejected(score=0.5, feedback="构图偏")]
+    )
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2, max_regen_rounds=0)
+
+    record = await _design(designer, prompt_context={"participants": [{"name": "父亲"}]})
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 2 and reviewer.verdicts_used() == 2
+    assert reviewer.images[1] == gen.last_image, "采用的是评分高的第二张"
+
+
+async def test_review_degraded_accepts_generated_image():
+    """评审通道故障：白生成的图收下，不重画、不 FAILED。"""
+    # REVIEW_FAILED 的结论 accepted=True 但 degraded=True——评审 agent 保证。
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(
+        verdicts=[VisionReviewVerdict(accepted=True, reason=VisionReviewReason.REVIEW_FAILED)]
+    )
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2, max_regen_rounds=1)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY
+    assert gen.calls == 1, "降级不放行为之生成的图浪费"
+    assert reviewer.verdicts_used() == 1
+
+
+async def test_quota_breaks_out_mid_candidates_with_best():
+    """配额中途耗尽：已有候选时收下最好那张而不是 FAILED。"""
+    gen, reviewer = FakeGen(), _FakeVisionReviewer(verdicts=[_rejected(score=0.4)])
+    quota = FakeQuota(remaining=1)
+    designer = _designer(gen=gen, vision_reviewer=reviewer, candidates=2, quota=quota)
+
+    record = await _design(designer)
+
+    assert record.status is AssetStatus.READY, "已有候选时配额耗尽不该全灭"
+    assert gen.calls == 1 and reviewer.verdicts_used() == 1

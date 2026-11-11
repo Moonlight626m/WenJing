@@ -84,6 +84,7 @@ export type EventType =
   | "intervention_requested"
   | "intervention_rejected"
   | "world_fact"
+  | "world_chronicle"
   | "offline_hint";
 
 export type ErrorDomain =
@@ -154,6 +155,7 @@ export type GenerationNode =
   | "write_script"
   | "write_dialogue"
   | "final_audit"
+  | "design_exploration"
   | "design_assets";
 
 export type GenerationNodeStatusValue =
@@ -466,6 +468,8 @@ export interface TranscribeResponse {
 
 /** 结构化外貌要素（文生图锚定）：只写原文可推断内容，未交代处如实标注。 */
 export interface Appearance {
+  gender: string;
+  age: string;
   face: string;
   hair: string;
   clothing: string;

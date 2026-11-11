@@ -52,6 +52,7 @@ from app.domain.game.event import (
     EVENT_SCENE_SWITCH,
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
+    EVENT_WORLD_CHRONICLE,
     EVENT_WORLD_FACT,
     GameEvent,
 )
@@ -277,7 +278,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
     "asset_ready": "asset_ready",
 }
-_SILENT_EVENTS = frozenset({"verification", "player_action"})
+_SILENT_EVENTS = frozenset(
+    {"verification", "player_action", EVENT_WORLD_CHRONICLE}
+)
 
 
 def _system_text(event_type: str, p: dict[str, Any]) -> str:
@@ -397,6 +400,9 @@ def project_messages(
                 payload["current_asset"] = p["current_asset"]
         else:
             payload["text"] = _event_text(ev.event_type, p, category)
+        if ev.event_type == "stage_transition" and p.get("stage"):
+            # 结构化阶段标记：前端据此判断「是否进入过续写」，不靠解析中文文案
+            payload["stage"] = p["stage"]
         # 目标变化与回溯都带一份完整目标快照：前端直接替换，回溯到续写之前也会清空
         if ev.event_type in (EVENT_STAGE3_GOALS_SET, EVENT_STAGE3_GOAL_ACHIEVED, EVENT_ROLLBACK):
             payload["stage3_goals"] = [g.model_dump(mode="json") for g in project_goals(goals)]

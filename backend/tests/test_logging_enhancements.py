@@ -158,6 +158,9 @@ def test_routes_llm_factory_fallback_logs_warning():
         # 那里要读每会话生图上限与任务 TTL——这两个属性不能省。
         media_max_images_per_session = 0
         media_asset_job_ttl_seconds = 900
+        # 实例记忆后端（§1.3 组合根读它装配 SessionApplication）
+        memory_backend = "null"
+        memory_fs_root = ""
 
         @staticmethod
         def llm_model_config():

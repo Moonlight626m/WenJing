@@ -34,6 +34,7 @@ async def play_until_terminal(
         )
 
     result = await rt.start()
+    stage3_rounds = 0
     while not result.terminal:
         stage = result.state["stage"]
         if stage == "stage1_complete":
@@ -47,7 +48,12 @@ async def play_until_terminal(
         elif stage == "stage2_complete":
             result = await send("enter_stage3")
         elif stage == "stage3_extending":
-            result = await send("choose_option", {"option_id": "0"})
+            # 自由探索没有自动终点：跑两轮后由客户端 exit_game 关闭本局
+            stage3_rounds += 1
+            if stage3_rounds > 2:
+                result = await send("exit_game")
+            else:
+                result = await send("choose_option", {"option_id": "0"})
         else:
             raise AssertionError(f"非预期阶段 {stage}")
     return result
@@ -513,3 +519,26 @@ async def test_stage2_never_requests_runtime_generation(make_runtime):
             kind="choose_option",
             payload={"option_id": "0"},
         )
+
+
+async def test_exit_game_closes_without_narrative_ending():
+    """Stage3 关闭本局只写生命周期转换，不产生叙事结局。"""
+    from test_exploration import _make_runtime, _to_stage3
+
+    from app.domain.game.event import EVENT_STAGE_TRANSITION
+
+    rt = _make_runtime()
+    await _to_stage3(rt)
+
+    result = await rt.submit(command_id="c-exit", kind="exit_game")
+
+    assert result.terminal is True
+    assert result.state["stage"] == "ended"
+    ended = [
+        e
+        for e in rt.event_store.active_events()
+        if e.event_type == EVENT_STAGE_TRANSITION
+        and e.payload.get("stage") == "ended"
+    ]
+    assert len(ended) == 1
+    assert set(ended[0].payload) == {"stage"}, "关闭动作不得携带结局字段"

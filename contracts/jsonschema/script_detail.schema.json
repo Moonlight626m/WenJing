@@ -2,11 +2,21 @@
   "$defs": {
     "Appearance": {
       "additionalProperties": false,
-      "description": "结构化外貌要素（文生图锚定）：只写原文可推断内容。\n\n未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——\n严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。",
+      "description": "结构化外貌要素（文生图锚定）：只写原文可推断内容。\n\n未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——\n严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。\n\n`gender` / `age` 是**硬锚点**（2026-11 增补）：性别与年龄段决定生图模型的\n人物先验，只靠 face/clothing 推断会出「男画成女、中年画成青年」的事故。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",
           "title": "Schema Version",
+          "type": "string"
+        },
+        "gender": {
+          "default": "",
+          "title": "Gender",
+          "type": "string"
+        },
+        "age": {
+          "default": "",
+          "title": "Age",
           "type": "string"
         },
         "face": {
@@ -953,6 +963,7 @@
         "write_script",
         "write_dialogue",
         "final_audit",
+        "design_exploration",
         "design_assets"
       ],
       "title": "GenerationNode",

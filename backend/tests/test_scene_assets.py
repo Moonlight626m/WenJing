@@ -44,17 +44,24 @@ def _record(status: AssetStatus = AssetStatus.READY) -> AssetRecord:
 
 @dataclass
 class _FakeDesigner:
-    """记录调用的假设计器：只实现调度器用到的 `design_scene`。"""
+    """记录调用的假设计器：只实现调度器用到的 `design_scene` / `asset_bytes`。"""
 
     status: AssetStatus = AssetStatus.READY
     error: Exception | None = None
     calls: list[dict] = field(default_factory=list)
+    bytes_calls: list[uuid.UUID] = field(default_factory=list)
+    #: `asset_bytes` 的返回值（None = 参考图不可用）
+    reference_bytes: bytes | None = b"avatar-bytes"
 
     async def design_scene(self, **kwargs) -> AssetRecord:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
         return _record(self.status)
+
+    async def asset_bytes(self, asset_id: uuid.UUID) -> bytes | None:
+        self.bytes_calls.append(asset_id)
+        return self.reference_bytes
 
 
 @dataclass
@@ -131,6 +138,36 @@ async def test_ready_record_triggers_on_ready():
     assert call["script_id"] == 7
     assert call["subject_key"] == "scene:1"
     assert call["kind"] is AssetKind.BACKGROUND
+
+
+async def test_reference_asset_ids_resolved_and_forwarded():
+    """运行期配图：在场角色头像 id → 字节 → 作为 reference_images 下发。"""
+    designer = _FakeDesigner()
+    scheduler = SceneAssetScheduler(designer=lambda: designer, jobs=_FakeJobs())
+    request = _request()
+    request = SceneAssetRequest(
+        **{**request.__dict__, "reference_asset_ids": (uuid.uuid4(),)}
+    )
+
+    scheduler.schedule(request, on_ready=_Recorder())
+    await scheduler.drain()
+
+    assert designer.bytes_calls == list(request.reference_asset_ids)
+    assert designer.calls[0]["reference_images"] == (b"avatar-bytes",)
+
+
+async def test_missing_reference_bytes_degrade_to_text_only():
+    designer = _FakeDesigner(reference_bytes=None)
+    scheduler = SceneAssetScheduler(designer=lambda: designer, jobs=_FakeJobs())
+    request = _request()
+    request = SceneAssetRequest(
+        **{**request.__dict__, "reference_asset_ids": (uuid.uuid4(),)}
+    )
+
+    scheduler.schedule(request, on_ready=_Recorder())
+    await scheduler.drain()
+
+    assert designer.calls[0]["reference_images"] == ()
 
 
 async def test_failed_record_is_placeholder_not_error():

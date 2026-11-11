@@ -6,10 +6,17 @@ MVP 阶段使用精简可序列化的 dataclass，便于事件溯源落库与测
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
+from typing import Literal
 
 from app.contracts.script import AssetRef
 from app.domain.game.state_machine import GameStage, InteractionPhase
+
+#: 实例记忆后端（stage3-chronicle-redesign §1.3）：
+#: - "null" = 进程内事件派生（现状；权威在事件流）
+#: - "fs"   = 本地实例目录（单实例部署默认载体）
+MemoryBackend = Literal["null", "fs"]
 
 # ===== 剧本（Stage1 产物，MVP 由 mock 提供，不测生成链路）=====
 
@@ -19,8 +26,9 @@ class CharacterSetting:
     """单个角色的设定（角色 Agent 的 identity 来源）。
 
     speech_style 是设定卡结构化字段的 persona 文本投影（由 script_adapter
-    生成）；knowledge_boundary 保留**结构化** knows/not_knows（jubensha-ai 调研
-    参考点 #3）：identity 层据此生成显著性更高的禁出清单，运行期校验也按结构判。
+    生成）；knowledge_boundary 保留**结构化** knows/not_knows。运行期只把 `knows`
+    作为私有知识注入 user；`not_knows` 不再进 prompt（角色只需要知道自己知道
+    什么），字段暂留兼容剧本契约。
     """
 
     name: str
@@ -61,7 +69,7 @@ class Script:
     characters: list[CharacterSetting]
     scenes: list[Scene]
     stage2_ending_beat_id: int
-    # 教学重点：续写目标据此出题（见 `GameMasterAgent.design_stage3_goals`）
+    # 教学重点：导演选项/教师评估的参考
     teaching_focus: list[str] = field(default_factory=list)
 
 
@@ -131,6 +139,9 @@ class SceneAssetIntent:
     #: 画师层转写上下文（JSON 安全 dict，见 `prompt_writer.ScenePromptContextDict`）。
     #: 引擎在当前阶段还填不出视觉备注/外貌锚点，Phase 3 由 DM 场景补齐。
     prompt_context: dict = field(default_factory=dict)
+    #: 角色参考图资产 id（2026-11）：在场角色已生成的头像，作为运行期场面图的
+    #: 一致性参考输入。引擎从剧本包的 `avatar_asset` 取；应用层据此读字节。
+    reference_asset_ids: tuple[uuid.UUID, ...] = ()
 
 
 # ===== 交互与玩家 =====
@@ -160,3 +171,8 @@ class PlayerAction:
 
 Stage = GameStage
 Phase = InteractionPhase
+
+
+def total_beats(script: Script) -> int:
+    """剧本主干的 beat 总数（Stage2 游标/结局判定共用）。"""
+    return sum(len(scene.beats) for scene in script.scenes)

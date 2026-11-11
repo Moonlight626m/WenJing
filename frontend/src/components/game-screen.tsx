@@ -13,7 +13,6 @@ import { CastDock } from "@/components/cast-dock";
 import { EndingCard } from "@/components/ending-card";
 import { GameHud } from "@/components/game-hud";
 import { GameStage } from "@/components/game-stage";
-import { GoalTracker } from "@/components/goal-tracker";
 import { InteractionCard } from "@/components/interaction-card";
 import { sceneHasOriginal, sceneIdOf } from "@/components/original-text-panel";
 import { StageFigures } from "@/components/stage-figures";
@@ -52,7 +51,6 @@ export function GameScreen() {
   const sceneTitle = useGameStore((s) => s.sceneTitle);
   const currentAsset = useGameStore((s) => s.currentAsset);
   const scenes = useGameStore((s) => s.scenes);
-  const stage3Goals = useGameStore((s) => s.stage3Goals);
   const interaction = useGameStore((s) => s.interaction);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
@@ -90,9 +88,6 @@ export function GameScreen() {
     return current ? new Set(current.participants) : null;
   }, [interaction]);
   const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
-  const showGoals =
-    stage3Goals.length > 0 && (stage === "stage3_extending" || stage === "ended");
-
   function openTranscript(next: TranscriptTab) {
     setTab(next);
     setUserOpen(true);
@@ -135,11 +130,6 @@ export function GameScreen() {
                   active={cast.active}
                   speaking={speaking}
                 />
-                {showGoals && (
-                  <div className="absolute top-16 left-3 z-20 max-h-[calc(100%-4.5rem)] max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-2xl">
-                    <GoalTracker goals={stage3Goals} defaultCollapsed={!wide} />
-                  </div>
-                )}
                 {sceneHasOriginal(currentScene) && (
                   <button
                     type="button"

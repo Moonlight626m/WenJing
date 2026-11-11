@@ -35,8 +35,7 @@ EVENT_SYSTEM = "system"
 EVENT_ROLLBACK = "rollback"
 # 场景资产就绪（ADR-0005 §9，issue #55）：命令外事件路径写入，重放派生资产索引。
 EVENT_ASSET_READY = "asset_ready"
-# 续写目标（Stage3）：进入续写时定下目标、每轮判定达成；目标状态由 `goals.derive_goals`
-# 从活动分支事件派生，不进 `_RState`。
+# 旧续写目标事件：已停止写入，仅保留常量供历史会话投影（见 goals.py）。
 EVENT_STAGE3_GOALS_SET = "stage3_goals_set"
 EVENT_STAGE3_GOAL_ACHIEVED = "stage3_goal_achieved"
 # Stage2 珊瑚图纯 IO 播放（design play-through-redesign §A4）：进入节点 / 旁白 /
@@ -56,6 +55,8 @@ EVENT_PULL_IN_CHARACTER = "pull_in_character"
 EVENT_INTERVENTION_REQUESTED = "intervention_requested"
 EVENT_INTERVENTION_REJECTED = "intervention_rejected"
 EVENT_WORLD_FACT = "world_fact"
+# 编年史（每轮增量，限知视角由 derive_chronicle 过滤）
+EVENT_WORLD_CHRONICLE = "world_chronicle"
 # 离线 tick 提示（§B6）：只指路时间线，不写详细摘要。
 EVENT_OFFLINE_HINT = "offline_hint"
 

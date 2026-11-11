@@ -67,6 +67,20 @@ class S3ObjectStorage:
             Bucket=self.bucket, Key=object_key, Body=data, ContentType=content_type
         )
 
+    async def get(self, *, object_key: str) -> bytes:
+        """服务端内部读取（角色参考图复用）；不经对外契约。"""
+        try:
+            return await asyncio.to_thread(self._get_sync, object_key)
+        except Exception as exc:  # noqa: BLE001 - 统一媒体错误域
+            raise wrap(
+                exc, codes.MEDIA_STORAGE_FAILED, extra={"op": "get", "reason": str(exc)}
+            ) from exc
+
+    def _get_sync(self, object_key: str) -> bytes:
+        return self._internal.get_object(
+            Bucket=self.bucket, Key=object_key
+        )["Body"].read()
+
     async def presign(self, *, object_key: str, ttl_seconds: int = 900) -> str:
         try:
             return await asyncio.to_thread(self._presign_sync, object_key, ttl_seconds)
