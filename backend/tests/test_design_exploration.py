@@ -53,10 +53,28 @@ def test_derive_exploration_map_from_scenes():
     ]
     assert exploration.locations[0].title == "渡口"
     assert exploration.locations[0].participants == ["甲", "乙"]
-    assert exploration.locations[0].visual_summary == "渡口；雨后"
+    # 摘要带字段标签：画师要知道哪一段是地点、哪一段是天气/服饰
+    assert exploration.locations[0].visual_summary == "地点：渡口；天气：雨后"
     # 没有 visual_notes 时退回场景标题，不编造地点
     assert exploration.locations[1].visual_summary == "客栈的场景"
     assert exploration.ending_brief == "同舟共济；人物关系的转变"
+
+
+def test_visual_summary_keeps_era_anchors_and_drops_placeholders():
+    """era 里的服饰/器物是画师定年代与人物的依据；「原文未交代」不该进提示词。"""
+    package = _package()
+    package.scenes[0].visual_notes = VisualNotes(
+        era="黑布小帽、深青布棉袍",
+        location="渡口",
+        time_of_day="原文未交代",
+        weather="",
+        mood="离别感伤",
+    )
+
+    summary = derive_exploration_map(package).locations[0].visual_summary
+
+    assert summary == "时代与服饰：黑布小帽、深青布棉袍；地点：渡口；氛围：离别感伤"
+    assert "原文未交代" not in summary
 
 
 async def test_design_exploration_node_is_idempotent_and_fills_package():

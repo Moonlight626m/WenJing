@@ -154,6 +154,58 @@ def test_derive_exploration_accepts_game_event_shape():
     assert progress.visited == ("harbor", "inn", "market")
 
 
+def test_derive_exploration_starts_where_replay_ended():
+    """Stage2 收束于哪一场，续写就从那个地点开始（而不是地图起点）。
+
+    否则「北来读信」演完点进入续写，人会被瞬移回第一场：在场名单、导演选项
+    与配图全都跟着回到开场。
+    """
+    registry = build_location_registry(
+        ExplorationMap(
+            start_location_key="scene_1",
+            locations=[
+                ExplorationLocation(
+                    location_key="scene_1", title="徐州", participants=["甲", "乙"]
+                ),
+                ExplorationLocation(
+                    location_key="scene_2", title="读信", participants=["甲"]
+                ),
+            ],
+        )
+    )
+    assert registry is not None
+    events = [
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:1"}},
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:2"}},
+        # 收尾落在分支节点上：它属于 scene_2 的空间，不能把基座冲掉
+        {
+            "event_type": "replay_node_entered",
+            "payload": {"scene_key": "scene:2::branch:b1", "node_kind": "branch"},
+        },
+    ]
+    progress = derive_exploration(events, registry)
+    assert progress.current_location_key == "scene_2"
+    assert progress.visited == ("scene_2",)
+
+
+def test_explicit_scene_switch_beats_replay_position():
+    registry = build_location_registry(
+        ExplorationMap(
+            start_location_key="scene_1",
+            locations=[
+                ExplorationLocation(location_key="scene_1", title="徐州", participants=[]),
+                ExplorationLocation(location_key="scene_2", title="读信", participants=[]),
+            ],
+        )
+    )
+    assert registry is not None
+    events = [
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:2"}},
+        {"event_type": "scene_switch", "payload": {"from": "scene_2", "to": "scene_1"}},
+    ]
+    assert derive_exploration(events, registry).current_location_key == "scene_1"
+
+
 def test_present_names_is_locations_intersection():
     registry = build_location_registry(_map())
     assert registry is not None
@@ -236,6 +288,10 @@ async def test_switch_scene_moves_and_present_npcs_react():
     assert [(i.kind, i.scene_key) for i in result.asset_requests] == [
         ("scene_montage", "loc:inn")
     ]
+    # 配图描述要带在场人物与此刻的动作：只给地点摘要，画师不知道画谁、在做什么
+    request = result.asset_requests[0]
+    assert "在场人物：乙、丙" in request.description
+    assert "你走进了「客栈」" in request.description
     speakers = {p["speaker"] for p in _events(rt, EVENT_CHARACTER_SPEECH)}
     assert speakers == {"乙", "丙"}
 

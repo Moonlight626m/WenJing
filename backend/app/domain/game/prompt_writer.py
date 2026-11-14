@@ -33,7 +33,7 @@ logger = logging.getLogger("wenjing.game.prompt_writer")
 # 转写产物版本：由组合根并入 SceneDesigner.provider_version——改 prompt/schema
 # 必须 bump，否则同描述命中旧图缓存。去重键主体仍是确定性 description（本模块
 # 输出不进键，见模块 docstring）。v3：性别/年龄升为硬锚点，头像构图去证件照化。
-SCENE_PROMPT_VERSION = "scene_prompt.v3"
+SCENE_PROMPT_VERSION = "scene_prompt.v4"
 
 # 外貌锚点字段（契约 `Appearance` 的同名投影）：appearance 片段与本模块的
 # 渲染共用一份字段清单，避免第三个副本漂移。gender/age 排在最前：它们是
@@ -288,7 +288,10 @@ ANCHOR_RULES = """\
 里必须是同一张脸、同一年龄段、同一发式与同一套服装；锚点原文原样写入，\
 不得在某一幅里换造型、换年龄或换性别；
 - 多人在场时，每人的外貌锚点逐个写入画面描述，位置关系用方位词交代\
-（如「父亲在前，儿子在后」），画中人数与在场人物一致。\
+（如「父亲在前，儿子在后」），画中人数与在场人物一致；\
+- **只画在场人物**：画面里的人数与【在场人物】名单一致；节拍里提到、但不在名单上\
+的人（写信人、回忆里的人、已经离开的角色）不画进画面，只用器物或环境暗示\
+（如桌上的信纸、远去的背影方向）。\
 """
 
 EXCLUSION_RULES = """\

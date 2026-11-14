@@ -203,7 +203,8 @@ class InteractionPoint(ContractModel):
 class VisualNotes(VersionedContract):
     """场景视觉锚点（文生图槽位）：只写原文可推断的环境信息。
 
-    未交代处写「原文未交代」或留空；动作留在 beats，此处不含人物行为。
+    未交代处**留空**（不要写「原文未交代」：这串字会原样进配图提示词）；
+    动作留在 beats，此处不含人物行为。
     """
 
     era: str = ""

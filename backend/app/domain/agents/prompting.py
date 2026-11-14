@@ -23,7 +23,9 @@ from typing import Any
 from app.domain.game.types import Proposal
 
 PROMPT_VERSION = "2026-11-10"
-CHARACTER_PROMPT_VERSION = f"{PROMPT_VERSION}.character"
+# 2026-11-14：user 增加「你自己的近期言行」（working_memory + personal_log 前移进
+# prompt，不再只靠 view_my_memory 工具自查），单独升版本。
+CHARACTER_PROMPT_VERSION = "2026-11-14.character"
 # 2026-11-14：导演规则 4 改为「只用在场名单」，单独升版本，避免牵连其它 agent。
 DIRECTOR_PROMPT_VERSION = "2026-11-14.director"
 WORLD_BUILDER_PROMPT_VERSION = f"{PROMPT_VERSION}.world_builder"
@@ -92,14 +94,14 @@ CHARACTER_SLOTS: tuple[PromptSlot, ...] = (
         "CharacterMemory.working_memory",
         "self",
         limit=CHARACTER_MEMORY_LIMIT,
-        section="tool:view_my_memory",
+        section="user",
     ),
     PromptSlot(
         "personal_log",
         "CharacterMemory.personal_log",
         "self",
         limit=CHARACTER_MEMORY_LIMIT,
-        section="tool:view_my_memory",
+        section="user",
     ),
     PromptSlot(
         "rejected_proposals",
@@ -238,6 +240,7 @@ def build_character_prompt(
     knows: Sequence[str] = (),
     chronicle: str = "",
     recent: str = "",
+    my_recent: Sequence[str] = (),
     stage: str = "",
     instruction: str = "",
     extra: str = "",
@@ -268,6 +271,16 @@ def build_character_prompt(
         )
     if chronicle.strip():
         parts.append(f"<chronicle>\n{chronicle.strip()}\n</chronicle>")
+    if my_recent:
+        lines = [f"- {item}" for item in my_recent if str(item).strip()]
+        if lines:
+            parts.append(
+                "<my_recent>\n"
+                "这是你自己最近的言行记录（你此前说过的话、做过的提议）。"
+                "它们是「我做过/我说过」的事实，不是传闻。\n"
+                f"{chr(10).join(lines)}\n"
+                "</my_recent>"
+            )
     if recent.strip():
         parts.append(f"<recent>\n{recent.strip()}\n</recent>")
     task = "\n".join(

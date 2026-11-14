@@ -240,6 +240,13 @@ def build_workflow(
     graph.add_node("write_script", _logged("write_script")(nodes.write_script))
     graph.add_node("write_dialogue", _logged("write_dialogue")(nodes.write_dialogue))
     graph.add_node("final_audit", _logged("final_audit")(nodes.final_audit))
+    # 总审打回人物设定时的回边落点：下一跳由 Send 条件边重新 fan-out 人物设计。
+    # 只回 write_script 的话，`characters[*]` 上的 must_fix 永远修不掉（write_script
+    # 不重写人物设定），重试预算耗尽后必然失败。
+    graph.add_node(
+        "redesign_characters",
+        _logged("design_characters")(nodes.redesign_characters),
+    )
     graph.add_node(
         "design_exploration", _logged("design_exploration")(nodes.design_exploration)
     )
@@ -278,6 +285,7 @@ def build_workflow(
     # 总审通过后先派生探索地图、再配图；reject → 重写（不白付配图钱）
     audit_targets: dict[str, Any] = {
         "write_script": "write_script",
+        "redesign_characters": "redesign_characters",
         "fail": "fail",
         "design_exploration": "design_exploration",
     }
@@ -285,6 +293,10 @@ def build_workflow(
         "final_audit",
         _logged_route("final_audit")(nodes.route_after_audit),
         audit_targets,
+    )
+    # 重新设计人物：与 divide_events 后同一条 fan-out，join 仍是 merge_characters
+    graph.add_conditional_edges(
+        "redesign_characters", _logged_send(nodes.design_characters)
     )
     graph.add_edge("design_exploration", "design_assets")
     if gate_on:

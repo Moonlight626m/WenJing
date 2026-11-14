@@ -921,6 +921,93 @@ def test_prompts_embed_prompt_version() -> None:
     )
 
 
+def _must_fix(field: str, category: str = "人物事实") -> DoubterIssue:
+    return DoubterIssue(field=field, category=category, severity="must_fix")
+
+
+def test_audit_reject_on_character_field_routes_to_character_redesign() -> None:
+    """人物设定问题必须回人物设计。
+
+    write_script 不重写 `characters`，只回写剧本会让同一 must_fix 每轮原样复现，
+    直到重试预算耗尽（真实事故：父亲背景写反了「谁到徐州奔丧」）。
+    """
+    nodes = WorkflowNodes(llm=None)
+    state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("characters[1].public_background")],
+        "write_retries": 1,
+    }
+    assert nodes.route_after_audit(state) == "redesign_characters"
+
+
+def test_audit_reject_on_scene_field_rewrites_script() -> None:
+    nodes = WorkflowNodes(llm=None)
+    state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("scenes[0].beats[0].description", "事件顺序")],
+        "write_retries": 1,
+    }
+    assert nodes.route_after_audit(state) == "write_script"
+
+
+def test_audit_retry_budget_exhausted_fails() -> None:
+    from app.domain.generation.workflow.nodes import MAX_WRITE_RETRIES
+
+    nodes = WorkflowNodes(llm=None)
+    state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("characters[0].name")],
+        "write_retries": MAX_WRITE_RETRIES + 1,
+    }
+    assert nodes.route_after_audit(state) == "fail"
+
+
+def test_overlay_profiles_restores_designed_appearance() -> None:
+    """写作模型重抄 characters 时丢掉的 appearance 必须由设定节点补回来。"""
+    from app.contracts.script import (
+        Appearance,
+        Beat,
+        CharacterProfile,
+        Scene,
+        ScriptPackage,
+    )
+    from app.domain.generation.workflow.nodes import _overlay_profiles
+
+    designed = CharacterProfile(
+        name="我",
+        public_background="在北京念书的青年",
+        appearance=Appearance(
+            gender="男",
+            age="青年",
+            face="清瘦",
+            hair="短发",
+            clothing="深色皮大衣",
+            accessories="",
+            build="中等",
+        ),
+    )
+    written = CharacterProfile(name="我", public_background="在北京念书的青年")
+    package = ScriptPackage(
+        title="背影",
+        characters=[written],
+        scenes=[
+            Scene(
+                scene_id=1,
+                title="读信",
+                participants=["我"],
+                beats=[Beat(beat_id=1, description="我读父亲的来信")],
+            )
+        ],
+        playable_roles=["我"],
+        stage2_ending_beat_id=1,
+    )
+
+    merged = _overlay_profiles(package, [designed])
+
+    assert merged.characters[0].appearance is not None
+    assert merged.characters[0].appearance.clothing == "深色皮大衣"
+
+
 @pytest.mark.skipif(
     not get_settings().llm_api_key,
     reason="真实 LLM 冒烟需要 WENJING_LLM_API_KEY（测试策略 C：key-gated）",

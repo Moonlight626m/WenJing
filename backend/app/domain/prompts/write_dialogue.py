@@ -1,4 +1,4 @@
-"""逐场景预写台词节点 prompt v3（珊瑚图纯 IO 播放的数据源）。
+"""逐场景预写台词节点 prompt v4（珊瑚图纯 IO 播放的数据源）。
 
 段落构成（section）：
 - system：角色定位（台词作者，不是旁白改写者）；
@@ -16,6 +16,9 @@ v2 变更：可扮演角色也要写台词。v1 让模型回避「玩家可能�
 
 v3 变更：输入带上每个 beat 的 `goal`（戏剧目标）。它是潜台词的依据，不会播给
 玩家——台词要把目标演出来，而不是把目标说出来。
+v4 变更：书信、电报、回忆、闪回里的引语用 speaker=null 的旁白转述，不让写信人
+或回忆中的人以在场角色身份说话——运行期按场景派生在场名单，这类台词会让
+不在场的人被当成就在现场。
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "write_dialogue"
 STAGE = "script_gen"
-VERSION = "v3"
+VERSION = "v4"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -48,6 +51,9 @@ SPEAKER_RULES = """\
 【说话人约束】
 - speaker 只能取自该场景的 participants（或分支自带的 participants）；
 - 旁白/环境描写用 speaker=null；
+- 书信、电报、回忆、闪回里的引语**一律用 speaker=null 的旁白转述**\
+（"信中说……"），哪怕原文用了引号；不要让写信人或回忆中的人以在场角色\
+身份开口——运行期按场景派生在场名单，这类台词会让不在场的人被当成就在现场；
 - 在场人物都要写台词，**包括可扮演角色**：玩家开局才选定扮演谁，其余可扮演\
 角色由系统扮演，漏写会让这些角色整场沉默；
 - 玩家所选角色的台词在播放时会被跳过，但你不因此回避——你写的是角色在各场景\

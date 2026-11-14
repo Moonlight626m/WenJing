@@ -1,4 +1,4 @@
-"""人物设定节点 prompt v3（prompt 落库：段落经 PromptBundle 取值）。
+"""人物设定节点 prompt v6（prompt 落库：段落经 PromptBundle 取值）。
 
 段落构成（section）：
 - system：角色定位与忠实性总纲；
@@ -16,6 +16,9 @@ v3 变更（方案 branch-montage-dm）：新增 appearance 五字段——运�
 v5 变更（2026-11）：appearance 增补 gender/age 两个硬锚点——它们是生图模型
 的人物先验，只靠服饰推断会出「男画成女、中年画成青年」的事故；五要素升为
 七要素。prompt 覆盖行按 VERSION 匹配，故必须升版本才会落到新默认。
+v6 变更：boundary_rules 增加「不得改写原文事实关系」——真实事故是父亲
+public_background 被写成「他到徐州奔丧」（原文是「我从北京到徐州」），
+总审连续两轮打回同一字段。
 
 输出契约文本与 Pydantic 契约同步，留在代码不落库。
 """
@@ -26,7 +29,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "character_design"
 STAGE = "script_gen"
-VERSION = "v5"
+VERSION = "v6"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -67,6 +70,9 @@ BOUNDARY_RULES = """\
 - 运行时遇到超纲问题，角色应以符合身份的方式回应（困惑、岔开、\
 按原文价值观表态），而不是告知设定外信息。
 - 背景只写原文可推断内容；原文未交代处写"原文未交代"，严禁补编经历。
+- 不得改写原文的事实关系：谁去了哪里、谁做了什么、谁与谁同行，一律以原文为准。
+  例：原文「我从北京到徐州，打算跟着父亲奔丧回家」——是「我」从北京赶来，
+  不能写成「父亲到徐州奔丧」；父子同行、谁买票、谁照看行李都要与原文一致。
 """
 
 PLAYABILITY_RULES = """\

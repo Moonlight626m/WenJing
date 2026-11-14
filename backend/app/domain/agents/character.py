@@ -266,6 +266,19 @@ class CharacterAgent:
             raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}) from exc
         return _final_text(list(merged.values()))
 
+    def _my_recent_lines(self) -> list[str]:
+        """自己的近期言行：工作记忆里的发言 + 个人日志（提议/前史）。
+
+        这两份记忆以前只能经 `view_my_memory` 工具自查，模型常常不查——于是
+        「我写过一封信」这类自身经历在回应里丢失。它们只属于本角色，不涉及他人隐私。
+        """
+        lines = [
+            f"我说过：{entry.get('content', '')}"
+            for entry in self.memory.working_memory[-CHARACTER_MEMORY_LIMIT:]
+        ]
+        lines.extend(self.memory.personal_log[-CHARACTER_MEMORY_LIMIT:])
+        return lines[-CHARACTER_MEMORY_LIMIT:]
+
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
         recent_parts = list(self.world.plot_log(limit=5))
         conflict = self.world.direction().get("conflict", "")
@@ -280,6 +293,7 @@ class CharacterAgent:
             knows=self.identity.knows,
             chronicle=self.world.chronicle(),
             recent=recent,
+            my_recent=self._my_recent_lines(),
             stage=stage,
             instruction=instruction,
             extra=extra,

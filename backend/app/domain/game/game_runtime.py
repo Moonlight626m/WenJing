@@ -999,23 +999,50 @@ class GameRuntime:
                 ids.append(ref.asset_id)
         return tuple(ids)
 
-    def _request_location_asset(self, location) -> None:
+    def _asset_cast(self, location) -> list[str]:
+        """配图该画谁：实际在场的 NPC + 玩家角色。
+
+        以前拿 `location.participants` 当在场名单，它描述的是「这个场景可能有哪些
+        人」——换景之后上一幕的人、书信里提到的人都会被画进画面。玩家不在 agent
+        名单里，单独补上。
+        """
+        names = [name for name in self._exploration_present() if name]
+        player = self.state.player_role
+        if (
+            player
+            and player in location.participants
+            and player not in names
+        ):
+            names.insert(0, player)
+        return names or list(location.participants)
+
+    def _request_location_asset(self, location, *, situation: str = "") -> None:
         """探索地点缺图时记一次 scene_montage 意图（M6 画师接线，§B3 注记）。
 
         静态地点没有 Stage2 的离线槽位（`design_assets` 只覆盖剧本场景），
         所以续写里第一次到访/结算时补一次运行期配图；去重由调度器负责
         （同一 scene_key 在途/已失败会被拦下）。
+
+        description 由三部分组成：地点标题、`visual_summary`（含时代与服饰锚点）、
+        在场人物与此刻的动作。只给 visual_summary 时画师不知道画谁、在做什么，
+        画出来的就是一张与剧情无关的风景。
         """
         if self._asset_at(location.scene_key) is not None:
             return
+        names = self._asset_cast(location)
+        parts = [location.title]
+        if location.visual_summary:
+            parts.append(location.visual_summary)
+        if names:
+            parts.append(f"在场人物：{'、'.join(names)}")
+        if situation:
+            parts.append(f"此刻：{situation}")
         self._asset_requests.append(
             SceneAssetIntent(
                 scene_key=location.scene_key,
-                description=location.visual_summary or f"场景：{location.title}",
+                description="；".join(parts),
                 kind="scene_montage",
-                reference_asset_ids=self._character_reference_ids(
-                    list(location.participants)
-                ),
+                reference_asset_ids=self._character_reference_ids(names),
             )
         )
 
@@ -1035,7 +1062,7 @@ class GameRuntime:
             self._exploration_progress.current_location_key, self._world
         )
         if location is not None:
-            self._request_location_asset(location)
+            self._request_location_asset(location, situation=settlement.summary)
         payload = {
             "location_key": settlement.location_key,
             "scene_key": settlement.scene_key,
@@ -1320,7 +1347,9 @@ class GameRuntime:
         }
         self._append(evt.EVENT_SCENE_SWITCH, switch_payload)
         self._apply_switch_event(switch_payload)
-        self._request_location_asset(location)
+        self._request_location_asset(
+            location, situation=f"你走进了「{location.title}」"
+        )
         # 到场反应：只有新地点的在场 NPC 说话（不广播给全场）
         action = PlayerAction(
             type="switch_scene", text=f"你走进了「{location.title}」"

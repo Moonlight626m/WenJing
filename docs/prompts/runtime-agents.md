@@ -146,12 +146,12 @@ raw = await llm.chat(bundle.messages(), purpose=UsagePurpose.AGENT)
   `VERIFIER_SLOTS` / `CHRONICLER_SLOTS` 逐项声明来源、可见性、条数上限、缺失降级与
   落点（system / user / tool）；`note` 标未接线/后置项（如 `long_term_summary` 留到
   Phase 2 再议）。`recent_context` 已接线：角色 user 直带最近公开叙事/发言（viewer
-  限知）与当前处境；本人发言与提议仍可经 `view_my_memory` 自查。
+  限知）与当前处境；本人最近的发言与提议直接进 `<my_recent>`（`working_memory` / `personal_log` 各最近 10 条）——模型常常不主动调工具，只靠 `view_my_memory` 会把「我写过一封信」这类自身经历丢掉；工具仍可自查同一窗口。
 - **版本与指纹**：每个 builder 带 `*_PROMPT_VERSION`；system 指纹由
   `backend/tests/test_prompt_bundles.py` 钉住。改 prompt 文本要升版本并同步指纹。
-- **优先级**：身份/边界/输出契约 > 世界事实 > 记忆 > 风格。Character 的记忆优先走
-  工具（`view_my_memory` / `view_plot_log` 等），不塞进 system；staff 的上下文由
-  运行时装配进 user。
+- **优先级**：身份/边界/输出契约 > 世界事实 > 记忆 > 风格。Character 的长期记忆优先走
+  工具（`view_my_memory` / `view_plot_log` 等）；最近 10 条自身言行直接进 user 的
+  `<my_recent>`，不塞进 system。staff 的上下文由运行时装配进 user。
 
 ## 5. 现行 Prompt 全文
 

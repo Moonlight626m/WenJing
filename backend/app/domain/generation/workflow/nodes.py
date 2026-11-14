@@ -103,6 +103,24 @@ def _format_issue(issue: DoubterIssue) -> str:
     return "".join(parts)
 
 
+def _issue_field(issue: DoubterIssue | str) -> str:
+    """打回问题指向的字段路径（结构校验的纯字符串问题没有字段）。"""
+    if isinstance(issue, str):
+        return ""
+    return getattr(issue, "field", "") or ""
+
+
+def _needs_character_redesign(issues: list[DoubterIssue | str]) -> bool:
+    """打回是否归因于人物设定。
+
+    `final_audit` 的打回原来一律回 `write_script` 重写，但人物设定是
+    `design_characters` 的产物、write_script 不会重写它——`characters[*]` 上的
+    must_fix 会在每一轮原样复现，直到重试预算耗尽（真实事故：父亲的
+    `public_background` 写反了「谁到徐州奔丧」，两轮打回都在同一字段）。
+    """
+    return any(_issue_field(issue).startswith("characters") for issue in issues)
+
+
 def _issue_text(issue: DoubterIssue | str) -> str:
     """打回问题通道混存两种形状；错误文案只接受文本。"""
     if isinstance(issue, str):
@@ -120,6 +138,26 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
     )
     lines = [f"- {_format_issue(i)}" for i in ordered]
     return "以下问题必须逐条修正：\n" + "\n".join(lines)
+
+
+def _overlay_profiles(
+    package: ScriptPackage, merged: list[CharacterProfile]
+) -> ScriptPackage:
+    """把人物设定节点的结构化档案覆盖回剧本包。
+
+    `write_script` 的 LLM 输出里也有 characters，但它只是按上下文重抄一遍：
+    appearance / speech_style / knowledge_boundary 这类结构化字段经常被抄丢
+    （真实事故：重新生成的包里所有角色 appearance=None，画师拿不到外貌锚点，
+    「我」的皮大衣被画成父亲的棉袍）。设定以 `design_characters` 的产物为准，
+    按名覆盖；写作阶段多出来的人物保留在末尾。
+    """
+    if not merged:
+        return package
+    by_name = {profile.name: profile for profile in merged}
+    written = {c.name for c in package.characters}
+    characters = [by_name.get(c.name, c) for c in package.characters]
+    characters.extend(p for p in merged if p.name not in written)
+    return package.model_copy(update={"characters": characters})
 
 
 def _backfill_scenes(
@@ -405,12 +443,29 @@ def _parse_verdict(raw: str) -> DoubterVerdict:
     return verdict
 
 
+_VISUAL_NOISE = "原文未交代"
+
+
+def _visual_note(value: str) -> str:
+    """visual_notes 单个字段 → 可用于配图提示词的文本。
+
+    "原文未交代" 是生成期写的占位说明，原样进提示词只会让画师困惑；留空的字段
+    同理。两者都按「没有这条信息」处理。
+    """
+    text = value.strip().strip("。；;")
+    if not text or _VISUAL_NOISE in text:
+        return ""
+    return text
+
+
 def derive_exploration_map(package: ScriptPackage) -> ExplorationMap:
     """主场景 → 平铺地点表（确定性、可重跑）。
 
     - `location_key = scene_{scene_id}`，稳定且与 `loc:` 场景键同一拼法；
-    - 地点标题/在场直接取场景；
-    - 视觉摘要取 `visual_notes` 的非空片段，没有则退回场景标题；
+    - 地点标题/在场直接取场景（场景已按单一时空划分，见 divide_events v5）；
+    - 视觉摘要取 `visual_notes` 的非空片段并**带字段标签**（时代与服饰/地点/
+      时间/天气/氛围）：`era` 里的服饰与标志性物件是画师定年代与人物外观的依据，
+      以前漏掉 era，配图就成了现代人；
     - 起点 = 第一个场景；`ending_brief` 用教学重点收束。
     """
     locations: list[ExplorationLocation] = []
@@ -424,16 +479,19 @@ def derive_exploration_map(package: ScriptPackage) -> ExplorationMap:
         notes = scene.visual_notes
         visual = ""
         if notes is not None:
-            visual = "；".join(
-                part
-                for part in (
-                    notes.location,
-                    notes.time_of_day,
-                    notes.weather,
-                    notes.mood,
-                )
-                if part
+            labeled = (
+                ("时代与服饰", notes.era),
+                ("地点", notes.location),
+                ("时间", notes.time_of_day),
+                ("天气", notes.weather),
+                ("氛围", notes.mood),
             )
+            parts: list[str] = []
+            for label, raw in labeled:
+                value = _visual_note(raw)
+                if value:
+                    parts.append(f"{label}：{value}")
+            visual = "；".join(parts)
         locations.append(
             ExplorationLocation(
                 location_key=key,
@@ -1720,6 +1778,11 @@ class WorkflowNodes:
             on_step=lambda text: self._report("write_script", text),
         )
         package = outcome.script_package
+        # 人物设定以 design_characters 的产物为准：写作模型重抄 characters 时会丢
+        # appearance 等结构化字段，画师就失去了外貌锚点。
+        package = _overlay_profiles(
+            package, list(state.get("merged_profiles") or [])
+        )
         # 视觉锚点与介入点确定性回填（branch-montage-dm §4）：主干 LLM 只按
         # 场景结构写作，visual_notes / interaction_point 以划分草稿为准——
         # 不依赖模型记得抄写。回填只在该场景没有产出时补；教师编辑过的
@@ -2007,14 +2070,24 @@ class WorkflowNodes:
         )
         return {"package": package.model_copy(update={"exploration": exploration})}
 
+    def redesign_characters(self, state: WorkflowState) -> dict[str, Any]:
+        """总审打回人物设定时的回边落点。
+
+        节点本身不改状态：它只提供一条可被条件边命中的入边，真正的 fan-out 由
+        `design_characters` 的 Send 条件边发出（Send 只能从条件边出）。
+        """
+        return {}
+
     def route_after_audit(self, state: WorkflowState) -> str:
         verdict = state.get("audit_verdict", "pass")
         if verdict == "pass":
             # 总审通过先派生探索地图，再配图；design_assets 之后接终审闸或 END
             return "design_exploration"
-        if state.get("write_retries", 0) <= MAX_WRITE_RETRIES:
-            return "write_script"
-        return "fail"
+        if state.get("write_retries", 0) > MAX_WRITE_RETRIES:
+            return "fail"
+        if _needs_character_redesign(list(state.get("audit_issues") or [])):
+            return "redesign_characters"
+        return "write_script"
 
     # ===== 终止 =====
 
