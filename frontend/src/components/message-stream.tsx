@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 
@@ -46,7 +46,11 @@ const MARKDOWN_COMPONENTS: Components = {
   },
 };
 
-function ContentMessage({
+/**
+ * 一条消息的正文。`memo` 是硬需求：消息数组只追加不修改，旧条目引用不变，
+ * 每来一段流式台词时只有新增那条需要重新解析 Markdown。
+ */
+const ContentMessage = memo(function ContentMessage({
   message,
   playerRole,
 }: {
@@ -124,7 +128,7 @@ function ContentMessage({
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 /** 能回溯到的消息：只有叙事拍（服务端也按最后一个叙事拍恢复，系统提示/台词不可作目标）。 */
 export function isRollbackTarget(message: ChatMessage): boolean {

@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
-import { useSpeakingSpeakers } from "@/lib/audio-session";
-import { useCastRoster } from "@/lib/cast-roster";
 import { sceneStatus, sceneStatusText } from "@/lib/session-status";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useGameStore } from "@/stores/gameStore";
@@ -40,8 +38,6 @@ export function GameScreen() {
   const sessionId = useGameStore((s) => s.sessionId);
   const stage = useGameStore((s) => s.stage);
   const scriptTitle = useGameStore((s) => s.scriptTitle);
-  const messages = useGameStore((s) => s.messages);
-  const streams = useGameStore((s) => s.streams);
   const playerRole = useGameStore((s) => s.playerRole);
   const connection = useGameStore((s) => s.connection);
   const sessionInitialized = useGameStore((s) => s.sessionInitialized);
@@ -52,7 +48,11 @@ export function GameScreen() {
   const scenes = useGameStore((s) => s.scenes);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
-  const speaking = useSpeakingSpeakers();
+  // 舞台上还什么都没有（消息与在途流都空）：订阅成布尔量，免得每来一段流式台词
+  // 都让整页连同顶栏、侧栏一起重渲——真正需要逐帧更新的只有字幕与立绘。
+  const empty = useGameStore(
+    (s) => s.messages.length === 0 && s.streams.length === 0
+  );
   // WS 连上不等于能玩：Stage3 的 session_init 会先补算离线 tick（最多 3 轮 LLM）。
   const status = sceneStatus(connection, sessionInitialized);
 
@@ -69,12 +69,20 @@ export function GameScreen() {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const transcriptOpen = userOpen ?? wide;
   const [tab, setTab] = useState<TranscriptTab>("story");
+  // 侧栏操作面板：场景移动 / 干涉世界。窄屏上侧栏默认收起，抉择卡上有直达入口，
+  // 所以面板状态放在这里——点入口时一次把「展开侧栏 + 切到对应面板」做掉。
+  const [panel, setPanel] = useState<"move" | "intervene" | null>(null);
 
-  const { cast, listed } = useCastRoster();
   const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
+
   function openTranscript(next: TranscriptTab) {
     setTab(next);
     setUserOpen(true);
+  }
+
+  function openOperations(next: "move" | "intervene") {
+    openTranscript("story");
+    setPanel(next);
   }
 
   return (
@@ -99,12 +107,7 @@ export function GameScreen() {
           <div className="relative flex min-h-0 flex-1 gap-3 p-3 md:gap-4 md:p-4">
             <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
               <div className="relative min-h-0 flex-1">
-                <StageFigures
-                  cast={cast}
-                  characters={listed}
-                  playerRole={playerRole}
-                  speaking={speaking}
-                />
+                <StageFigures />
                 {sceneHasOriginal(currentScene) && (
                   <button
                     type="button"
@@ -115,7 +118,7 @@ export function GameScreen() {
                     对照原文
                   </button>
                 )}
-                {messages.length === 0 && streams.length === 0 && (
+                {empty && (
                   <div
                     role="status"
                     aria-live="polite"
@@ -132,14 +135,13 @@ export function GameScreen() {
                   </div>
                 )}
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
-                  <SubtitleTrack
-                    messages={messages}
-                    streams={streams}
-                    playerRole={playerRole}
-                  />
+                  <SubtitleTrack />
                 </div>
               </div>
-              <InteractionCard />
+              <InteractionCard
+                showOperations={!transcriptOpen}
+                onRequestOperations={openOperations}
+              />
             </section>
 
             <TranscriptPanel
@@ -147,7 +149,13 @@ export function GameScreen() {
               overlay={!wide}
               tab={tab}
               onTabChange={setTab}
-              onClose={() => setUserOpen(false)}
+              onClose={() => {
+                setUserOpen(false);
+                // 收起侧栏就收起操作面板：重开时不该停在上次的换景/干涉里
+                setPanel(null);
+              }}
+              panel={panel}
+              onPanelChange={setPanel}
             />
           </div>
         </GameStage>

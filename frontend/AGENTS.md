@@ -69,11 +69,24 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 立绘层 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel` 剧情回顾（顶部「在场」
 头像组 + `scene_options` 存在时的「场景移动 / 干涉世界」按钮；「剧情」页 = 消息流 + 回溯栏，
 「原文」页 = 课文对照，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
-结局卡 `EndingCard` 浮在最上层。
+结局卡 `EndingCard` 浮在最上层。窄屏侧栏默认收起，抉择卡上另有一对同名的直达按钮
+（点了展开侧栏并切到对应面板；`panel` 状态由 `GameScreen` 持有）。
 
-- **立绘按「全身立绘 → 竖排名牌」降级**；台上最多三人，取最近开口的
+- **消息流订阅下沉到叶子组件**（`SubtitleTrack` / `StageFigures` / `StoryTab` / `CastTab`）：
+  游玩页本身只订阅阶段、场景、pending 这类低频量。`stream_*` 每来一段都会触发一次
+  store 更新，若在 `GameScreen` 顶层订阅 `messages`/`streams`，整页连同侧栏一起重渲。
+  消息正文 `ContentMessage` 是 `memo` 的（消息只追加不修改，旧条目引用不变）。
+- **抉择卡高度封顶 + 内部滚动**（`max-h-[min(58dvh,34rem)]`，滚动放在内层 `<div>`）。
+  外层留给 `glow-border` 的伪元素定位——伪元素会随滚动一起走，不能把它裁在滚动容器里。
+  页面根节点用 `h-dvh`，横屏/地址栏收放时抉择卡不会被视口裁掉。
+- **行动选项默认收起**：卡上只留一行「选择行动（N 个可选）」，点开才铺开选项并启用
+  数字键直选（收起时按数字会盲选，因此不绑定）。每轮新卡（按 `interaction_id` 设 key）
+  回到收起态。
+
+- **立绘按「全身立绘 → 不上台」降级**；台上最多三人，取最近开口的
   （`lib/stage-cast.ts`，纯函数）。说话人取在途流，否则看最后一条非系统消息。
-  只有头像的角色不再把头像圆框放进场景。
+  剧本目前只生成头像：没有全身立绘的角色不放进场景（也不放头像圆框）——只剩一块
+  浮在画面上的名牌比没有人更乱。
 - **主字幕只播角色发言**：`SubtitleTrack` 只收 `character_speech`，旁白/系统提示留在
   侧栏消息流；台词里的 `（动作）` 拆成独立动作行（`lib/stage-direction.ts`，后端
   `domain/game/speech_text.py` 落库时同口径拆分）。

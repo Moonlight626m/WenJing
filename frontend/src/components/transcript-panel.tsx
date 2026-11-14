@@ -41,6 +41,8 @@ export function TranscriptPanel({
   tab,
   onTabChange,
   onClose,
+  panel,
+  onPanelChange,
 }: {
   open: boolean;
   /** 窄屏抽屉模式：浮在舞台上、带遮罩 */
@@ -48,11 +50,10 @@ export function TranscriptPanel({
   tab: TranscriptTab;
   onTabChange: (tab: TranscriptTab) => void;
   onClose: () => void;
+  /** 侧栏操作面板：场景移动 / 干涉世界。主舞台只留选项与输入。 */
+  panel: "move" | "intervene" | null;
+  onPanelChange: (panel: "move" | "intervene" | null) => void;
 }) {
-  const messages = useGameStore((s) => s.messages);
-  const playerRole = useGameStore((s) => s.playerRole);
-  const characters = useGameStore((s) => s.characters);
-  const playableRoles = useGameStore((s) => s.playableRoles);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const sessionInitialized = useGameStore((s) => s.sessionInitialized);
   const connection = useGameStore((s) => s.connection);
@@ -60,11 +61,15 @@ export function TranscriptPanel({
   const sceneKey = useGameStore((s) => s.sceneKey);
   const stage = useGameStore((s) => s.stage);
   const interaction = useGameStore((s) => s.interaction);
+  const branchId = useGameStore((s) => s.branchId);
   const submit = useGameStore((s) => s.submitCommand);
-  const [target, setTarget] = useState<number | null>(null);
+  // 回溯目标记下选择时所在的分支：回溯/新会话换了分支，旧 seq 已不指向同一句，
+  // 派生出的 activeTarget 自动作废——不用 effect 追消息清空，切 tab 也不会丢选择。
+  const [target, setTarget] = useState<{ seq: number; branchId: string | null } | null>(
+    null
+  );
   const [confirming, setConfirming] = useState(false);
-  // 侧栏操作面板：场景移动 / 干涉世界。主舞台只留选项与输入。
-  const [panel, setPanel] = useState<"move" | "intervene" | null>(null);
+  const activeTarget = target !== null && target.branchId === branchId ? target.seq : null;
   const [interveneText, setInterveneText] = useState("");
   const canRollback = allowedCommands.includes("rollback_to_event");
   const status = sceneStatus(connection, sessionInitialized);
@@ -73,7 +78,6 @@ export function TranscriptPanel({
   const canIntervene =
     allowedCommands.includes("intervene") && sceneOptions.length > 0;
   const busy = useInteractionBusy();
-  const interventionFeedback = latestInterventionFeedback(messages);
 
   function sendIntervene() {
     const text = interveneText.trim();
@@ -167,9 +171,7 @@ export function TranscriptPanel({
                 <button
                   type="button"
                   aria-pressed={panel === "move"}
-                  onClick={() =>
-                    setPanel((current) => (current === "move" ? null : "move"))
-                  }
+                  onClick={() => onPanelChange(panel === "move" ? null : "move")}
                   className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
                     panel === "move"
                       ? "border-glow-jade/60 text-glow-jade"
@@ -184,9 +186,7 @@ export function TranscriptPanel({
                   type="button"
                   aria-pressed={panel === "intervene"}
                   onClick={() =>
-                    setPanel((current) =>
-                      current === "intervene" ? null : "intervene"
-                    )
+                    onPanelChange(panel === "intervene" ? null : "intervene")
                   }
                   className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
                     panel === "intervene"
@@ -215,7 +215,7 @@ export function TranscriptPanel({
                         { scene_key: scene.scene_key },
                         `前往 ${scene.title}`
                       );
-                      setPanel(null);
+                      onPanelChange(null);
                     }}
                     className={[
                       "rounded-full border px-3 py-1 font-serif text-sm transition-colors",
@@ -262,23 +262,7 @@ export function TranscriptPanel({
               <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
                 每轮可以干涉一次；世界构建可能不答应。
               </p>
-              {interventionFeedback && (
-                <p
-                  role="status"
-                  className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
-                >
-                  <Tag
-                    tone={
-                      interventionFeedback.status === "applied" ? "ok" : "warn"
-                    }
-                  >
-                    {interventionFeedback.status === "applied" ? "已生效" : "未应允"}
-                  </Tag>
-                  <span className="min-w-0 flex-1 text-ink-soft">
-                    {interventionFeedback.text}
-                  </span>
-                </p>
-              )}
+              <InterventionFeedback />
             </div>
           )}
 
@@ -290,42 +274,21 @@ export function TranscriptPanel({
           </div>
 
           {tab === "story" ? (
-            <div
-              role="tabpanel"
-              id="transcript-panel-story"
-              aria-labelledby="transcript-tab-story"
-              className="flex min-h-0 flex-1 flex-col"
-            >
-              {/* 左边多留一截给开发环境的事件序号 */}
-              <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
-                {messages.length === 0 ? (
-                  <p className="py-6 text-center text-sm text-ink-faint">
-                    {sceneStatusText(status)}
-                  </p>
-                ) : (
-                  <MessageStream
-                    messages={messages}
-                    playerRole={playerRole}
-                    showSeq={process.env.NODE_ENV !== "production"}
-                    rollbackTarget={target}
-                    onRollback={
-                      canRollback
-                        ? (seq) => {
-                            setTarget(seq);
-                            setConfirming(true);
-                          }
-                        : undefined
-                    }
-                  />
-                )}
-              </div>
-              <RollbackBar
-                target={target}
-                confirming={confirming}
-                onTargetChange={setTarget}
-                onConfirmingChange={setConfirming}
-              />
-            </div>
+            <StoryTab
+              canRollback={canRollback}
+              statusText={sceneStatusText(status)}
+              target={activeTarget}
+              confirming={confirming}
+              onTargetChange={(seq) => {
+                setTarget(seq === null ? null : { seq, branchId });
+                setConfirming(false);
+              }}
+              onConfirmingChange={setConfirming}
+              onPick={(seq) => {
+                setTarget({ seq, branchId });
+                setConfirming(true);
+              }}
+            />
           ) : tab === "text" ? (
             <div
               role="tabpanel"
@@ -336,22 +299,113 @@ export function TranscriptPanel({
               <OriginalTextPanel scenes={scenes} sceneKey={sceneKey} stage={stage} />
             </div>
           ) : (
-            <div
-              role="tabpanel"
-              id="transcript-panel-cast"
-              aria-labelledby="transcript-tab-cast"
-              className="min-h-0 flex-1 overflow-y-auto p-3"
-            >
-              <RolePanel
-                characters={characters}
-                messages={messages}
-                playableRoles={playableRoles}
-                playerRole={playerRole}
-              />
-            </div>
+            <CastTab />
           )}
         </m.aside>
       )}
     </AnimatePresence>
+  );
+}
+
+/**
+ * 「剧情」页：完整消息流 + 回溯栏。
+ *
+ * 自己订阅消息流（`StoryTab` / `CastTab` / `InterventionFeedback` 各取所需）——
+ * 侧栏的操作区与在场名册不该因为每来一段台词就跟着重渲。
+ */
+function StoryTab({
+  canRollback,
+  statusText,
+  target,
+  confirming,
+  onTargetChange,
+  onConfirmingChange,
+  onPick,
+}: {
+  canRollback: boolean;
+  /** 时间线为空时占位显示的场景状态文案 */
+  statusText: string;
+  /** 当前选中的回溯目标（已按分支校验过） */
+  target: number | null;
+  confirming: boolean;
+  onTargetChange: (target: number | null) => void;
+  onConfirmingChange: (confirming: boolean) => void;
+  /** 消息行上的「回溯到这一句」：选中即进入确认 */
+  onPick: (seq: number) => void;
+}) {
+  const messages = useGameStore((s) => s.messages);
+  const playerRole = useGameStore((s) => s.playerRole);
+
+  return (
+    <div
+      role="tabpanel"
+      id="transcript-panel-story"
+      aria-labelledby="transcript-tab-story"
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      {/* 左边多留一截给开发环境的事件序号 */}
+      <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
+        {messages.length === 0 ? (
+          <p className="py-6 text-center text-sm text-ink-faint">{statusText}</p>
+        ) : (
+          <MessageStream
+            messages={messages}
+            playerRole={playerRole}
+            showSeq={process.env.NODE_ENV !== "production"}
+            rollbackTarget={target}
+            onRollback={canRollback ? onPick : undefined}
+          />
+        )}
+      </div>
+      <RollbackBar
+        target={target}
+        confirming={confirming}
+        onTargetChange={onTargetChange}
+        onConfirmingChange={onConfirmingChange}
+      />
+    </div>
+  );
+}
+
+/** 「角色」页：人物档案。 */
+function CastTab() {
+  const messages = useGameStore((s) => s.messages);
+  const characters = useGameStore((s) => s.characters);
+  const playableRoles = useGameStore((s) => s.playableRoles);
+  const playerRole = useGameStore((s) => s.playerRole);
+
+  return (
+    <div
+      role="tabpanel"
+      id="transcript-panel-cast"
+      aria-labelledby="transcript-tab-cast"
+      className="min-h-0 flex-1 overflow-y-auto p-3"
+    >
+      <RolePanel
+        characters={characters}
+        messages={messages}
+        playableRoles={playableRoles}
+        playerRole={playerRole}
+      />
+    </div>
+  );
+}
+
+/** 最近一次干涉的结果：只订阅消息流的这一小块，不牵动整个侧栏。 */
+function InterventionFeedback() {
+  const messages = useGameStore((s) => s.messages);
+  const feedback = latestInterventionFeedback(messages);
+  if (!feedback) return null;
+
+  return (
+    <p
+      role="status"
+      className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
+    >
+      <Tag tone={feedback.status === "applied" ? "ok" : "warn"}>
+        {feedback.status === "applied" ? "已生效" : "未应允"}
+      </Tag>
+      <span className="min-w-0 flex-1 text-ink-soft">{feedback.text}</span>
+    </p>
   );
 }

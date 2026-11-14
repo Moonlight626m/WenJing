@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, LiveStream } from "@/stores/gameStore";
+import { useGameStore } from "@/stores/gameStore";
 import { speechParts, splitStageDirection } from "@/lib/stage-direction";
 
 /**
@@ -263,16 +264,13 @@ function splitTail(text: string, n: number): [string, string] {
  * 舞台上它是一条对白带：自下而上的暗场托底，顶端一道泥金细线。每行进场时由虚到实，
  * 你演的角色名用朱砂、其他角色用泥金；还在流式生成的行，最后几个字带青碧辉光，
  * 行尾一支发光的笔尖。
+ *
+ * 自己订阅消息流与在途流：流式台词每来一段只重渲这一条字幕带。
  */
-export function SubtitleTrack({
-  messages,
-  streams,
-  playerRole = null,
-}: {
-  messages: ChatMessage[];
-  streams: LiveStream[];
-  playerRole?: string | null;
-}) {
+export function SubtitleTrack() {
+  const messages = useGameStore((s) => s.messages);
+  const streams = useGameStore((s) => s.streams);
+  const playerRole = useGameStore((s) => s.playerRole);
   const lines = useSubtitleQueue(messages, streams);
   if (lines.length === 0) return null;
 

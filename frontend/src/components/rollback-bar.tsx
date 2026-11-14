@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { useGameStore } from "@/stores/gameStore";
+import { useInteractionBusy } from "@/lib/interaction-busy";
 import { isRollbackTarget } from "@/components/message-stream";
 import { Button, buttonClass } from "@/components/ui/button";
 import { Select } from "@/components/ui/field";
@@ -26,16 +27,17 @@ export function RollbackBar({
 }) {
   const messages = useGameStore((s) => s.messages);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
-  const pending = useGameStore((s) => s.pending);
   const sessionId = useGameStore((s) => s.sessionId);
   const submit = useGameStore((s) => s.submitCommand);
+  // 断线/重建世界时 store 会静默丢弃提交：只判 pending 会让界面看起来「已提交」
+  const busy = useInteractionBusy();
 
   if (!allowedCommands.includes("rollback_to_event")) return null;
 
   const targets = messages.filter(isRollbackTarget).sort((a, b) => a.seq - b.seq);
 
   function doRollback() {
-    if (target === null || pending) return;
+    if (target === null || busy) return;
     submit("rollback_to_event", { target_sequence: target }, `回溯到 #${target}`);
     onTargetChange(null);
     onConfirmingChange(false);
@@ -77,7 +79,7 @@ export function RollbackBar({
           tone="danger"
           size="xs"
           onClick={() => onConfirmingChange(true)}
-          disabled={pending !== null}
+          disabled={busy}
         >
           回到 #{target}
         </Button>
@@ -87,7 +89,7 @@ export function RollbackBar({
           <span className="text-ink-faint">
             确认回到 #{target}？将开启新分支，旧历史保留。
           </span>
-          <Button tone="danger" size="xs" onClick={doRollback} disabled={pending !== null}>
+          <Button tone="danger" size="xs" onClick={doRollback} disabled={busy}>
             确认
           </Button>
           <Button tone="quiet" size="xs" onClick={() => onConfirmingChange(false)}>

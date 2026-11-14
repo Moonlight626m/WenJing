@@ -57,9 +57,17 @@ function isTypingTarget(target: EventTarget | null): boolean {
  * 选项依次滑入。轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
  *
  * 换景与干涉入口在侧栏（`TranscriptPanel`），这里只留本轮选项与自由输入，
- * 舞台下半屏不再被两排工具占满。
+ * 舞台下半屏不再被两排工具占满。窄屏侧栏收起时，卡上补一对直达入口
+ * （`showOperations`），否则玩家找不到换景/干涉。
  */
-export function InteractionCard() {
+export function InteractionCard({
+  showOperations = false,
+  onRequestOperations,
+}: {
+  /** 侧栏收起时在卡上显示「场景移动 / 干涉世界」直达按钮 */
+  showOperations?: boolean;
+  onRequestOperations?: (panel: "move" | "intervene") => void;
+}) {
   const interaction = useGameStore((s) => s.interaction);
   const stage = useGameStore((s) => s.stage);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
@@ -76,6 +84,8 @@ export function InteractionCard() {
             interaction={interaction}
             freeText={freeText}
             setFreeText={setFreeText}
+            showOperations={showOperations}
+            onRequestOperations={onRequestOperations}
           />
         ) : extras.length > 0 ? (
           <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
@@ -195,10 +205,14 @@ function InteractionBody({
   interaction,
   freeText,
   setFreeText,
+  showOperations,
+  onRequestOperations,
 }: {
   interaction: ActiveInteraction;
   freeText: string;
   setFreeText: (update: (prev: string) => string) => void;
+  showOperations: boolean;
+  onRequestOperations?: (panel: "move" | "intervene") => void;
 }) {
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const stage = useGameStore((s) => s.stage);
@@ -207,6 +221,9 @@ function InteractionBody({
   const submit = useGameStore((s) => s.submitCommand);
   const sessionId = useGameStore((s) => s.sessionId);
   const [chosenId, setChosenId] = useState<string | null>(null);
+  // 选项默认收起：抉择卡是舞台下半屏最大的一块，展开四条整句中文就把背景压没了。
+  // 每轮新卡（外层按 interaction_id 设 key）都会回到收起态。
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
   const busy = useInteractionBusy();
   const canChoose = allowedCommands.includes("choose_option");
@@ -215,12 +232,16 @@ function InteractionBody({
   const currentScene = sceneOptions.find((scene) => scene.is_current);
   const yourTurn = canChoose || canFree;
   const options = interaction.options;
+  const quickMove = sceneOptions.length > 0 && allowedCommands.includes("switch_scene");
+  const quickIntervene =
+    sceneOptions.length > 0 && allowedCommands.includes("intervene");
 
   const extraCommands = visibleExtras(allowedCommands, stage);
 
-  // 数字键直选：焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项
+  // 数字键直选：选项展开后、焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项。
+  // 收起状态下不绑定：看不见选项时按键直接提交等于让玩家盲选。
   useEffect(() => {
-    if (!canChoose || busy) return;
+    if (!canChoose || busy || !optionsOpen) return;
     function onKeyDown(e: globalThis.KeyboardEvent) {
       if (e.defaultPrevented || e.isComposing) return;
       if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -236,7 +257,7 @@ function InteractionBody({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canChoose, busy, options, submit]);
+  }, [canChoose, busy, options, optionsOpen, submit]);
 
   function choose(opt: OptionItem) {
     if (busy) return;
@@ -277,12 +298,15 @@ function InteractionBody({
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
       transition={{ duration: 0.4, ease: EASE }}
-      className={`glass relative rounded-3xl px-4 py-3.5 md:px-5 ${
+      // 高度封顶 + 内部滚动：横屏/矮屏上选项与输入框不会被舞台裁掉；
+      // 滚动放在内层，外层留作 glow-border 的定位容器（会随滚动一起走的伪元素不能裁）
+      className={`glass relative flex max-h-[min(58dvh,34rem)] flex-col rounded-3xl ${
         yourTurn || pending ? "glow-border" : ""
       }`}
       style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3.5 md:px-5">
+        <div className="flex items-start gap-2.5">
         {yourTurn && (
           <span
             aria-hidden
@@ -307,14 +331,64 @@ function InteractionBody({
         </div>
       </div>
 
-      {/* 抉择按整行排：选项往往是整句中文，左对齐的条目比一排药丸好读 */}
+      {/* 侧栏收起时的直达入口：换景与干涉藏在侧栏里，窄屏上不点开就找不到 */}
+      {showOperations &&
+        onRequestOperations &&
+        (quickMove || quickIntervene) && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
+            {quickMove && (
+              <button
+                type="button"
+                onClick={() => onRequestOperations("move")}
+                className="rounded-full border border-glass-edge px-3 py-1 font-serif text-xs text-ink-soft transition-colors hover:border-glow-jade/60 hover:text-glow-jade"
+              >
+                场景移动
+              </button>
+            )}
+            {quickIntervene && (
+              <button
+                type="button"
+                onClick={() => onRequestOperations("intervene")}
+                className="rounded-full border border-glass-edge px-3 py-1 font-serif text-xs text-ink-soft transition-colors hover:border-glow-gold/60 hover:text-glow-gold"
+              >
+                干涉世界
+              </button>
+            )}
+          </div>
+        )}
+
+      {/* 选项默认收起：卡上只留一行入口，展开后才铺开整句中文的选项 */}
       {canChoose && options.length > 0 && (
-        <m.ol
-          variants={OPTION_LIST}
-          initial="hidden"
-          animate="show"
-          className="mt-3 flex flex-col gap-2"
-        >
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setOptionsOpen((open) => !open)}
+            aria-expanded={optionsOpen}
+            aria-controls="interaction-options"
+            className="flex w-full items-center justify-between rounded-2xl border border-glass-edge bg-surface/35 px-3.5 py-2 font-serif text-sm text-ink-soft transition-colors hover:bg-surface/60 hover:text-ink"
+          >
+            <span>
+              {optionsOpen
+                ? "收起行动选项"
+                : `选择行动（${options.length} 个可选）`}
+            </span>
+            <span
+              aria-hidden
+              className={`text-xs transition-transform duration-200 ${
+                optionsOpen ? "rotate-180" : ""
+              }`}
+            >
+              ▾
+            </span>
+          </button>
+          {optionsOpen && (
+            <m.ol
+              id="interaction-options"
+              variants={OPTION_LIST}
+              initial="hidden"
+              animate="show"
+              className="mt-2 flex flex-col gap-2"
+            >
           {options.map((opt, i) => {
             const chosen = activeChoice === opt.option_id;
             return (
@@ -358,6 +432,8 @@ function InteractionBody({
             );
           })}
         </m.ol>
+          )}
+        </div>
       )}
 
       {canFree && (
@@ -392,7 +468,7 @@ function InteractionBody({
           </div>
           <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
             Enter 发送，Shift + Enter 换行
-            {canChoose && options.length > 0 ? "；也可以直接按数字键选上面的选项" : ""}
+            {canChoose && options.length > 0 ? "；展开选项后可按数字键直选" : ""}
           </p>
         </div>
       )}
@@ -419,6 +495,7 @@ function InteractionBody({
           className="mt-3 text-xs"
         />
       )}
+      </div>
     </m.div>
   );
 }

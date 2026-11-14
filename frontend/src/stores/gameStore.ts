@@ -320,6 +320,9 @@ export const useGameStore = create<GameStore>((set, get) => {
 
     resetSession: (sessionId) => {
       clearResendTimer();
+      // 音频是模块级单例，不挂在 React 树上：换会话时上一局的配音不会自己停。
+      // 走 store 的 bargeIn 而不是直接调 audioSession：停在途音轨要顺手告诉服务端别再发。
+      get().bargeIn();
       set({
         sessionId,
         stage: "init",
@@ -429,6 +432,8 @@ export const useGameStore = create<GameStore>((set, get) => {
         // 回溯重写了活动时间线：丢弃旧分支的本地消息与流缓冲。同一批次随后
         // 会整段重放新分支（含回滚目标之前的继承前缀），按抵达顺序重建。
         markCommandSettled();
+        // 旧分支的旁白不能压在新时间线上（音频单例不认识「分支」这个概念）
+        get().bargeIn();
         set({
           messages: [],
           streams: [],
@@ -483,6 +488,15 @@ export const useGameStore = create<GameStore>((set, get) => {
               ? (payload.current_asset as AssetRef)
               : null,
         });
+        // 断线前发出的命令可能还悬着：重连后立即用同一 command_id 重发（服务端按
+        // 命令台账幂等，已落地的直接回放结果），不必等满 120s 的超时定时器。
+        const pending = get().pending;
+        const sender = get().sender;
+        if (pending && sender) {
+          sender({ type: "submit_command", command: pending.command });
+          set({ pending: { ...pending, sentAt: Date.now() } });
+          scheduleResend();
+        }
         // 权威重建后按本地确认水位请求补发（首连/分支变化为 0 → 服务端从 DB
         // 全量重建）。session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
         get()

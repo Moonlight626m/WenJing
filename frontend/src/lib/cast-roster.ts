@@ -32,7 +32,18 @@ export function useCastRoster(): CastRoster {
   const playerRole = useGameStore((s) => s.playerRole);
   const interaction = useGameStore((s) => s.interaction);
 
-  const cast = useMemo(() => stageCast(messages, streams), [messages, streams]);
+  const presentNames = useMemo(() => {
+    const current = interaction?.scene_options?.find((scene) => scene.is_current);
+    if (!current) return null;
+    // 玩家永远在场：`participants` 只列 NPC（交互卡在空表时写「只有你」），
+    // 不过滤会把玩家自己的立绘从台上摘掉，和侧栏名册的口径对不上
+    return new Set(playerRole ? [...current.participants, playerRole] : current.participants);
+  }, [interaction, playerRole]);
+
+  const cast = useMemo(
+    () => stageCast(messages, streams, presentNames),
+    [messages, streams, presentNames]
+  );
   const runtimeCast = useMemo(
     () =>
       mergeRuntimeCharacters(
@@ -42,10 +53,6 @@ export function useCastRoster(): CastRoster {
       ),
     [characters, playableRoles, messages, playerRole]
   );
-  const presentNames = useMemo(() => {
-    const current = interaction?.scene_options?.find((scene) => scene.is_current);
-    return current ? new Set(current.participants) : null;
-  }, [interaction]);
 
   return {
     cast,

@@ -67,4 +67,11 @@ export function useGameChannel(sessionId: string | null) {
   useEffect(() => {
     if (readyState !== ReadyState.OPEN) audioSession.reset();
   }, [readyState]);
+
+  // 离开对局页：音频是连接级单例，不随组件树卸载，得手动停干净。
+  useEffect(() => {
+    return () => {
+      audioSession.reset();
+    };
+  }, []);
 }

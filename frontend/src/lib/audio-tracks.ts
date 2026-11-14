@@ -127,6 +127,12 @@ export class AudioTrackPlayer {
   private readonly voicing = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
   private speaking: readonly string[] = NO_SPEAKERS;
+  /** 被自动播放策略拦下的音轨：等第一次用户手势再放，不能直接丢。 */
+  private readonly blocked = new Map<
+    HTMLAudioElement,
+    { trackId: string; url: string }
+  >();
+  private gestureBound = false;
 
   /** 播放一条已拼好的音轨；同一 `track_id` 重复到达时忽略（幂等）。 */
   play(track: FinishedTrack): void {
@@ -147,8 +153,44 @@ export class AudioTrackPlayer {
       this.voicing.set(track.trackId, track.speaker);
       this.emitSpeaking();
     });
-    // 播放失败（自动播放策略/解码）不该把页面搞崩：音轨是增强，字幕才是权威。
-    void audio.play().catch(() => this.release(track.trackId, url));
+    // 播放失败不该把页面搞崩：音轨是增强，字幕才是权威。被自动播放策略拦下时
+    // 保留音轨与 URL，等第一次点击/按键再试——否则开局第一句配音永远没声音。
+    void audio.play().catch((error: unknown) => {
+      const name = (error as { name?: unknown } | null)?.name;
+      if (name === "NotAllowedError") {
+        this.armGestureRetry(audio, track.trackId, url);
+        return;
+      }
+      this.release(track.trackId, url);
+    });
+  }
+
+  private armGestureRetry(
+    audio: HTMLAudioElement,
+    trackId: string,
+    url: string
+  ): void {
+    this.blocked.set(audio, { trackId, url });
+    if (this.gestureBound) return;
+    this.gestureBound = true;
+    window.addEventListener("pointerdown", this.retryOnGesture, { once: true });
+    window.addEventListener("keydown", this.retryOnGesture, { once: true });
+  }
+
+  private readonly retryOnGesture = (): void => {
+    for (const [audio, { trackId, url }] of this.blocked) {
+      // 手势之后仍然放不出来（解码失败等）就按失败收尾，别把 <audio> 与 objectURL 挂住
+      void audio.play().catch(() => this.release(trackId, url));
+    }
+    this.blocked.clear();
+    this.unbindGesture();
+  };
+
+  private unbindGesture(): void {
+    if (!this.gestureBound) return;
+    this.gestureBound = false;
+    window.removeEventListener("pointerdown", this.retryOnGesture);
+    window.removeEventListener("keydown", this.retryOnGesture);
   }
 
   /** barge-in：停播并放掉**全部**在途音轨（ADR-0005 §11 的客户端一半）。 */
@@ -159,6 +201,8 @@ export class AudioTrackPlayer {
       audio.src = "";
       this.playing.delete(trackId);
     }
+    this.blocked.clear();
+    this.unbindGesture();
     this.revokeAll();
     this.voicing.clear();
     this.emitSpeaking();
