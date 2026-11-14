@@ -394,3 +394,46 @@ async def test_director_options_drive_stage3_interaction():
 
     labels = [o["text"] for o in result.active_interaction["options"]]
     assert labels == ["与船夫攀谈", "检查船绳"]
+
+
+async def test_director_options_drop_absent_characters():
+    """导演点名不在当前地点的人时，该选项被丢弃，别的选项保留。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    # 测试剧本用单字名，生产过滤会跳过单字名（避免与普通用字撞车），
+    # 这里直接喂多字名验证过滤规则本身。
+    rt._exploration_present = lambda: ("船夫",)  # type: ignore[method-assign]
+    rt._known_names = lambda: ["船夫", "过路人"]  # type: ignore[method-assign]
+
+    labels = rt._filter_absent_mentions(
+        ["问船夫船何时开", "让过路人带路", "查看船绳"]
+    )
+    assert labels == ["问船夫船何时开", "查看船绳"]
+
+
+async def test_absent_name_inside_longer_present_name_is_not_matched():
+    """单字名「父」出现在在场的「父亲」里时不算点名缺席者。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    rt._exploration_present = lambda: ("父亲",)  # type: ignore[method-assign]
+    rt._known_names = lambda: ["父亲", "父"]  # type: ignore[method-assign]
+
+    assert rt._filter_absent_mentions(
+        ["向父亲问安", "向父问安"]
+    ) == ["向父亲问安"]
+
+
+async def test_character_speech_splits_stage_direction():
+    """角色回复里的（动作）拆成 stage_direction，台词只留说出口的部分。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+
+    async def fake_react(name: str, action, stage: str) -> str:
+        return "（点头）好，这就开船。"
+
+    rt._react = fake_react  # type: ignore[method-assign]
+    await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
+
+    speeches = _events(rt, EVENT_CHARACTER_SPEECH)
+    assert speeches[-1]["text"] == "好，这就开船。"
+    assert speeches[-1]["stage_direction"] == "点头"

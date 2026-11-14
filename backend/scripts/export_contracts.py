@@ -26,6 +26,7 @@ from app.contracts.content import TextAnalysis
 from app.contracts.dto import (
     AudioEndMessage,
     AudioStartMessage,
+    CommandStatusResponse,
     CreateSessionRequest,
     ServerMessage,
     SessionListResponse,
@@ -68,6 +69,7 @@ EXPORTS: dict[str, type] = {
     "create_session_request": CreateSessionRequest,
     "session_summary": SessionSummary,
     "session_list_response": SessionListResponse,
+    "command_status_response": CommandStatusResponse,
     "runtime_state": RuntimeState,
     "game_snapshot": GameSnapshot,
     "runtime_update": RuntimeUpdate,

@@ -1,15 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
 import { useSpeakingSpeakers } from "@/lib/audio-session";
-import { listedCharacters, mergeRuntimeCharacters, stageCast } from "@/lib/stage-cast";
+import { useCastRoster } from "@/lib/cast-roster";
+import { sceneStatus, sceneStatusText } from "@/lib/session-status";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useGameStore } from "@/stores/gameStore";
 import { useEffectsLevel, useUiStore } from "@/stores/uiStore";
 import { ActCurtain } from "@/components/act-curtain";
-import { CastDock } from "@/components/cast-dock";
 import { EndingCard } from "@/components/ending-card";
 import { GameHud } from "@/components/game-hud";
 import { GameStage } from "@/components/game-stage";
@@ -42,19 +42,19 @@ export function GameScreen() {
   const scriptTitle = useGameStore((s) => s.scriptTitle);
   const messages = useGameStore((s) => s.messages);
   const streams = useGameStore((s) => s.streams);
-  const characters = useGameStore((s) => s.characters);
-  const playableRoles = useGameStore((s) => s.playableRoles);
   const playerRole = useGameStore((s) => s.playerRole);
   const connection = useGameStore((s) => s.connection);
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
   const pending = useGameStore((s) => s.pending);
   const sceneKey = useGameStore((s) => s.sceneKey);
   const sceneTitle = useGameStore((s) => s.sceneTitle);
   const currentAsset = useGameStore((s) => s.currentAsset);
   const scenes = useGameStore((s) => s.scenes);
-  const interaction = useGameStore((s) => s.interaction);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
   const speaking = useSpeakingSpeakers();
+  // WS 连上不等于能玩：Stage3 的 session_init 会先补算离线 tick（最多 3 轮 LLM）。
+  const status = sceneStatus(connection, sessionInitialized);
 
   // 背景稳定引用 → 预签名 URL（#53）：按 current_asset 变化现取（短时效），
   // 取不到就交给 GameStage 降级为无图渐变，不阻塞游玩。
@@ -70,23 +70,7 @@ export function GameScreen() {
   const transcriptOpen = userOpen ?? wide;
   const [tab, setTab] = useState<TranscriptTab>("story");
 
-  const cast = stageCast(messages, streams);
-  // 剧本角色 + 运行期登场（M6 动态角色）；后端补结构化档案前先按消息流兜底
-  const runtimeCast = useMemo(
-    () =>
-      mergeRuntimeCharacters(
-        listedCharacters(characters, playableRoles),
-        messages,
-        playerRole
-      ),
-    [characters, playableRoles, messages, playerRole]
-  );
-  const listed = runtimeCast.characters;
-  // 当前在场：交互点的换景列表里 is_current 那一项（静态地点名单）
-  const presentNames = useMemo(() => {
-    const current = interaction?.scene_options?.find((scene) => scene.is_current);
-    return current ? new Set(current.participants) : null;
-  }, [interaction]);
+  const { cast, listed } = useCastRoster();
   const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
   function openTranscript(next: TranscriptTab) {
     setTab(next);
@@ -121,15 +105,6 @@ export function GameScreen() {
                   playerRole={playerRole}
                   speaking={speaking}
                 />
-                <CastDock
-                  characters={listed}
-                  dynamic={runtimeCast.dynamic}
-                  present={presentNames}
-                  playableRoles={playableRoles}
-                  playerRole={playerRole}
-                  active={cast.active}
-                  speaking={speaking}
-                />
                 {sceneHasOriginal(currentScene) && (
                   <button
                     type="button"
@@ -141,9 +116,20 @@ export function GameScreen() {
                   </button>
                 )}
                 {messages.length === 0 && streams.length === 0 && (
-                  <p className="absolute inset-0 grid place-items-center text-sm text-ink-faint">
-                    等待剧情开始…
-                  </p>
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="absolute inset-0 grid place-items-center"
+                  >
+                    <p className="flex flex-col items-center gap-1 text-sm text-ink-faint">
+                      <span>{sceneStatusText(status)}</span>
+                      {status === "restoring" && (
+                        <span className="text-2xs">
+                          离线期间世界仍在演进，正在补算。
+                        </span>
+                      )}
+                    </p>
+                  </div>
                 )}
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
                   <SubtitleTrack

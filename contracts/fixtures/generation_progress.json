@@ -43,7 +43,15 @@
       "node": "collect_materials",
       "verdict": "reject",
       "issues": [
-        "时代背景结论缺少原文依据",
+        {
+          "schema_version": "3.4.0",
+          "field": "era_setting",
+          "quote": "民国初年",
+          "category": "人物事实",
+          "evidence": "原文依据摘要未提及该时代结论",
+          "severity": "must_fix",
+          "suggestion": "补充原文依据或降为 nice_to_fix"
+        },
         "人物动机概括与原文顺序冲突"
       ],
       "round": 1

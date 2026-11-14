@@ -91,7 +91,11 @@ class RuntimeWorldView:
                 "scene_id": scene.scene_id,
                 "title": scene.title,
                 "participants": list(scene.participants),
-                "beats": [b.description for b in scene.beats],
+                # 演员知道人物想要什么（goal），玩家听到的是 description：
+                # 两者分开给，不在这一层重新拼成一段文本
+                "beats": [
+                    {"description": b.description, "goal": b.goal} for b in scene.beats
+                ],
             }
             for scene in self._runtime.script.scenes
             if viewer is None or viewer in scene.participants

@@ -3,13 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, LiveStream } from "@/stores/gameStore";
+import { speechParts, splitStageDirection } from "@/lib/stage-direction";
 
-/** 屏幕中下方字幕：角色行 + 旁白行（ADR-0005 §1）。 */
+/**
+ * 屏幕中下方字幕：只播角色发言（旁白/系统提示归侧栏）。
+ *
+ * 角色台词里的动作括号在这里拆出来单列一行，台词本身只留说出口的部分。
+ */
 export interface SubtitleLine {
   key: string;
-  kind: "narrative" | "character_speech";
   speaker: string | null;
   text: string;
+  /** 舞台提示（动作/神态），没有则为 null */
+  direction: string | null;
   fading: boolean;
   /** 在途的流式行（#61）：文本还会长，不武装停留/淡出计时器。 */
   live?: boolean;
@@ -27,11 +33,12 @@ const DWELL_MS = 2500;
 const FADE_MS = 600;
 
 function toLine(message: ChatMessage): SubtitleLine {
+  const parts = speechParts(message.text, message.stageDirection);
   return {
     key: message.key,
-    kind: message.kind === "character_speech" ? "character_speech" : "narrative",
     speaker: message.speaker,
-    text: message.text,
+    text: parts.text,
+    direction: parts.direction,
     fading: false,
   };
 }
@@ -110,9 +117,7 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
   // 1) 新消息入队：同 speaker 替换、未满入列、满则排队。
   useEffect(() => {
     const incoming = messages.filter(
-      (m) =>
-        (m.kind === "narrative" || m.kind === "character_speech") &&
-        !seenRef.current.has(m.key)
+      (m) => m.kind === "character_speech" && !seenRef.current.has(m.key)
     );
     if (incoming.length === 0) return;
 
@@ -144,13 +149,20 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       const key = streamKey(stream);
       if (releasedRef.current.has(key)) continue;
       const live = !stream.ended;
+      const parts = splitStageDirection(stream.text);
       const current = visibleRef.current;
 
       const own = current.findIndex((l) => l.key === key);
       if (own >= 0) {
-        if (current[own].text !== stream.text || current[own].live !== live) {
+        if (
+          current[own].text !== parts.text ||
+          current[own].direction !== parts.direction ||
+          current[own].live !== live
+        ) {
           visibleRef.current = current.map((l, i) =>
-            i === own ? { ...l, text: stream.text, live } : l
+            i === own
+              ? { ...l, text: parts.text, direction: parts.direction, live }
+              : l
           );
           changed = true;
         }
@@ -161,7 +173,8 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       if (queued >= 0) {
         queueRef.current[queued] = {
           ...queueRef.current[queued],
-          text: stream.text,
+          text: parts.text,
+          direction: parts.direction,
           live,
         };
         continue;
@@ -171,9 +184,9 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       if (
         admit({
           key,
-          kind: "character_speech",
           speaker: stream.speaker,
-          text: stream.text,
+          text: parts.text,
+          direction: parts.direction,
           fading: false,
           live,
         })
@@ -274,47 +287,47 @@ export function SubtitleTrack({
       />
       {lines.map((line) => {
         const fade = line.fading ? "opacity-0" : "opacity-100";
-        if (line.kind !== "character_speech") {
-          return (
-            <p
-              key={line.key}
-              data-testid="subtitle-line"
-              className={`animate-rise-in max-w-[92%] font-serif text-base leading-[1.7] break-words whitespace-pre-wrap text-center italic text-ink-soft transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-lg ${fade}`}
-            >
-              {line.text}
-            </p>
-          );
-        }
-
         const own = playerRole !== null && line.speaker === playerRole;
         const [settled, fresh] = line.live
           ? splitTail(line.text, FRESH_CHARS)
           : [line.text, ""];
         return (
-          <p
+          <div
             key={line.key}
-            data-testid="subtitle-line"
-            className={`animate-rise-in max-w-[92%] font-serif text-lg leading-[1.75] break-words whitespace-pre-wrap text-center text-ink transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl ${fade}`}
+            className={`flex max-w-[92%] flex-col items-center gap-0.5 transition-opacity duration-500 ${fade}`}
           >
-            <span
-              className={`font-semibold ${
-                own
-                  ? "text-flag [text-shadow:0_0_14px_var(--wj-flag)]"
-                  : "text-glow-gold [text-shadow:0_0_14px_var(--wj-glow-gold)]"
-              }`}
+            {line.direction && (
+              <p
+                data-testid="subtitle-direction"
+                className="animate-rise-in text-center font-serif text-xs italic leading-relaxed text-ink-faint [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-sm"
+              >
+                （{line.direction}）
+              </p>
+            )}
+            <p
+              data-testid="subtitle-line"
+              className="animate-rise-in break-words whitespace-pre-wrap text-center font-serif text-lg leading-[1.75] text-ink [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl"
             >
-              {line.speaker ?? "角色"}：
-            </span>
-            {settled}
-            {fresh && <span className="ink-fresh">{fresh}</span>}
-            {line.live ? (
               <span
-                aria-hidden
-                data-testid="subtitle-caret"
-                className="animate-caret-glow ml-1 inline-block h-[1.05em] w-[3px] translate-y-[0.18em] rounded-full bg-glow-jade"
-              />
-            ) : null}
-          </p>
+                className={`font-semibold ${
+                  own
+                    ? "text-flag [text-shadow:0_0_14px_var(--wj-flag)]"
+                    : "text-glow-gold [text-shadow:0_0_14px_var(--wj-glow-gold)]"
+                }`}
+              >
+                {line.speaker ?? "角色"}：
+              </span>
+              {settled}
+              {fresh && <span className="ink-fresh">{fresh}</span>}
+              {line.live ? (
+                <span
+                  aria-hidden
+                  data-testid="subtitle-caret"
+                  className="animate-caret-glow ml-1 inline-block h-[1.05em] w-[3px] translate-y-[0.18em] rounded-full bg-glow-jade"
+                />
+              ) : null}
+            </p>
+          </div>
         );
       })}
     </div>

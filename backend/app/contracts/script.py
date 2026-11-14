@@ -149,10 +149,16 @@ class SceneOption(VersionedContract):
 
 
 class Beat(VersionedContract):
-    """单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。"""
+    """单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。
+
+    `description` 是**玩家可见**的场面/事件叙述（播放时原样作为旁白）；
+    `goal` 是给运行时 agent 的戏剧目标（谁想要什么、障碍是什么），不直接播给
+    玩家——两者混在一起会把作者备注漏进对白流（v3 提示词的历史问题）。
+    """
 
     beat_id: int
     description: str
+    goal: str = ""
     is_key_event: bool = False
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     # 生成期预写台词（珊瑚图纯 IO 播放的数据源）：空 = 走运行期 agent 旧路径。

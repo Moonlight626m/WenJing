@@ -9,8 +9,9 @@ import type { StageCast } from "@/lib/stage-cast";
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
 /**
- * 一位角色的立绘。素材按「全身立绘 → 头像 → 竖排名牌」逐级降级：
+ * 一位角色的立绘。素材按「全身立绘 → 竖排名牌」降级：
  * 剧本没配图、配图生成中或取图失败，都还有一块写着名字的立牌站在台上。
+ * 只有头像的角色不再把头像圆框放进场景——头像会像贴在背景上的一块异物。
  */
 function Figure({
   name,
@@ -28,7 +29,6 @@ function Figure({
   speaking: boolean;
 }) {
   const { url: fullbodyUrl } = useAssetUrl(profile?.fullbody_asset);
-  const { url: avatarUrl } = useAssetUrl(fullbodyUrl ? null : profile?.avatar_asset);
   const lit = active || !someoneActive;
 
   // 你演的角色用朱砂，其他人用泥金；说话的人脚下再亮一圈青碧地光
@@ -65,13 +65,6 @@ function Figure({
           alt=""
           className="relative max-h-full w-auto max-w-full object-contain drop-shadow-[0_14px_30px_rgba(0,0,0,0.65)]"
         />
-      ) : avatarUrl ? (
-        <span
-          className={`relative mb-[12%] block aspect-square w-[min(11rem,80%)] overflow-hidden rounded-full border-2 ${tone.border} shadow-[0_18px_40px_-12px_rgba(0,0,0,0.7)]`}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
-        </span>
       ) : (
         <span
           className={`relative mb-[10%] grid h-[min(17rem,72%)] w-[clamp(4.25rem,8vw,6.25rem)] place-items-center rounded-2xl border bg-glass backdrop-blur-md ${tone.border} shadow-[0_18px_40px_-14px_rgba(0,0,0,0.7)]`}
@@ -85,7 +78,7 @@ function Figure({
       )}
 
       {/* 名牌：有图时名字不在图上，补一块；立牌本身就写着名字，不重复 */}
-      {(fullbodyUrl || avatarUrl) && (
+      {fullbodyUrl && (
         <span
           className={`relative -mt-6 mb-[6%] rounded-full border bg-glass px-3 py-0.5 font-serif text-sm backdrop-blur-md ${tone.border} ${tone.text}`}
         >

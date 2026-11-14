@@ -66,12 +66,17 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ### 游玩页版式（视觉小说式）
 
 `components/game-screen.tsx` 是整块舞台：顶栏 `GameHud` → 左列是舞台视口（`StageFigures`
-立绘层 + `CastDock` 头像组 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel`
-剧情回顾（「剧情」页 = 消息流 + 回溯栏，「原文」页 = 课文对照，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
+立绘层 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel` 剧情回顾（顶部「在场」
+头像组 + `scene_options` 存在时的「场景移动 / 干涉世界」按钮；「剧情」页 = 消息流 + 回溯栏，
+「原文」页 = 课文对照，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
 结局卡 `EndingCard` 浮在最上层。
 
-- **立绘按「全身立绘 → 头像 → 竖排名牌」降级**；台上最多三人，取最近开口的
+- **立绘按「全身立绘 → 竖排名牌」降级**；台上最多三人，取最近开口的
   （`lib/stage-cast.ts`，纯函数）。说话人取在途流，否则看最后一条非系统消息。
+  只有头像的角色不再把头像圆框放进场景。
+- **主字幕只播角色发言**：`SubtitleTrack` 只收 `character_speech`，旁白/系统提示留在
+  侧栏消息流；台词里的 `（动作）` 拆成独立动作行（`lib/stage-direction.ts`，后端
+  `domain/game/speech_text.py` 落库时同口径拆分）。
 - **剧情回顾在 ≥1024px 默认展开、窄屏是抽屉**。E2E 的默认视口是 1280×720，`core-flow`
   依赖消息行与回溯下拉框在首屏可见——改默认展开的断点前先看它。
 - **页面上只能有一个 `<select>`**（回溯栏）：`core-flow` 用 `page.locator("select")` 定位，
@@ -79,6 +84,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   `/回到 #\d+/`。
 - **幕间过场全程 `pointer-events-none`**，不挡点击；每会话每幕在一个标签页里只演一次
   （sessionStorage）。
+- **WS 连上不等于能玩**：`gameStore.sessionInitialized` 只在收到权威 `session_init` 后为
+  true，断线即复位。Stage3 的离线 tick 会在 `session_init` 之前补算，期间旧交互点禁用，
+  空舞台显示「正在重建世界…」（`lib/session-status.ts`）。
 - **配音中的说话人**来自 `AudioTrackPlayer`（收到 `<audio>` 的 `playing` 才算，静音时为空），
   用 `useSpeakingSpeakers()` 订阅；只用来点亮光环，不是音量电平。
 - **特效档位**：`uiStore.effects`（本机 localStorage 记住），`useEffectsLevel()` 取实际档位，
@@ -88,6 +96,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   不再存在（契约里的空字段只为历史会话保留读兼容）。
 - **结局卡只服务 Stage2**：进入过 Stage3 的会话关闭时不弹 `EndingCard`；判定用系统消息
   携带的结构化 `stage` 字段（`stage === "stage3_extending"`），不解析中文文案。
+- **Stage3 不显示「确认结局」**：`confirm_ending` 是旧契约里的收束命令，仍冻结在
+  `ALLOWED_COMMANDS` 里；续写阶段没有叙事结局，`InteractionCard` 在
+  `stage3_extending` 下隐藏它，关闭本局走 `exit_game`。
 - **剧情回顾的「原文」页**只列已经演到的场景（`scene:{id}` 定位当前场景），还没演到的课文
   不提前展示；续写与终局时全部展开。`paragraph_index` 从 0 起，显示时加 1。
 - **选项的 `proposed_by`** 标出「谁的主意」；系统选项（进入续写 / 到此结束）为 null。

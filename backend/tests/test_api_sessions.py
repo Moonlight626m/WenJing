@@ -235,10 +235,45 @@ def test_rest_full_flow(client):
     assert body["awaited_command_id"]
     assert body["stage"] in ("stage1_complete", "stage2_reenacting")
 
+    # 异步命令台账口：roles 页据此区分「在途」与「失败」，不再盲等前端超时
+    command_id = body["awaited_command_id"]
+    cmd = client.get(f"/api/sessions/{sid}/commands/{command_id}")
+    assert cmd.status_code == 200, cmd.text
+    assert cmd.json()["status"] in ("received", "succeeded")
+    assert "inflight" in cmd.json()
+    # 不属于该会话/不存在的 command_id 不是错误，而是未受理（status=None）
+    ghost = client.get(
+        f"/api/sessions/{sid}/commands/00000000-0000-0000-0000-000000000001"
+    )
+    assert ghost.status_code == 200 and ghost.json()["status"] is None
+
     # TestClient 的后台 task 跑在它自己的 portal loop 里，等它收尾要轮询
     # commands 表状态（而不是在另一个 loop 里 drain）
     row = _wait_until_status(client, sid, lambda b: b.get("selected_role") == role)
     assert row["stage"] == "stage2_reenacting"
+    done = client.get(f"/api/sessions/{sid}/commands/{command_id}")
+    assert done.json()["status"] == "succeeded"
+    assert done.json()["inflight"] is False
+
+
+def test_command_status_is_scoped_to_its_session(client):
+    """命令台账轮询按会话归属过滤：拿 B 会话的 command_id 查 A 应得 None。"""
+    sid_a = _make_playable(client)
+    sid_b = _make_playable(client)
+    role = client.get(f"/api/sessions/{sid_b}").json()["playable_roles"][0]
+    receipt = client.post(
+        f"/api/sessions/{sid_b}/commands",
+        json={
+            "session_id": sid_b,
+            "kind": "select_role",
+            "payload": {"role_name": role},
+        },
+        headers=_csrf(client),
+    )
+    assert receipt.status_code == 200, receipt.text
+    cid = receipt.json()["awaited_command_id"]
+    assert client.get(f"/api/sessions/{sid_b}/commands/{cid}").json()["status"]
+    assert client.get(f"/api/sessions/{sid_a}/commands/{cid}").json()["status"] is None
 
 
 def test_timeline_lists_only_active_branch_progress(client):

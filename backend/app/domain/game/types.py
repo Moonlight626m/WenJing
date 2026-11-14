@@ -42,10 +42,11 @@ class CharacterSetting:
 
 @dataclass
 class Beat:
-    """单个场景内的情节点。"""
+    """单个场景内的情节点（`description` 玩家可见，`goal` 只作 agent 上下文）。"""
 
     beat_id: int
     description: str
+    goal: str = ""
 
 
 @dataclass

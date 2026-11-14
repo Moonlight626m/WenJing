@@ -3,12 +3,19 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 
+import { latestInterventionFeedback } from "@/lib/intervention";
+import { useInteractionBusy } from "@/lib/interaction-busy";
+import { isImeEnter } from "@/lib/ime";
 import { useGameStore } from "@/stores/gameStore";
+import { sceneStatus, sceneStatusText } from "@/lib/session-status";
+import { CastDock } from "@/components/cast-dock";
 import { MessageStream } from "@/components/message-stream";
 import { OriginalTextPanel } from "@/components/original-text-panel";
 import { RolePanel } from "@/components/role-panel";
 import { RollbackBar } from "@/components/rollback-bar";
+import { Button } from "@/components/ui/button";
 import { CloseIcon } from "@/components/ui/icons";
+import { Tag } from "@/components/ui/tag";
 
 export type TranscriptTab = "story" | "text" | "cast";
 
@@ -47,12 +54,34 @@ export function TranscriptPanel({
   const characters = useGameStore((s) => s.characters);
   const playableRoles = useGameStore((s) => s.playableRoles);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
+  const connection = useGameStore((s) => s.connection);
   const scenes = useGameStore((s) => s.scenes);
   const sceneKey = useGameStore((s) => s.sceneKey);
   const stage = useGameStore((s) => s.stage);
+  const interaction = useGameStore((s) => s.interaction);
+  const submit = useGameStore((s) => s.submitCommand);
   const [target, setTarget] = useState<number | null>(null);
   const [confirming, setConfirming] = useState(false);
+  // 侧栏操作面板：场景移动 / 干涉世界。主舞台只留选项与输入。
+  const [panel, setPanel] = useState<"move" | "intervene" | null>(null);
+  const [interveneText, setInterveneText] = useState("");
   const canRollback = allowedCommands.includes("rollback_to_event");
+  const status = sceneStatus(connection, sessionInitialized);
+  const sceneOptions = interaction?.scene_options ?? [];
+  const canMove = allowedCommands.includes("switch_scene") && sceneOptions.length > 0;
+  const canIntervene =
+    allowedCommands.includes("intervene") && sceneOptions.length > 0;
+  const busy = useInteractionBusy();
+  const interventionFeedback = latestInterventionFeedback(messages);
+
+  function sendIntervene() {
+    const text = interveneText.trim();
+    if (!text || busy || !canIntervene) return;
+    submit("intervene", { text }, "干涉世界");
+    setInterveneText("");
+    // 面板保持展开：提交后的「已生效 / 未应允」反馈就渲染在输入框下面
+  }
 
   useEffect(() => {
     if (!open || !overlay) return;
@@ -129,6 +158,137 @@ export function TranscriptPanel({
             </button>
           </div>
 
+          {(canMove || canIntervene) && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-glass-edge px-3 py-2">
+              <span className="mr-1 font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+                操作
+              </span>
+              {canMove && (
+                <button
+                  type="button"
+                  aria-pressed={panel === "move"}
+                  onClick={() =>
+                    setPanel((current) => (current === "move" ? null : "move"))
+                  }
+                  className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
+                    panel === "move"
+                      ? "border-glow-jade/60 text-glow-jade"
+                      : "border-glass-edge text-ink-soft hover:text-ink"
+                  }`}
+                >
+                  场景移动
+                </button>
+              )}
+              {canIntervene && (
+                <button
+                  type="button"
+                  aria-pressed={panel === "intervene"}
+                  onClick={() =>
+                    setPanel((current) =>
+                      current === "intervene" ? null : "intervene"
+                    )
+                  }
+                  className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
+                    panel === "intervene"
+                      ? "border-glow-gold/60 text-glow-gold"
+                      : "border-glass-edge text-ink-soft hover:text-ink"
+                  }`}
+                >
+                  干涉世界
+                </button>
+              )}
+            </div>
+          )}
+
+          {panel === "move" && (
+            <div className="border-b border-glass-edge px-3 py-2">
+              <div role="group" aria-label="换景" className="flex flex-wrap gap-1.5">
+                {sceneOptions.map((scene) => (
+                  <button
+                    key={scene.scene_key}
+                    type="button"
+                    disabled={busy || scene.is_current}
+                    aria-current={scene.is_current || undefined}
+                    onClick={() => {
+                      submit(
+                        "switch_scene",
+                        { scene_key: scene.scene_key },
+                        `前往 ${scene.title}`
+                      );
+                      setPanel(null);
+                    }}
+                    className={[
+                      "rounded-full border px-3 py-1 font-serif text-sm transition-colors",
+                      scene.is_current
+                        ? "border-glass-edge/60 text-ink-faint"
+                        : "border-glass-edge text-ink hover:border-glow-jade/60 hover:text-glow-jade",
+                      busy && !scene.is_current ? "opacity-40" : "opacity-100",
+                    ].join(" ")}
+                  >
+                    {scene.title}
+                    {scene.is_current && <span className="ml-1">（当前）</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {panel === "intervene" && (
+            <div className="border-b border-glass-edge px-3 py-2">
+              <div className="flex items-center gap-1.5 rounded-2xl border border-dashed border-glass-edge bg-surface/20 p-1 pl-3 transition-[border-color] duration-200 focus-within:border-glow-gold/50">
+                <input
+                  value={interveneText}
+                  onChange={(e) => setInterveneText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || isImeEnter(e)) return;
+                    e.preventDefault();
+                    sendIntervene();
+                  }}
+                  placeholder="如：建一间雨夜客栈 / 叫船夫过来"
+                  aria-label="干涉世界"
+                  maxLength={2000}
+                  disabled={busy}
+                  className="min-w-0 flex-1 bg-transparent py-1.5 font-serif text-sm text-ink placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+                />
+                <Button
+                  tone="glow"
+                  size="sm"
+                  onClick={sendIntervene}
+                  disabled={busy || !interveneText.trim()}
+                >
+                  干涉
+                </Button>
+              </div>
+              <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
+                每轮可以干涉一次；世界构建可能不答应。
+              </p>
+              {interventionFeedback && (
+                <p
+                  role="status"
+                  className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
+                >
+                  <Tag
+                    tone={
+                      interventionFeedback.status === "applied" ? "ok" : "warn"
+                    }
+                  >
+                    {interventionFeedback.status === "applied" ? "已生效" : "未应允"}
+                  </Tag>
+                  <span className="min-w-0 flex-1 text-ink-soft">
+                    {interventionFeedback.text}
+                  </span>
+                </p>
+              )}
+            </div>
+          )}
+
+          <div className="border-b border-glass-edge px-3 py-2">
+            <p className="mb-1.5 font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+              在场
+            </p>
+            <CastDock />
+          </div>
+
           {tab === "story" ? (
             <div
               role="tabpanel"
@@ -139,7 +299,9 @@ export function TranscriptPanel({
               {/* 左边多留一截给开发环境的事件序号 */}
               <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
                 {messages.length === 0 ? (
-                  <p className="py-6 text-center text-sm text-ink-faint">等待剧情开始…</p>
+                  <p className="py-6 text-center text-sm text-ink-faint">
+                    {sceneStatusText(status)}
+                  </p>
                 ) : (
                   <MessageStream
                     messages={messages}

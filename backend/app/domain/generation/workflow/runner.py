@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
 from app.contracts.generation import (
@@ -34,7 +36,12 @@ from app.domain.generation.workflow.nodes import (
 )
 from app.domain.generation.workflow.state import WorkflowState
 
+logger = logging.getLogger("wenjing.generation.workflow")
+
 ProgressSink = Callable[[GenerationProgress], Awaitable[None]]
+# 闸门审阅载荷落库回调：在 awaiting_review 快照广播**之前**调用，订阅方收到
+# 终态帧后立即回读详情即可拿到 review（否则窗口内读到 None，面板显示空素材）。
+ReviewSink = Callable[[dict[str, Any] | None], Awaitable[None]]
 
 # 图节点 → 对外契约节点（人物并行的两步都归 design_characters）
 _NODE_MAP: dict[str, GenerationNode] = {
@@ -67,6 +74,8 @@ _NODE_ORDER: list[GenerationNode] = [
     GenerationNode.DESIGN_ASSETS,
 ]
 
+_GATE_NODES = frozenset({MATERIALS_GATE_NODE, PRE_WRITE_GATE_NODE, FINAL_GATE_NODE})
+
 
 def _interrupt_value(delta: Any) -> dict[str, Any] | None:
     """updates 流里 `__interrupt__` 的载荷：tuple[Interrupt] → Interrupt.value。"""
@@ -95,10 +104,12 @@ class WorkflowRunner:
         *,
         checkpointer: BaseCheckpointSaver | None = None,
         progress_sink: ProgressSink | None = None,
+        review_sink: ReviewSink | None = None,
         doubter_events: list[DoubterEvent] | None = None,
     ) -> None:
         self._graph = build_workflow(nodes, checkpointer=checkpointer)
         self._sink = progress_sink
+        self._review_sink = review_sink
         self._teacher_gates = nodes.gate_enabled
         self._nodes: dict[GenerationNode, NodeProgress] = {}
         self._doubter_events: list[DoubterEvent] = list(doubter_events or [])
@@ -155,6 +166,13 @@ class WorkflowRunner:
         if contract is None:
             return
 
+        if node_name in _GATE_NODES:
+            # 闸门节点的 delta 只表示「教师恢复」，下一步的投影由 resume() 负责。
+            # 走通用「推进下一个节点」会把已完成的节点重新置 running——终审之后
+            # 图上还有 design_exploration/design_assets，恢复后它们会被再次
+            # 标成 running 且再无节点收尾（现象：探索地图永久转圈）。
+            return
+
         if node_name == "design_one_character":
             profiles = delta.get("character_profiles") or []
             name = getattr(profiles[0], "name", "?") if profiles else "?"
@@ -201,12 +219,12 @@ class WorkflowRunner:
                 DoubterEvent(
                     node=contract,
                     verdict=verdict,
-                    issues=[
-                        str(i)
-                        for i in delta.get("doubter_issues")
+                    # 结构化问题原样透传（教师端分块渲染）；规则校验是纯字符串
+                    issues=list(
+                        delta.get("doubter_issues")
                         or delta.get("audit_issues")
                         or []
-                    ],
+                    ),
                     round=round_no,
                 )
             )
@@ -242,7 +260,14 @@ class WorkflowRunner:
         self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.RUNNING)
         if self._sink is not None:
             await self._sink(self.snapshot())
-        return await self._consume(state, thread_id)
+        try:
+            return await self._consume(state, thread_id)
+        except GraphInterrupt:
+            # 闸门暂停不是失败（正常路径由 __interrupt__ 分支投影）
+            raise
+        except Exception:
+            await self._mark_running_failed()
+            raise
 
     async def resume(
         self, *, thread_id: str, resume_payload: Any, gate: str = "materials"
@@ -253,22 +278,88 @@ class WorkflowRunner:
         兼容旧列表指令）。`gate` 是暂停位置（materials/pre_write/final，
         调用方从 attempt 落库的审阅载荷读取），决定进度接续投影。
         """
+        # 恢复时重写「下一步」节点的 detail：`_set` 在 detail=None 时会保留旧值，
+        # 不覆盖的话闸门暂停时写的「等待教师审阅」会一直挂到节点跑完（前端误以为
+        # 还在等审阅，实际没有任何待审界面）。文案取「已通过审定」这类完成后
+        # 仍成立的措辞——detail 在节点成功后同样会保留。
+        action = (
+            str(resume_payload.get("action") or "approve")
+            if isinstance(resume_payload, dict)
+            else "approve"
+        )
         if gate == "pre_write":
             self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.SUCCEEDED)
             self._set(GenerationNode.DESIGN_CHARACTERS, GenerationNodeStatus.SUCCEEDED)
-            self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.RUNNING)
+            self._set(
+                GenerationNode.WRITE_SCRIPT,
+                GenerationNodeStatus.RUNNING,
+                detail="教师已通过人物与场景审定",
+            )
         elif gate == "final":
             self._set(GenerationNode.WRITE_SCRIPT, GenerationNodeStatus.SUCCEEDED)
-            self._set(GenerationNode.FINAL_AUDIT, GenerationNodeStatus.SUCCEEDED)
             # #48：配图在总审之后、终审闸之前，恢复时已产出
             self._set(GenerationNode.DESIGN_ASSETS, GenerationNodeStatus.SUCCEEDED)
+            if action == "reject":
+                # 终审打回：图上回到 write_script 重写，不能显示「已通过终审」
+                self._set(
+                    GenerationNode.FINAL_AUDIT,
+                    GenerationNodeStatus.SUCCEEDED,
+                    detail="教师打回，重写剧本",
+                )
+                self._set(
+                    GenerationNode.WRITE_SCRIPT,
+                    GenerationNodeStatus.RUNNING,
+                    detail="教师打回，重写剧本",
+                )
+            else:
+                self._set(
+                    GenerationNode.FINAL_AUDIT,
+                    GenerationNodeStatus.SUCCEEDED,
+                    detail="教师已通过终审",
+                )
         else:
             self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.SUCCEEDED)
             self._set(GenerationNode.VERIFY_MATERIALS, GenerationNodeStatus.SUCCEEDED)
-            self._set(GenerationNode.DIVIDE_EVENTS, GenerationNodeStatus.RUNNING)
+            self._set(
+                GenerationNode.DIVIDE_EVENTS,
+                GenerationNodeStatus.RUNNING,
+                detail="教师已通过素材审定",
+            )
         if self._sink is not None:
             await self._sink(self.snapshot())
-        return await self._consume(Command(resume=resume_payload), thread_id)
+        try:
+            return await self._consume(Command(resume=resume_payload), thread_id)
+        except GraphInterrupt:
+            raise
+        except Exception:
+            await self._mark_running_failed()
+            raise
+
+    async def _mark_running_failed(self) -> None:
+        """异常退出：在途节点标红，管线图才能指出死在哪一步。
+
+        原先只由调用方改总体状态，节点仍停在 running + 上一段 detail，
+        失败现场看起来像「还在跑」。
+        """
+        changed = False
+        for node, progress in list(self._nodes.items()):
+            if progress.status != GenerationNodeStatus.RUNNING:
+                continue
+            self._nodes[node] = NodeProgress(
+                node=node,
+                status=GenerationNodeStatus.FAILED,
+                detail="生成失败",
+            )
+            changed = True
+        self._status = GenerationStatus.FAILED
+        if changed and self._sink is not None:
+            try:
+                await self._sink(self.snapshot())
+            except Exception:  # noqa: BLE001 - 落库失败不能盖掉原始异常
+                logger.warning(
+                    "progress sink failed while marking generation failed",
+                    exc_info=True,
+                )
 
     def _awaiting_node(self, review: dict[str, Any] | None) -> None:
         """闸门暂停时的进度投影：按闸门位置把「下一步」节点置等待态。"""
@@ -307,6 +398,10 @@ class WorkflowRunner:
                     self._interrupted = True
                     self._status = GenerationStatus.AWAITING_REVIEW
                     self._review = _interrupt_value(delta)
+                    # 先落审阅载荷再广播 awaiting_review：订阅方收到终态帧后
+                    # 回读详情必须能拿到 review（顺序反了就有一段 null 窗口）
+                    if self._review_sink is not None:
+                        await self._review_sink(self._review)
                     self._awaiting_node(self._review)
                     if self._sink is not None:
                         await self._sink(self.snapshot())

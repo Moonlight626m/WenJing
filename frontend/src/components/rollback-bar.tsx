@@ -60,8 +60,7 @@ export function RollbackBar({
         </option>
         {targets.map((m) => (
           <option key={m.key} value={m.seq}>
-            #{m.seq} {m.kind === "character_speech" ? `${m.speaker ?? "角色"}：` : ""}
-            {m.text.slice(0, 30)}
+            #{m.seq} {m.text.slice(0, 30)}
           </option>
         ))}
       </Select>

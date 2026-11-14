@@ -53,6 +53,7 @@ from app.domain.game.media import scene_visual_description
 from app.domain.game.memory import MemoryStore
 from app.domain.game.offline_ticks import npc_action_fact
 from app.domain.game.replay import ReplayCue, ReplayDirector, ReplayGraph, ReplayState
+from app.domain.game.speech_text import split_stage_direction
 from app.domain.game.state_machine import GameStage, GameStateMachine, InteractionPhase
 from app.domain.game.streaming import SpeechStreamSink
 from app.domain.game.types import (
@@ -93,6 +94,32 @@ def _append_bounded(items: list, item: Any, limit: int) -> None:
     items.append(item)
     if len(items) > limit:
         del items[:-limit]
+
+
+def _mentions_absent_name(text: str, name: str, present: set[str]) -> bool:
+    """文本是否提到缺席角色名；落在更长的在场人名里不算。
+
+    单字名（「父」）会作为「父亲」的一部分出现，若「父亲」在场，就不该把
+    「向父亲问安」误判成提到缺席的「父」。
+    """
+    start = text.find(name)
+    while start >= 0:
+        covered = False
+        for other in present:
+            if len(other) <= len(name):
+                continue
+            offset = text.find(other)
+            while offset >= 0:
+                if offset <= start and start + len(name) <= offset + len(other):
+                    covered = True
+                    break
+                offset = text.find(other, offset + 1)
+            if covered:
+                break
+        if not covered:
+            return True
+        start = text.find(name, start + 1)
+    return False
 
 
 def _switch_summary(payload: dict) -> str:
@@ -1037,16 +1064,52 @@ class GameRuntime:
         """探索回合头部：不再 advance_plot/confirm_direction。
 
         剧情摘要与处境由 `exploration_settle` 产出（`_on_input` 已写入）；
-        NPC 提议送审、Chronicler 写本轮增量，再交给导演设计玩家选项（M6）。
+        Chronicler 先写本轮增量，再让 NPC 提议送审与导演设计选项**并行**——
+        导演不读提议/验证结果，只读编年史、台词与剧情日志，所以两者无依赖。
         """
         self._sync_exploration_scene_key()
         self.state.phase = InteractionPhase.NARRATIVE.value
+        # 编年史必须先于提议：角色的限知编年史（`world.chronicle()`）直接读事件流，
+        # 并行会让提议是否看到本轮增量取决于调度顺序。
+        await self._write_chronicle(sink)
+        director = asyncio.create_task(self._design_director_options())
+        proposals = asyncio.create_task(self._propose_and_verify(stage, sink))
+        try:
+            done, pending = await asyncio.wait(
+                {director, proposals}, return_when=asyncio.FIRST_EXCEPTION
+            )
+        except BaseException:
+            # 命令被取消（断线/超时）：两个在途 LLM 调用一并取消，别让它们在
+            # 命令失败后继续跑完、白付一次费用。
+            director.cancel()
+            proposals.cancel()
+            await asyncio.gather(director, proposals, return_exceptions=True)
+            raise
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        failed = next(
+            (
+                task
+                for task in done
+                if not task.cancelled() and task.exception() is not None
+            ),
+            None,
+        )
+        if failed is not None:
+            # 原样抛出失败方的异常：errx 码不能被 gather/ExceptionGroup 包一层抹掉
+            raise failed.exception()
+        self._director_options = director.result()
+        self._valid_proposals = proposals.result()
+
+    async def _propose_and_verify(
+        self, stage: str, sink: list[dict]
+    ) -> list[Proposal]:
         proposals = await self._collect_proposals(
             stage, sink, names=list(self._exploration_present())
         )
-        self._valid_proposals = await self._verify_proposals(proposals, stage, sink)
-        await self._write_chronicle(sink)
-        self._director_options = await self._design_director_options()
+        return await self._verify_proposals(proposals, stage, sink)
 
     async def _write_chronicle(self, sink: list[dict]) -> None:
         """把上次编年史之后的公开事件写成一段增量（每轮一次）。
@@ -1165,18 +1228,53 @@ class GameRuntime:
             last_options=self._last_director_options,
             public_facts=public_facts,
         )
-        labels = [option.label for option in options]
+        labels = self._filter_absent_mentions([option.label for option in options])
         if labels:
             # 只更新「上一次成功产出」；本轮失败要返回空，让交互点走已验证提议/兜底，
             # 但下一轮 prompt 仍应知道上一次真正展示过的导演选项，避免重复。
             self._last_director_options = labels
         return labels
 
+    def _filter_absent_mentions(self, texts: Sequence[str]) -> list[str]:
+        """丢掉点名不在场角色的选项/提议。
+
+        提示词已要求只用在场角色，但 LLM 仍可能写「让阿长带路」；阿长不在当前
+        地点时照给，玩家点进的就是一次注定落空的行动。这里只做确定性过滤，
+        不重新调用导演——过滤后为空时，交互点自然回退到已验证提议/默认项。
+        子串匹配偏保守（「避开阿长」也会被丢），换来的是不会把不在场的人写进
+        可执行选项。
+        """
+        present = set(self._exploration_present())
+        absent = [
+            name
+            for name in self._known_names()
+            if name not in present and name != self.state.player_role
+        ]
+        if not absent:
+            return list(texts)
+        kept: list[str] = []
+        for text in texts:
+            offenders = [
+                name
+                for name in absent
+                if _mentions_absent_name(text, name, present)
+            ]
+            if offenders:
+                self._log.info(
+                    "option_dropped_absent_character",
+                    extra={"wj_extra": {"label": text, "names": offenders}},
+                )
+                continue
+            kept.append(text)
+        return kept
+
     def _stage3_interaction(self) -> InteractionPoint:
         """续写交互点：导演选项优先，其次已验证提议，最后给兜底行动。"""
         labels = [text for text in self._director_options if text]
         if not labels:
-            labels = [p.description for p in self._valid_proposals if p.description]
+            labels = self._filter_absent_mentions(
+                [p.description for p in self._valid_proposals if p.description]
+            )
         if not labels:
             labels = ["环顾四周，看看这里有什么", "离开这里，去别处看看"]
         context = self.state.direction.get("conflict") or "请选择你的行动，或自由发言"
@@ -1794,13 +1892,17 @@ class GameRuntime:
                 continue
             # 落库的永远是**最终答复**；前端屏幕上已经滚过的那份是临时文本，
             # 由这条带 seq 的持久发言覆盖（ADR-0005 §10 终态规则）。
-            self._append(evt.EVENT_CHARACTER_SPEECH, {"speaker": name, "text": res})
+            text, direction = split_stage_direction(res)
+            payload: dict[str, Any] = {"speaker": name, "text": text}
+            if direction:
+                payload["stage_direction"] = direction
+            self._append(evt.EVENT_CHARACTER_SPEECH, payload)
             _append_bounded(
                 self.state.speech_log,
-                (name, self.state.scene_key, res),
+                (name, self.state.scene_key, text),
                 SPEECH_LOG_LIMIT,
             )
-            reactions.append((name, res))
+            reactions.append((name, text))
         return reactions
 
     async def _react(self, name: str, action: PlayerAction, stage: str) -> str:

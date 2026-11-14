@@ -111,6 +111,7 @@
         {
           "beat_id": 1,
           "description": "父亲坚持亲自送行，与脚夫讲价钱、叮嘱路上小心",
+          "goal": "父亲想尽到做父亲的心意，儿子却觉得多余。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -133,6 +134,7 @@
         {
           "beat_id": 2,
           "description": "父亲穿过铁道爬上月台为儿子买橘子",
+          "goal": "父亲用行动照顾儿子，不肯让儿子代劳。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -147,6 +149,7 @@
         {
           "beat_id": 3,
           "description": "父子分别，背影混入来来往往的人群",
+          "goal": "离别在即，父子都不擅长表达不舍。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -169,7 +172,9 @@
       "interaction_point": {
         "player_role_hint": "儿子",
         "what_player_can_do": "在父亲临行叮嘱时回应、追上去或沉默看着",
-        "must_not_change": [2]
+        "must_not_change": [
+          2
+        ]
       },
       "branches": [
         {
@@ -184,12 +189,14 @@
             {
               "beat_id": 1,
               "description": "儿子等不及，也向铁道边跑去，看见父亲攀爬月台的吃力",
+              "goal": "儿子被父亲的笨拙触动，第一次真正看见父亲的吃力。",
               "is_key_event": false,
               "evidence_refs": []
             },
             {
               "beat_id": 2,
               "description": "父亲回头示意不要跟来，儿子站住，第一次看清父亲的背影",
+              "goal": "父亲不愿儿子看到自己的狼狈，儿子却记住了这个背影。",
               "is_key_event": false,
               "evidence_refs": []
             }

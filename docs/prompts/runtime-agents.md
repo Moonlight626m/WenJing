@@ -293,7 +293,8 @@ System（`DIRECTOR_SYSTEM_PROMPT`）：
    不写「你成功」「你决定」这类结果，也不替玩家说话。
 3. 尽量覆盖不同维度：goal（推进剧情）/ relationship（人物关系）/
    environment（探索或换景）。至少两条选项要落在不同维度上。
-4. 使用在场角色或当前地点已有的对象；不引入未登场人物。
+4. 只使用【在场名单】里的人物和当前地点已有的对象；名单外的人一律不写，
+   也不要写「去找某某」这类需要离开当前地点的行动。
 5. 不重复上一轮选项，不写玩家已经做过的动作。
 6. 不揭示私密事实；不替玩家决定成败。
 
@@ -570,6 +571,7 @@ User（每轮变量）：
 |---|---|---|
 | Director LLM 失败 | 返回空列表 → 已验证提议 → 两条兜底 | `director_options_degraded` |
 | Director dimension 缺失/单一 | 只记日志，不阻断 | `director_dimension_thin` |
+| 导演选项/提议点名不在场角色 | 丢弃该条；过滤后为空则回退已验证提议/兜底 | `option_dropped_absent_character` |
 | WorldBuilder LLM 失败 | `reject`（世界构建暂时无法处理…） | `world_builder_parse_degraded` |
 | WorldBuilder 输出不合法 | `reject`（没有听清 / 不在可干涉范围…） | 无（解析返回拒绝） |
 | Verifier 提议验证 LLM 失败 | `conditional_pass` | `verify_degraded` |

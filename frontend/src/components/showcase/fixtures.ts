@@ -151,6 +151,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
             {
               beat_id: 1,
               description: "月光下，闰土指着瓜地说起猹的狡猾。",
+              goal: "闰土想让城里的少爷见识乡下的世界。",
               is_key_event: false,
               dialogue: [],
               evidence_refs: [],
@@ -158,6 +159,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
             {
               beat_id: 2,
               description: "我学着他的样子握住钢叉，却不敢真刺。",
+              goal: "「我」既想学闰土的样子，又怕真刺到猹。",
               is_key_event: false,
               dialogue: [],
               evidence_refs: [],
@@ -188,6 +190,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 1,
           description: "深蓝的天空中挂着一轮金黄的圆月，下面是海边的沙地。",
+          goal: "闰土想在瓜地里露一手。",
           is_key_event: false,
           dialogue: [],
           evidence_refs: [
@@ -197,6 +200,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 2,
           description: "一个十一二岁的少年，项带银圈，手捏一柄钢叉，向一匹猹尽力的刺去。",
+          goal: "闰土要在生人面前显本事。",
           is_key_event: true,
           dialogue: [],
           evidence_refs: [
@@ -215,6 +219,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 3,
           description: "闰土说捕鸟须大雪下了才好，扫开一块雪，支起竹匾。",
+          goal: "闰土想教「我」一件城里学不到的本事。",
           is_key_event: false,
           dialogue: [],
           evidence_refs: [],
@@ -222,6 +227,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 4,
           description: "我日日盼望新年，新年到，闰土也就到了。",
+          goal: "两个少年都盼着见面。",
           is_key_event: true,
           dialogue: [],
           evidence_refs: [

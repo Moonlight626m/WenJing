@@ -122,16 +122,24 @@ class SessionStore:
         async with self._factory() as s:
             return await s.get(CommandRecord, command_id) is not None
 
-    async def command_status(self, command_id: uuid.UUID) -> str | None:
+    async def command_status(
+        self, command_id: uuid.UUID, *, session_id: uuid.UUID | None = None
+    ) -> str | None:
         """幂等闸的**细分**版：命令的落地状态（未受理为 None）。
 
         后台命令（select_role 202 化）要求区分「已完成（对账返回当前状态）」与
         「仍在跑（返回进行中形态，不能对账假装完成）」——两者在 commands 表里
         都有行，`has_command` 分不开。同步命令落库时直接写 SUCCEEDED，不受影响。
+
+        `session_id` 非空时校验命令归属：轮询端点用它防止拿别的会话命令 id 探状态。
         """
         async with self._factory() as s:
             row = await s.get(CommandRecord, command_id)
-            return row.status if row is not None else None
+            if row is None:
+                return None
+            if session_id is not None and row.session_id != session_id:
+                return None
+            return row.status
 
     async def claim_command(self, command: PlayerCommand, session_id: uuid.UUID) -> bool:
         """登记一条后台命令为 RECEIVED（独立事务）；已登记返回 False。

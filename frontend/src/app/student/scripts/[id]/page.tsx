@@ -12,5 +12,7 @@ export default async function StudentScriptPage({
   await requireRole(...STUDENT_ROLES);
   const { id } = await params;
   if (!/^\d+$/.test(id)) notFound();
-  return <StudentScriptDetail scriptId={Number(id)} />;
+  // key 让 `[id]` 变化时重挂载：同段路由换参数会复用组件实例，不重挂载就会
+  // 沿用上一部戏的详情与对局列表（「再来一局」会开成旧剧本）。
+  return <StudentScriptDetail key={id} scriptId={Number(id)} />;
 }

@@ -1,4 +1,4 @@
-"""逐场景预写台词节点 prompt v2（珊瑚图纯 IO 播放的数据源）。
+"""逐场景预写台词节点 prompt v3（珊瑚图纯 IO 播放的数据源）。
 
 段落构成（section）：
 - system：角色定位（台词作者，不是旁白改写者）；
@@ -13,6 +13,9 @@
 v2 变更：可扮演角色也要写台词。v1 让模型回避「玩家可能扮演的角色」，
 但玩家开局才选定角色、其余可扮演角色由系统扮演，回避会让这些角色整场沉默。
 播放期只跳过玩家所选角色的台词（`source=replay` 的 `character_speech`）。
+
+v3 变更：输入带上每个 beat 的 `goal`（戏剧目标）。它是潜台词的依据，不会播给
+玩家——台词要把目标演出来，而不是把目标说出来。
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from app.domain.prompts.bundle import PromptBundle, default_bundle
 
 NODE = "write_dialogue"
 STAGE = "script_gen"
-VERSION = "v2"
+VERSION = "v3"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 SYSTEM = """\
@@ -33,6 +36,8 @@ SYSTEM = """\
 DIALOGUE_RULES = """\
 【台词判据】
 - 每个 beat 配 1-3 句台词；旁白交代可用 speaker=null 的叙述句，但不要整段复述 beat 描述；
+- beat 的 goal 是这一拍人物想要什么、怕什么：它不会播给玩家，台词要用潜台词/\
+动作把它演出来，不要直接说出目标；
 - 台词要有信息增量：推进关系、暴露态度或制造张力，不写寒暄填充；
 - stage_direction 只写简短的动作/神态提示（"把橘子堆在皮大衣上"），可留空；
 - 语言风格贴合原文时代与人物身份，避免现代网络用语；

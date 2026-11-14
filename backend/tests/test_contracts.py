@@ -114,6 +114,43 @@ def test_fixture_validates_against_contract(fixture: str, model: type) -> None:
     assert parsed.schema_version == CONTRACTS_SCHEMA_VERSION
 
 
+def test_doubter_event_keeps_legacy_string_issues() -> None:
+    """历史落库的 progress 里 issues 是 `list[str]`：union 必须继续可校验。
+
+    `script_generations.progress` 已存了旧形状，改契约不能要求数据迁移；
+    规则校验（validate_replay）也继续产出纯字符串。
+    """
+    from app.contracts.generation import DoubterEvent
+
+    legacy = DoubterEvent.model_validate(
+        {
+            "node": "final_audit",
+            "verdict": "reject",
+            "issues": ["graph script requires endings"],
+            "round": 1,
+        }
+    )
+    assert legacy.issues == ["graph script requires endings"]
+
+    structured = DoubterEvent.model_validate(
+        {
+            "node": "verify_materials",
+            "verdict": "reject",
+            "issues": [
+                {
+                    "field": "era_setting",
+                    "category": "人物事实",
+                    "severity": "must_fix",
+                }
+            ],
+            "round": 1,
+        }
+    )
+    issue = structured.issues[0]
+    assert not isinstance(issue, str)
+    assert issue.field == "era_setting"
+
+
 def test_script_package_fixture_roundtrip() -> None:
     from app.contracts.script import ScriptPackage
 

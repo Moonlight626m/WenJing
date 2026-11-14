@@ -536,6 +536,7 @@ def test_generation_materials_gate_resume_flow(client):
 
     from app.contracts.generation import GenerationStatus as GenerationStatusEnum
     from app.contracts.material import MaterialInput, MaterialSource
+    from app.services.progress_hub import GenerationProgressHub
 
     account = _register(client, "gate-teacher@wenjing.local")
     me = account["me"]
@@ -557,6 +558,7 @@ def test_generation_materials_gate_resume_flow(client):
                 script_llm=llm,
                 workflow_enabled=True,
                 workflow_checkpointer=MemorySaver(),
+                progress_hub=GenerationProgressHub(),
             )
             material = await library.import_material(
                 actor,
@@ -565,15 +567,40 @@ def test_generation_materials_gate_resume_flow(client):
             script = await library.create_script(
                 actor, material_id=material.id, name="闸门流程", description=None
             )
-            await library.start_generation(script.id, actor)
-            await library.await_generation(script.id)
+            # 审阅载荷必须在 awaiting_review 帧广播**前**落库：教师端收到该帧
+            # 就回读详情，晚一步就会看到「未提供可编辑的素材结论」空面板
+            hub = library.progress_hub
+            assert hub is not None
+            order: list[str] = []
+            save_review = library._save_review
 
-            paused = await library.progress(script.id)
-            assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
-            # #34：闸门审阅载荷随暂停落库，教师端经 detail.review 读取
-            review = await library.review(script.id)
-            assert review is not None and review.gate == "materials"
-            assert review.dossier is not None
+            async def recording_save_review(
+                attempt_id: int, review: dict | None
+            ) -> None:
+                await save_review(attempt_id, review)
+                if review is not None:
+                    order.append("review_saved")
+
+            library._save_review = recording_save_review
+            with hub.subscribe(script.id) as frames:
+                await library.start_generation(script.id, actor)
+                while True:
+                    frame = await asyncio.wait_for(frames.get(), timeout=30)
+                    if (
+                        frame.get("status")
+                        == GenerationStatusEnum.AWAITING_REVIEW.value
+                    ):
+                        order.append("awaiting_frame")
+                        break
+                paused = await library.progress(script.id)
+                assert paused and paused.status == GenerationStatusEnum.AWAITING_REVIEW
+                # #34：闸门审阅载荷随暂停落库，教师端经 detail.review 读取
+                review = await library.review(script.id)
+                assert review is not None and review.gate == "materials"
+                assert review.dossier is not None
+            # 收到暂停帧时审阅载荷已可读（顺序不变量）
+            assert order[:2] == ["review_saved", "awaiting_frame"]
+            await library.await_generation(script.id)
 
             directive = "母亲的背影要更突出"
             # 链式闸门：素材 → 人物+场景 → 终审，逐闸恢复；恢复后停在下一闸

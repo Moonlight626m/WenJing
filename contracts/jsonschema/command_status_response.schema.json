@@ -1,0 +1,38 @@
+{
+  "additionalProperties": false,
+  "description": "GET /api/sessions/{id}/commands/{command_id}：异步命令落地状态。\n\nroles 页轮询它来区分「还在跑」与「已经失败」——会话状态本身不暴露命令\n台账，只轮询 stage/selected_role 会让失败一直等到前端超时。\n`status` 为 None 表示命令未受理（command_id 不属于该会话或从未提交）。\n`inflight` 表示本进程仍有该命令的后台 task：`received` 且非在途 =\n上个进程留下的孤儿受理，调用方应换新 command_id 重试。",
+  "properties": {
+    "command_id": {
+      "format": "uuid",
+      "title": "Command Id",
+      "type": "string"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "enum": [
+            "received",
+            "succeeded",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Status"
+    },
+    "inflight": {
+      "default": false,
+      "title": "Inflight",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "command_id"
+  ],
+  "title": "CommandStatusResponse",
+  "type": "object"
+}

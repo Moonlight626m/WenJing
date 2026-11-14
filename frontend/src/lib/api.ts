@@ -200,6 +200,14 @@ export interface RuntimeUpdateDto {
   emitted_event_types: string[];
 }
 
+/** 异步命令台账状态（backend CommandStatusResponse 镜像）。null = 未受理。 */
+export interface CommandStatus {
+  command_id: string;
+  status: "received" | "succeeded" | "failed" | null;
+  /** 本进程是否仍有该命令的后台 task；received 且 false = 上个进程的孤儿。 */
+  inflight: boolean;
+}
+
 /**
  * 回溯页的一条进度（backend/app/contracts/dto.py TimelineEntry 镜像）。
  *
@@ -261,6 +269,19 @@ export function openSession(scriptId: number): Promise<SessionStatus> {
 
 export function getStatus(sessionId: string): Promise<SessionStatus> {
   return request(`/api/sessions/${sessionId}`);
+}
+
+/**
+ * 异步命令台账状态（GET /api/sessions/{id}/commands/{command_id}）。
+ *
+ * select_role 的执行结果只经 WS 推给在线连接；选角页没有 WS，靠这个端点把
+ * 「还在跑」与「已经失败」区分开，避免失败后干等前端超时。
+ */
+export function getCommandStatus(
+  sessionId: string,
+  commandId: string
+): Promise<CommandStatus> {
+  return request(`/api/sessions/${sessionId}/commands/${commandId}`);
 }
 
 /** 回溯页进度（GET /api/sessions/{id}/timeline）：只含已发生的事件。 */

@@ -198,6 +198,10 @@ def validate_subject_key(subject_key: str) -> str:
 class GateEdits(VersionedContract):
     """教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。
 
+    例外：`division.endings` 为空而原稿有结局时，工作流保留原稿结局——
+    前端只编辑场景名/参与人物，空值视为回传丢字段（见
+    `workflow/nodes.py::pre_write_gate`）。
+
     `asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一
     subject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。
     """

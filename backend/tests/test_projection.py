@@ -39,7 +39,11 @@ def test_script_package_to_script_maps_engine_fields():
                 title="浦口送别",
                 participants=["父亲", "儿子"],
                 beats=[
-                    Beat(beat_id=1, description="父亲送行"),
+                    Beat(
+                        beat_id=1,
+                        description="父亲送行",
+                        goal="父亲想亲自送儿子上车",
+                    ),
                     Beat(beat_id=2, description="买橘子"),
                 ],
             )
@@ -54,7 +58,38 @@ def test_script_package_to_script_maps_engine_fields():
     # playable_roles 是可扮演的权威来源
     assert [c.is_player_playable for c in script.characters] == [False, True]
     assert script.scenes[0].beats[1].description == "买橘子"
+    # goal 与 description 分开进入引擎：前者只作 agent 上下文
+    assert script.scenes[0].beats[0].goal == "父亲想亲自送儿子上车"
+    assert script.scenes[0].beats[0].description == "父亲送行"
     assert script.stage2_ending_beat_id == 2
+
+
+def test_script_adapter_splits_legacy_goal_note_into_goal():
+    """存量包把目标写在 description 里：接缝处拆成 description + goal。"""
+    from app.contracts.script import Beat, CharacterProfile, Scene, ScriptPackage
+
+    pkg = ScriptPackage(
+        title="背影",
+        characters=[CharacterProfile(name="父亲", public_background="中年父亲")],
+        scenes=[
+            Scene(
+                scene_id=1,
+                title="月台",
+                participants=["父亲"],
+                beats=[
+                    Beat(
+                        beat_id=1,
+                        description="父亲把橘子堆在皮大衣上。目标：父亲想照顾儿子。",
+                    )
+                ],
+            )
+        ],
+        playable_roles=["父亲"],
+        stage2_ending_beat_id=1,
+    )
+    beat = script_package_to_script(pkg).scenes[0].beats[0]
+    assert beat.description == "父亲把橘子堆在皮大衣上。"
+    assert beat.goal == "父亲想照顾儿子。"
 
 
 def test_script_package_preserves_structured_knowledge_boundary():
@@ -550,6 +585,37 @@ async def test_project_timeline_drops_superseded_branch_progress(make_runtime):
     )
 
 
+async def test_rollback_messages_reset_and_replay_full_branch(make_runtime):
+    """回溯批 = 分支重置信号 + 新分支全量重放（含回滚目标之前的继承前缀）。"""
+    from app.services.session_projection import messages_from_update
+
+    rt = make_runtime(session_id=str(_SID))
+    await _start_and_select(rt)
+    await _choose(rt, 1)
+    old_branch = rt.event_store.active_branch_id
+    target = next(
+        e for e in rt.event_store.active_events() if e.event_type == "plot_advancement"
+    )
+    result = await rt.submit(
+        command_id=str(uuid.uuid4()),
+        kind="rollback_to_event",
+        payload={"target_event_id": target.event_id},
+    )
+    update = project_update(_SID, rt.event_store, result)
+    msgs = messages_from_update(_SID, rt.event_store, update)
+
+    assert rt.event_store.active_branch_id != old_branch
+    reset = msgs[0]
+    assert reset["type"] == "timeline_reset"
+    assert reset["payload"]["branch_id"] == str(update.state.branch_id)
+    assert reset["payload"]["stage"] == rt.state.stage
+    # 全量重放按 seq 递增，且包含回滚目标之前的历史（前缀）
+    seqs = [m["seq"] for m in msgs[1:]]
+    assert seqs == sorted(seqs)
+    assert any(seq < update.state.last_sequence for seq in seqs), "缺继承前缀"
+    assert any(m["payload"].get("event_type") == "rollback" for m in msgs[1:])
+
+
 async def test_project_timeline_scene_without_image_does_not_inherit_previous(
     make_runtime,
 ):
@@ -572,3 +638,25 @@ async def test_project_timeline_scene_without_image_does_not_inherit_previous(
     scene2 = [e for e in tl.entries if e.scene_title == "送别"]
     assert scene1 and any(e.current_asset is not None for e in scene1)
     assert scene2 and all(e.current_asset is None for e in scene2)
+
+
+def test_legacy_replay_narration_is_sanitized_on_read():
+    """历史事件里已落库的 v3 旁白（带「目标：…」）在重连/回溯投影时同样干净。"""
+    from app.domain.game.event import EVENT_REPLAY_NARRATION, EventStore
+    from app.services.session_projection import project_messages
+
+    store = EventStore()
+    store.append(
+        EVENT_REPLAY_NARRATION,
+        {"node_id": "scene:1", "text": "父亲把橘子堆在皮大衣上。目标：父亲想照顾儿子。"},
+        session_id="s1",
+    )
+    store.append(
+        EVENT_REPLAY_NARRATION,
+        {"node_id": "scene:1", "text": "（目标：让玩家感到沉重。）"},
+        session_id="s1",
+    )
+
+    messages = project_messages(_SID, store)
+    texts = [m["payload"].get("text") for m in messages if m["type"] == "narrative"]
+    assert texts == ["父亲把橘子堆在皮大衣上。"]

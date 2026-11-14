@@ -25,7 +25,11 @@ import { GameScreen } from "@/components/game-screen";
 import { RoleCard } from "@/components/role-card";
 import { GameStage } from "@/components/game-stage";
 import { Skeleton, SkeletonCard } from "@/components/skeleton";
-import { GameRow, SquareCard } from "@/components/student/student-home";
+import {
+  GameRow,
+  ScriptGameCard,
+  SquareCard,
+} from "@/components/student/game-cards";
 import { AssetReviewSection } from "@/components/teacher/asset-review";
 import { GenerationProgress } from "@/components/teacher/generation-progress";
 import { GateReviewPanel } from "@/components/teacher/gate-review-panel";
@@ -40,6 +44,7 @@ import { SectionHeading } from "@/components/ui/section";
 import { Empty, Loading } from "@/components/ui/states";
 import { Tag } from "@/components/ui/tag";
 import { scriptStatusLabel, SCRIPT_STATUS_TONES } from "@/lib/labels";
+import { groupSessionsByScript, numberSessionsByStart } from "@/lib/session-groups";
 import { useGameStore } from "@/stores/gameStore";
 import {
   GATE_FINAL,
@@ -60,6 +65,11 @@ import {
 } from "@/components/showcase/fixtures";
 
 const SESSION_ID = SESSIONS[0].session_id;
+
+/** 「我的游戏」按剧本聚合后的展示数据（同一部戏的多次开局归一组）。 */
+const STUDENT_GAMES = groupSessionsByScript(SESSIONS);
+/** 「第 N 局」编号与真实页面同一口径（按开局先后）。 */
+const STUDENT_GAME_NUMBERS = numberSessionsByStart(SESSIONS);
 
 /** 运营后台表格的示意行（真实页面从 /api/admin/usage 取）。 */
 const USAGE_ROWS = [
@@ -161,6 +171,7 @@ function useStageFixture() {
       ],
       pending: null,
       connection: "connected",
+      sessionInitialized: true,
       audioMuted: false,
     });
     return () => {
@@ -176,6 +187,7 @@ function useStageFixture() {
         allowedCommands: [],
         pending: null,
         connection: "idle",
+        sessionInitialized: false,
       });
     };
   }, []);
@@ -289,16 +301,19 @@ export function ShowcaseGallery() {
 
             <Specimen
               title="学生空间"
-              note="顶栏 + 我的游戏 + 剧本广场；搜索框在栏目标题右侧"
+              note="顶栏 + 我的游戏（按剧本聚合，一部戏一行，点进去看各局）+ 剧本广场；搜索框在栏目标题右侧"
             >
               <AppHeader user={USER_STUDENT} />
               <PageBody>
                 <h4 className="text-3xl text-ink">学生空间</h4>
                 <section className="flex flex-col gap-4">
-                  <SectionHeading title="我的游戏" meta={`${SESSIONS.length} 局`} />
+                  <SectionHeading
+                    title="我的游戏"
+                    meta={`${STUDENT_GAMES.groups.length} 个剧本 · ${SESSIONS.length} 局`}
+                  />
                   <ul className="flex flex-col gap-2">
-                    {SESSIONS.map((session) => (
-                      <GameRow key={session.session_id} session={session} />
+                    {STUDENT_GAMES.groups.map((group) => (
+                      <ScriptGameCard key={group.scriptId} group={group} />
                     ))}
                   </ul>
                 </section>
@@ -321,6 +336,46 @@ export function ShowcaseGallery() {
                     ))}
                   </div>
                 </section>
+              </PageBody>
+            </Specimen>
+
+            <Specimen
+              title="剧本详情（学生）：我的剧情世界 + 剧本预览"
+              note="我的游戏点进来就是这一页——一页一部戏：先列我在这部戏里的各局（按开局先后编号、按最近游玩倒序），再看剧本与「再来一局」；下架剧本仍能从这里继续存量剧情世界"
+            >
+              <AppHeader user={USER_STUDENT} />
+              <PageBody width="max-w-3xl">
+                <div className="flex flex-col gap-1.5 border-b border-rule pb-3">
+                  <h4 className="text-2xl text-ink">{SQUARE_SCRIPTS[0].name}</h4>
+                  {SQUARE_SCRIPTS[0].description && (
+                    <p className="measure text-sm text-ink-soft">
+                      {SQUARE_SCRIPTS[0].description}
+                    </p>
+                  )}
+                </div>
+                <section className="flex flex-col gap-4">
+                  <SectionHeading
+                    title="我的剧情世界"
+                    meta={`${SESSIONS.length} 局`}
+                  />
+                  <ul className="flex flex-col gap-2">
+                    {SESSIONS.map((session) => (
+                      <GameRow
+                        key={session.session_id}
+                        session={session}
+                        title={`第 ${STUDENT_GAME_NUMBERS.get(session.session_id) ?? "?"} 局`}
+                      />
+                    ))}
+                  </ul>
+                </section>
+                <div className="flex flex-wrap items-center gap-3">
+                  <Button tone="accent" size="md">
+                    再来一局
+                  </Button>
+                  <span className="text-xs text-ink-faint">
+                    每次开局都是一个新剧情世界
+                  </span>
+                </div>
               </PageBody>
             </Specimen>
 
@@ -591,7 +646,7 @@ export function ShowcaseGallery() {
 
             <Specimen
               title="打回与等待审阅"
-              note="被打回的节点用琥珀色回环标出，考证记录默认折叠"
+              note="被打回的节点用琥珀色回环标出，审阅留痕默认折叠"
             >
               <PageBody width="max-w-3xl">
                 <GenerationProgress generation={GENERATION_AWAITING} />

@@ -224,6 +224,8 @@ interface GameStore {
   allowedCommands: CommandKind[];
   pending: PendingCommand | null;
   connection: Connection;
+  /** 是否已收到当前连接上的权威 `session_init`。断线即复位：离线 tick 会先补算。 */
+  sessionInitialized: boolean;
   sender: Sender | null;
   /** 音频是否静音（#63）。只影响本地播放，不影响服务端合成与计量。 */
   audioMuted: boolean;
@@ -312,6 +314,7 @@ export const useGameStore = create<GameStore>((set, get) => {
     allowedCommands: [],
     pending: null,
     connection: "idle",
+    sessionInitialized: false,
     sender: null,
     audioMuted: false,
 
@@ -324,19 +327,32 @@ export const useGameStore = create<GameStore>((set, get) => {
         playerRole: null,
         plotLog: [],
         scriptId: null,
+        scriptTitle: null,
+        playableRoles: [],
+        characters: [],
+        scenes: [],
+        selectedRole: null,
         messages: [],
         streams: [],
         interaction: null,
         allowedCommands: [],
         pending: null,
         connection: "connecting",
+        sessionInitialized: false,
         sceneKey: null,
         sceneTitle: null,
         currentAsset: null,
       });
     },
 
-    setConnection: (connection) => set({ connection }),
+    setConnection: (connection) =>
+      set((state) => ({
+        connection,
+        // 断线后权威快照失效；重连时服务端会先补算离线 tick 再发 session_init，
+        // 这期间旧交互点不能继续提交。
+        sessionInitialized:
+          connection === "connected" ? state.sessionInitialized : false,
+      })),
 
     setSender: (sender) => set({ sender }),
 
@@ -409,11 +425,38 @@ export const useGameStore = create<GameStore>((set, get) => {
         return;
       }
 
+      if (msg.type === "timeline_reset") {
+        // 回溯重写了活动时间线：丢弃旧分支的本地消息与流缓冲。同一批次随后
+        // 会整段重放新分支（含回滚目标之前的继承前缀），按抵达顺序重建。
+        markCommandSettled();
+        set({
+          messages: [],
+          streams: [],
+          interaction: null,
+          allowedCommands: [],
+          stage: asStage(String(payload.stage ?? get().stage)),
+          branchId:
+            typeof payload.branch_id === "string"
+              ? payload.branch_id
+              : get().branchId,
+        });
+        return;
+      }
+
       if (msg.type === "session_init") {
         const ix = (payload.active_interaction as ActiveInteraction | null) ?? null;
+        // 断线期间活动分支可能被回溯改写过：新分支的 seq 与旧时间线无关，
+        // 必须清空本地消息并从 0 全量重建，否则旧水位会把新分支历史挡在门外。
+        const nextBranch =
+          typeof payload.branch_id === "string" ? payload.branch_id : null;
+        const branchChanged =
+          get().branchId !== null &&
+          nextBranch !== null &&
+          nextBranch !== get().branchId;
         set({
           stage: asStage(String(payload.stage ?? "init")),
-          branchId: typeof payload.branch_id === "string" ? payload.branch_id : null,
+          branchId: nextBranch,
+          sessionInitialized: true,
           playerRole:
             typeof payload.player_role === "string" ? payload.player_role : null,
           plotLog: Array.isArray(payload.plot_log)
@@ -425,6 +468,7 @@ export const useGameStore = create<GameStore>((set, get) => {
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
             : []) as CommandKind[],
+          messages: branchChanged ? [] : get().messages,
           // 场景背景（#53）：权威快照携带，重连即恢复当前背景与场景标题
           // 重连的权威快照：在途流属于**上一条连接**，一并丢弃（字幕的收束
           // 由随后的 character_speech 事件负责，不靠流缓冲）
@@ -439,12 +483,12 @@ export const useGameStore = create<GameStore>((set, get) => {
               ? (payload.current_asset as AssetRef)
               : null,
         });
-        // 权威重建后按本地确认水位请求补发（首连为 0 → 服务端从 DB 全量重建）。
-        // session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
+        // 权威重建后按本地确认水位请求补发（首连/分支变化为 0 → 服务端从 DB
+        // 全量重建）。session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
         get()
           .sender?.({
             type: "resync_request",
-            last_confirmed_seq: maxSeq(get().messages),
+            last_confirmed_seq: branchChanged ? 0 : maxSeq(get().messages),
           });
         return;
       }
@@ -579,8 +623,10 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     submitCommand: (kind, payload, label) => {
-      const { sessionId, sender, pending, allowedCommands } = get();
+      const { sessionId, sender, pending, allowedCommands, sessionInitialized } =
+        get();
       if (!sessionId || !sender || pending) return; // 单飞行：等待当前命令响应
+      if (!sessionInitialized) return; // 权威快照未到：旧交互点可能已过期
       if (!allowedCommands.includes(kind)) return;
       const command = buildCommand(sessionId, kind, payload);
       sender({ type: "submit_command", command });

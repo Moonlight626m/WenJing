@@ -23,7 +23,10 @@ def two_scene_script() -> Script:
                 scene_id=1,
                 title="相遇",
                 participants=["李白", "杜甫", "高适"],
-                beats=[Beat(beat_id=1, description="相遇"), Beat(beat_id=2, description="作别")],
+                beats=[
+                    Beat(beat_id=1, description="相遇", goal="李白想结识杜甫"),
+                    Beat(beat_id=2, description="作别"),
+                ],
             ),
             Scene(
                 scene_id=2,
@@ -72,6 +75,14 @@ def test_outline_excludes_scenes_viewer_not_in(two_scene_script):
     li_titles = [s["title"] for s in rt.world_view.bind("李白").outline()]
     assert du_titles == ["相遇", "边塞"]
     assert li_titles == ["相遇"]
+
+
+def test_outline_keeps_goal_as_structured_field(two_scene_script):
+    """outline 把 description 与 goal 分开给 agent，不再拼成一段文本。"""
+    rt = make_rt(two_scene_script)
+    beats = rt.world_view.bind("李白").outline()[0]["beats"]
+    assert beats[0] == {"description": "相遇", "goal": "李白想结识杜甫"}
+    assert beats[1] == {"description": "作别", "goal": ""}
 
 
 def test_plot_log_excludes_foreign_scene(two_scene_script):

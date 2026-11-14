@@ -125,7 +125,7 @@
     },
     "Beat": {
       "additionalProperties": false,
-      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
+      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。\n\n`description` 是**玩家可见**的场面/事件叙述（播放时原样作为旁白）；\n`goal` 是给运行时 agent 的戏剧目标（谁想要什么、障碍是什么），不直接播给\n玩家——两者混在一起会把作者备注漏进对白流（v3 提示词的历史问题）。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",
@@ -138,6 +138,11 @@
         },
         "description": {
           "title": "Description",
+          "type": "string"
+        },
+        "goal": {
+          "default": "",
+          "title": "Goal",
           "type": "string"
         },
         "is_key_event": {

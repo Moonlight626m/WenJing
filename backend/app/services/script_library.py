@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Callable
 
@@ -62,17 +63,38 @@ logger = logging.getLogger("wenjing.scripts.library")
 _background_tasks: set[asyncio.Task] = set()
 
 
+_MAX_ERROR_DETAIL = 240
+
+
 def _failure_text(exc: BaseException) -> str:
     """教师端可见的失败原因。
 
     原先只写整数码（`str(exc.code)`），教师端 `GenerationProgress.error` 里只有
     「4004」这么一个数字——#65 的现象就是「看不出发生了什么」。带码的走
     `envelope_for` 拿稳定码名 + `safe_message` 中文文案；不带码的回落异常自身措辞。
+
+    `extra` 里的 `reason` / `detail` 一并附上：`CONTENT_GENERATION_FAILED` 这类
+    码的文案是笼统的「请稍后重试」，真正原因（如总审被 validate_replay 打回的
+    issues）只在这里，不带出去教师就无从判断。过长截断，避免撑坏详情页。
     """
-    if hasattr(exc, "code"):
-        env = envelope_for(exc)
-        return f"{env.code}：{env.message}"
-    return exc_reason(exc)
+    if not hasattr(exc, "code"):
+        return exc_reason(exc)
+    env = envelope_for(exc)
+    details = env.details or {}
+    detail = "；".join(
+        collapsed
+        for key in ("reason", "detail")
+        # 压平换行：详情页是单行渲染，多行文案会把排版冲散
+        if (collapsed := " ".join(str(details.get(key, "")).split()))
+    )
+    truncated = len(detail) > _MAX_ERROR_DETAIL
+    if truncated:
+        detail = detail[:_MAX_ERROR_DETAIL] + "…"
+    text = f"{env.code}：{env.message}"
+    if not detail:
+        return text
+    suffix = "（已截断）" if truncated else ""
+    return f"{text}（{detail}）{suffix}"
 
 
 def _telemetry_dict(telemetry: GenerationTelemetry) -> dict:
@@ -285,6 +307,13 @@ class ScriptLibrary:
         task.add_done_callback(
             lambda t, sid=script.id, aid=attempt.id: self._on_task_done(sid, t, aid)
         )
+        logger.info(
+            "[script-gen] script=%s《%s》 开始生成 attempt=%s thread=%s",
+            script.id,
+            script.name,
+            attempt.id,
+            attempt.thread_id,
+        )
 
     def _on_task_done(
         self, script_id: int, task: asyncio.Task, attempt_id: int
@@ -472,8 +501,11 @@ class ScriptLibrary:
     async def _run_generation(
         self, script_id: int, attempt_id: int, thread_id: str
     ) -> None:
+        started = time.monotonic()
+        script_name = ""
         try:
             script, material, analysis = await self._load_generation_inputs(script_id)
+            script_name = script.name
             if self._workflow_enabled and self._script_llm is not None:
                 await self._run_workflow(
                     script, material, analysis, attempt_id=attempt_id, thread_id=thread_id
@@ -484,10 +516,20 @@ class ScriptLibrary:
                 )
             else:
                 await self._run_legacy_synth(script, analysis, attempt_id=attempt_id)
+            logger.info(
+                "[script-gen] script=%s《%s》 生成结束（耗时 %.1fs）attempt=%s",
+                script_id,
+                script_name,
+                time.monotonic() - started,
+                attempt_id,
+            )
         except Exception as exc:
             logger.warning(
-                "script_generation_failed script_id=%s reason=%s",
+                "[script-gen] script=%s《%s》 生成失败（耗时 %.1fs）attempt=%s：%s",
                 script_id,
+                script_name or "?",
+                time.monotonic() - started,
+                attempt_id,
                 exc_reason(exc),
             )
             await self._save_progress(
@@ -529,10 +571,12 @@ class ScriptLibrary:
             self._build_nodes(script),
             checkpointer=self._workflow_checkpointer,
             progress_sink=self._attempt_sink(attempt_id, script.id),
+            review_sink=self._review_sink(attempt_id),
         )
         final = await runner.run(
             initial_state(
                 script_id=script.id,
+                script_name=script.name,
                 session_id=f"script-{script.id}",
                 analysis=analysis,
                 web_evidence=web,
@@ -542,7 +586,20 @@ class ScriptLibrary:
             ),
             thread_id=thread_id,
         )
-        await self._finalize_workflow(script, final, runner, attempt_id=attempt_id)
+        await self._finalize_workflow(script, final, runner)
+
+    def _review_sink(self, attempt_id: int):
+        """闸门审阅载荷落库回调：runner 在广播 awaiting_review 前调用。
+
+        顺序很关键：教师端收到 SSE 终态帧后回读详情，此时 review 必须已在库中；
+        若挪到流结束后（原 `_finalize_workflow` 的写法），会留下一段「面板已出现、
+        素材结论为空」的窗口（线上现象：素材闸门永远显示「未提供可编辑的素材结论」）。
+        """
+
+        async def sink(review: dict | None) -> None:
+            await self._save_review(attempt_id, review)
+
+        return sink
 
     def _designer(self) -> SceneDesigner | None:
         """解析组合根延迟注入的编排（callable → 首次生成时求值，#48）。"""
@@ -579,15 +636,14 @@ class ScriptLibrary:
         return sink
 
     async def _finalize_workflow(
-        self, script: ScriptRecord, final: dict, runner: WorkflowRunner, *, attempt_id: int
+        self, script: ScriptRecord, final: dict, runner: WorkflowRunner
     ) -> None:
-        """workflow 终态处理：闸门暂停记录审阅载荷，完成才写剧本与 telemetry。"""
+        """workflow 终态处理：闸门暂停的审阅载荷已由 review_sink 落库，完成才写剧本。"""
         if runner.snapshot().status == GenerationStatus.AWAITING_REVIEW:
-            # 教师闸门暂停（#34）：审阅载荷落库供教师端读取，终态待恢复后落库
-            await self._save_review(attempt_id, runner.review)
             logger.info(
-                "script_generation_awaiting_review script_id=%s gate=%s",
+                "[script-gen] script=%s《%s》 暂停于闸门 gate=%s（等待教师审阅）",
                 script.id,
+                script.name,
                 (runner.review or {}).get("gate"),
             )
             return
@@ -718,11 +774,21 @@ class ScriptLibrary:
         paused_nodes: list[NodeProgress] | None,
     ) -> None:
         """闸门恢复执行：断点续跑，终态与首次生成同一落库面。"""
+        started = time.monotonic()
+        logger.info(
+            "[script-gen] script=%s《%s》 恢复生成 attempt=%s gate=%s directives=%d",
+            script.id,
+            script.name,
+            attempt_id,
+            gate,
+            len(resume.directives),
+        )
         try:
             runner = WorkflowRunner(
                 self._build_nodes(script),
                 checkpointer=self._workflow_checkpointer,
                 progress_sink=self._attempt_sink(attempt_id, script.id),
+                review_sink=self._review_sink(attempt_id),
                 doubter_events=doubter_events,
             )
             if paused_nodes is not None:
@@ -734,13 +800,21 @@ class ScriptLibrary:
                 resume_payload=resume.model_dump(mode="json"),
                 gate=gate,
             )
-            await self._finalize_workflow(
-                script, final, runner, attempt_id=attempt_id
+            await self._finalize_workflow(script, final, runner)
+            logger.info(
+                "[script-gen] script=%s《%s》 恢复生成结束（耗时 %.1fs）attempt=%s",
+                script.id,
+                script.name,
+                time.monotonic() - started,
+                attempt_id,
             )
         except Exception as exc:
             logger.warning(
-                "script_generation_failed script_id=%s reason=%s",
+                "[script-gen] script=%s《%s》 恢复生成失败（耗时 %.1fs）attempt=%s：%s",
                 script.id,
+                script.name,
+                time.monotonic() - started,
+                attempt_id,
                 exc_reason(exc),
             )
             await self._save_progress(

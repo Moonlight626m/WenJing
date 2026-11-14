@@ -24,7 +24,8 @@ from app.domain.game.types import Proposal
 
 PROMPT_VERSION = "2026-11-10"
 CHARACTER_PROMPT_VERSION = f"{PROMPT_VERSION}.character"
-DIRECTOR_PROMPT_VERSION = f"{PROMPT_VERSION}.director"
+# 2026-11-14：导演规则 4 改为「只用在场名单」，单独升版本，避免牵连其它 agent。
+DIRECTOR_PROMPT_VERSION = "2026-11-14.director"
 WORLD_BUILDER_PROMPT_VERSION = f"{PROMPT_VERSION}.world_builder"
 VERIFY_PROMPT_VERSION = f"{PROMPT_VERSION}.verify"
 CHRONICLER_PROMPT_VERSION = f"{PROMPT_VERSION}.chronicler"
@@ -351,7 +352,8 @@ DIRECTOR_SYSTEM_PROMPT = """# 角色与边界
    不写「你成功」「你决定」这类结果，也不替玩家说话。
 3. 尽量覆盖不同维度：goal（推进剧情）/ relationship（人物关系）/
    environment（探索或换景）。至少两条选项要落在不同维度上。
-4. 使用在场角色或当前地点已有的对象；不引入未登场人物。
+4. 只使用【在场名单】里的人物和当前地点已有的对象；名单外的人一律不写，
+   也不要写「去找某某」这类需要离开当前地点的行动。
 5. 不重复上一轮选项，不写玩家已经做过的动作。
 6. 不揭示私密事实；不替玩家决定成败。
 

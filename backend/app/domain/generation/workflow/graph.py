@@ -42,6 +42,40 @@ from app.domain.generation.workflow.state import WorkflowState
 
 _L = logging.getLogger("wenjing.generation.workflow")
 
+# 阶段中文名（只用于日志，取值与 frontend/src/lib/labels.ts 的
+# GENERATION_NODE_LABELS 对齐；闸门/并行/终点是后端内部节点，前端没有对应项）。
+_NODE_LABELS: dict[str, str] = {
+    "collect_materials": "素材收集",
+    "verify_materials": "素材考证",
+    "materials_gate": "素材闸门",
+    "divide_events": "事件划分",
+    "design_characters": "人物设定",
+    "design_one_character": "单个人物设定",
+    "merge_characters": "人物合并",
+    "pre_write_gate": "书写前闸门",
+    "write_script": "剧本书写",
+    "write_dialogue": "台词预写",
+    "final_audit": "总审",
+    "design_exploration": "探索地图",
+    "design_assets": "配图设计",
+    "final_gate": "终审闸门",
+    "fail": "失败终点",
+}
+
+
+def _script_tag(candidate: Any) -> str:
+    """日志前缀：`script=5《背影2》`（旧 checkpoint 没有 name 时退化为 id）。"""
+    if not isinstance(candidate, dict):
+        return "script=?"
+    sid = candidate.get("script_id")
+    name = str(candidate.get("script_name") or "").strip()
+    return f"script={sid}《{name}》" if name else f"script={sid}"
+
+
+def _stage_label(node_name: str) -> str:
+    label = _NODE_LABELS.get(node_name)
+    return f"{node_name}({label})" if label else node_name
+
 
 def _session_id(candidate: Any) -> str:
     return (
@@ -58,8 +92,12 @@ def _logged(node_name: str) -> Callable[[Callable], Callable]:
         @functools.wraps(fn)
         async def wrapper(candidate: Any, *args: Any, **kwargs: Any) -> Any:
             sid = _session_id(candidate)
+            script = _script_tag(candidate)
+            stage = _stage_label(node_name)
             _L.info(
-                f"[script-gen][{node_name}] start",
+                "[script-gen] %s stage=%s 开始",
+                script,
+                stage,
                 extra={"session_id": sid},
             )
             started = time.monotonic()
@@ -68,7 +106,10 @@ def _logged(node_name: str) -> Callable[[Callable], Callable]:
             except GraphInterrupt:
                 # 教师闸门暂停（#34）：等待恢复，不是失败
                 _L.info(
-                    f"[script-gen][{node_name}] paused(teacher gate)",
+                    "[script-gen] %s stage=%s 暂停（等待教师审阅，已耗时 %.1fs）",
+                    script,
+                    stage,
+                    time.monotonic() - started,
                     extra={"session_id": sid},
                 )
                 raise
@@ -81,7 +122,11 @@ def _logged(node_name: str) -> Callable[[Callable], Callable]:
                 msg = getattr(exc, "msg", None)
                 info["reason"] = str(msg if msg is not None else exc)[:300]
                 _L.error(
-                    f"[script-gen][{node_name}] failed",
+                    "[script-gen] %s stage=%s 失败（耗时 %.1fs）：%s",
+                    script,
+                    stage,
+                    time.monotonic() - started,
+                    info["reason"],
                     extra={
                         "session_id": sid,
                         "duration_ms": int((time.monotonic() - started) * 1000),
@@ -90,7 +135,10 @@ def _logged(node_name: str) -> Callable[[Callable], Callable]:
                 )
                 raise
             _L.info(
-                f"[script-gen][{node_name}] done",
+                "[script-gen] %s stage=%s 结束（耗时 %.1fs）",
+                script,
+                stage,
+                time.monotonic() - started,
                 extra={
                     "session_id": sid,
                     "duration_ms": int((time.monotonic() - started) * 1000),
@@ -119,7 +167,11 @@ def _logged_route(name: str) -> Callable[[Callable], Callable]:
             if retries:
                 detail += f" write_retries={retries}"
             _L.info(
-                f"[script-gen][{name}] ->{target}{detail}",
+                "[script-gen] %s 路由 %s -> %s%s",
+                _script_tag(state),
+                _stage_label(name),
+                target,
+                detail,
                 extra={
                     "session_id": sid,
                     "wj_extra": {
@@ -151,7 +203,9 @@ def _logged_send(fn: Callable) -> Callable:
             if isinstance(payload, dict):
                 names.append(payload.get("name", "?"))
         _L.info(
-            "[script-gen][design_characters] fanout=%d names=%s",
+            "[script-gen] %s stage=%s 并行派发 %d 个人物：%s",
+            _script_tag(state),
+            _stage_label("design_characters"),
             len(names),
             ",".join(str(n) for n in names),
             extra={"session_id": _session_id(state)},

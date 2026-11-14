@@ -181,7 +181,7 @@
     },
     "Beat": {
       "additionalProperties": false,
-      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
+      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。\n\n`description` 是**玩家可见**的场面/事件叙述（播放时原样作为旁白）；\n`goal` 是给运行时 agent 的戏剧目标（谁想要什么、障碍是什么），不直接播给\n玩家——两者混在一起会把作者备注漏进对白流（v3 提示词的历史问题）。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",
@@ -194,6 +194,11 @@
         },
         "description": {
           "title": "Description",
+          "type": "string"
+        },
+        "goal": {
+          "default": "",
+          "title": "Goal",
           "type": "string"
         },
         "is_key_event": {
@@ -900,7 +905,7 @@
     },
     "GateEdits": {
       "additionalProperties": false,
-      "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。\n\n`asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一\nsubject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。",
+      "description": "教师编辑载荷：教师改后的中间产物整体替换对应通道（None=未编辑）。\n\n例外：`division.endings` 为空而原稿有结局时，工作流保留原稿结局——\n前端只编辑场景名/参与人物，空值视为回传丢字段（见\n`workflow/nodes.py::pre_write_gate`）。\n\n`asset_ops` 是配图槽位操作列表（#49）：按 subject_key 累计应用，同一\nsubject 多条时**后一条覆盖前一条**的意图（前端每次提交该槽位的最终意图）。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",

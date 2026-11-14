@@ -30,7 +30,7 @@ from app.domain.game.types import Proposal
 
 FINGERPRINTS = {
     "character": "c63aec53bf63fffa201870595b856208fe0a1b3c0aec91f4f662ff36ea56be0a",
-    "director": "0987240d856be917fd3f38ae50b00b4ccf6f13d473dc5d20fcd9922aa6073779",
+    "director": "94239d177932b7f7095ee4bb2a600296a0180a397104857deb395967b44e8cde",
     "world_builder": "ed4bb34355b1b1084ff310fe9829cdb25ab7f750e4956dbaf945db5fcb3d1130",
     "verify": "c64f9583f351e61aa4f2800b7a9673dba5255faf2ea37fa04243b6bc09e90bbd",
     "chronicler": "d56cc9f7dd9e663f98aa16d540eea3736f99cb3bb0dfb5377b3701eb771ef743",

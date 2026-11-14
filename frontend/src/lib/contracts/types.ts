@@ -171,10 +171,25 @@ export interface NodeProgress {
   detail: string | null;
 }
 
+/**
+ * doubter 单条问题（backend DoubterIssue 镜像）：结构化，供教师端分块渲染。
+ *
+ * `DoubterEvent.issues` 里也可能是纯字符串——那是确定性规则校验
+ * （validate_replay）的结构问题，没有 severity/category/field。
+ */
+export interface DoubterIssue {
+  field: string;
+  quote: string;
+  category: "人物事实" | "事件顺序" | "编造情节" | "篡改关键事实";
+  evidence: string;
+  severity: "must_fix" | "nice_to_fix";
+  suggestion: string;
+}
+
 export interface DoubterEvent {
   node: GenerationNode;
   verdict: "pass" | "reject";
-  issues: string[];
+  issues: (DoubterIssue | string)[];
   round: number;
 }
 
@@ -500,7 +515,10 @@ export interface DialogueLine {
 
 export interface Beat {
   beat_id: number;
+  /** 玩家可见的场面叙述（播放时作旁白）。 */
   description: string;
+  /** 戏剧目标：只作运行时 agent 上下文，不播给玩家。 */
+  goal: string;
   is_key_event: boolean;
   evidence_refs: EvidenceRef[];
   dialogue: DialogueLine[];

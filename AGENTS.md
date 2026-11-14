@@ -41,6 +41,8 @@
 
 **`services/session_store.py` 是会话持久化的深模块**（`restore`/`commit`/`load_package`/`has_command`/`discard`）：命令路径与命令外事件路径共用同一套 CAS 事务拼写，改持久化语义只改这一处。
 
+**`SessionApplication._lock_for` 是进程内会话写锁**：命令的「恢复 → LLM → 提交」与命令外事件（配图就绪、离线 tick、系统事件）共用同一把锁。版本 CAS 只作跨进程兜底——进程内不加锁时，配图事件会在命令跑完 LLM 后抢走版本号，命令直接失败；玩家（或客户端）重试就要重付一次 LLM。新增任何会推进 `session.version` 的写入路径时，必须包进这把锁；它依赖单 worker 部署（与运行时状态同一前提）。
+
 ### 事件溯源
 
 事件是权威。`EventStore.active_events()`（当前活动分支）与 `branch_path()` 共同决定状态与**资产继承**；`RuntimeAssets.rebuild(store)` 是从事件重建场景资产索引的指定入口、**不落库**（`domain/game/assets.py`）。生产侧的调用点只有一处：`GameRuntime._current_background`（#56），解析顺序是**事件索引优先、剧本槽位兜底**——槽位是 Stage2 离线预生成的图（那时还没有 `asset_ready` 事件），运行期配图必须压过它，否则续写阶段的实时图永远显示不出来。

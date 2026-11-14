@@ -125,7 +125,7 @@
     },
     "Beat": {
       "additionalProperties": false,
-      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。",
+      "description": "单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。\n\n`description` 是**玩家可见**的场面/事件叙述（播放时原样作为旁白）；\n`goal` 是给运行时 agent 的戏剧目标（谁想要什么、障碍是什么），不直接播给\n玩家——两者混在一起会把作者备注漏进对白流（v3 提示词的历史问题）。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",
@@ -138,6 +138,11 @@
         },
         "description": {
           "title": "Description",
+          "type": "string"
+        },
+        "goal": {
+          "default": "",
+          "title": "Goal",
           "type": "string"
         },
         "is_key_event": {
@@ -687,7 +692,7 @@
     },
     "DoubterEvent": {
       "additionalProperties": false,
-      "description": "doubter 裁决记录：打回时带逐条问题（教师端可见）。",
+      "description": "doubter 裁决记录：打回时带逐条问题（教师端可见）。\n\n`issues` 两种形状并存：结构化 `DoubterIssue`（doubter 模型产出）与纯字符串\n（确定性规则校验，如 `validate_replay` 的结构问题——它们没有 severity/\ncategory/field）。历史落库的 progress 是 `list[str]`，union 保证旧行仍能校验。\n展示形状交给前端：string 走「规则校验」样式，模型走问题卡片。",
       "properties": {
         "schema_version": {
           "default": "3.4.0",
@@ -704,7 +709,14 @@
         },
         "issues": {
           "items": {
-            "type": "string"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/DoubterIssue"
+              },
+              {
+                "type": "string"
+              }
+            ]
           },
           "title": "Issues",
           "type": "array"
@@ -722,6 +734,62 @@
         "verdict"
       ],
       "title": "DoubterEvent",
+      "type": "object"
+    },
+    "DoubterIssue": {
+      "additionalProperties": false,
+      "description": "doubter 单条问题：可定位、可执行（Self-Refine 心智，spec 裁决）。\n\n- field：产物中的字段定位（如 scenes[2].beats[4].description）；\n- severity：must-fix ≥1 条即 reject；nice-to-fix 不触发打回；\n- evidence：判定依据（原文依据摘要中的对应条目/摘录）。",
+      "properties": {
+        "schema_version": {
+          "default": "3.4.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "field": {
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "quote": {
+          "default": "",
+          "title": "Quote",
+          "type": "string"
+        },
+        "category": {
+          "enum": [
+            "人物事实",
+            "事件顺序",
+            "编造情节",
+            "篡改关键事实"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "evidence": {
+          "default": "",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "must_fix",
+            "nice_to_fix"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggestion": {
+          "default": "",
+          "title": "Suggestion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "category",
+        "severity"
+      ],
+      "title": "DoubterIssue",
       "type": "object"
     },
     "Ending": {

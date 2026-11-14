@@ -108,7 +108,9 @@ divide_events(v4 大纲：beats + branches + options + endings)
   `replay_choice`、`replay_ending_reached`；预写台词落 `character_speech`
   （`source=replay`），Stage3 的 `speech_log` 因此有上下文。
   节点进入与旁白按 narrative 消息下发，选择/结局按 system 消息下发。
-- 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。
+- 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。描述只放
+  玩家可见的场面叙述；戏剧目标在 `Beat.goal`，只进运行时 agent 上下文，存量包里
+  混进描述的「目标：…」作者注记由播放器投影时剥掉。
 - 回主干：`return_mode=choice` 的分支播完回到父场景决策点（写一条父场景
   `replay_node_entered` 表示珊瑚回边，交互文案「回到刚才的选择」）；
   `continue` 续接 return_scene / 主干下一场；带 `ending_id` 的分支是终点。
@@ -376,9 +378,13 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 - `snapshots` 新增 `branch_id/sequence/label/kind`（索引
   `(session_id, branch_id, sequence)`），`sessions` 新增 `head_sequence`；
   `SessionStatusResponse.head_sequence` 不再拿全局事件行 id 充数。
-- 每条命令落一个存档点：`label` 由场景/命令生成（「选择 · 场景：当铺」
+- 每条命令落一个存档点：`label` 写入时由场景/命令生成（「选择 · 场景：当铺」
   「回溯 · 场景：当铺」；旧坐标回溯给出「回溯到 #N」），`kind = command | rollback`。
-  不新增 checkpoint 事件，也不加 `snapshots.asset_id`。
+  回溯页投影时，选择/行动/换景/干涉改用附近玩家动作文本（「选择：扶父亲坐下」，
+  历史快照同样适用）；不新增 checkpoint 事件，也不加 `snapshots.asset_id`。
+- 回溯页降噪：`proposal`（内部意图）与 `offline_hint`（游戏内横幅承担）不投影；
+  同一离线 tick 的多条 `world_fact` 合成一条；Stage2 回放里近似复述 beat 描述的
+  `replay_narration` 按相似度丢弃，保留先到的 beat 描述。
 - `GET /api/sessions/{id}/timeline` 返回 `entries[].event_id/branch_id`、`save_points`、
   `branches`；`?branch_id=` 指向旧分支时返回**只读**视图（`read_only=true`，
   进度原样保留但不可回溯）。回溯页按 `target_event_id` 提交，游戏顶栏补「回溯进度」入口；

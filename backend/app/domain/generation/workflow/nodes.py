@@ -92,7 +92,7 @@ FINAL_GATE_NODE = "final_gate"
 
 
 def _format_issue(issue: DoubterIssue) -> str:
-    """DoubterIssue → 教师可见的一行文本（进度/闸门投影用）。"""
+    """DoubterIssue → 一行文本（LLM 回喂与失败原因用；教师端走结构化渲染）。"""
     parts = [f"[{issue.severity}] {issue.category} @{issue.field}"]
     if issue.quote:
         parts.append(f"「{issue.quote}」")
@@ -101,6 +101,16 @@ def _format_issue(issue: DoubterIssue) -> str:
     if issue.suggestion:
         parts.append(f"建议：{issue.suggestion}")
     return "".join(parts)
+
+
+def _issue_text(issue: DoubterIssue | str) -> str:
+    """打回问题通道混存两种形状；错误文案只接受文本。"""
+    if isinstance(issue, str):
+        return issue
+    if isinstance(issue, DoubterIssue):
+        return _format_issue(issue)
+    # checkpointer 反序列化异常时兜底：至少留下可读内容，不抛二次异常
+    return str(issue)
 
 
 def _feedback_text(issues: list[DoubterIssue]) -> str:
@@ -170,7 +180,7 @@ def _branch_prompt(
     *,
     audit_feedback: str | None = None,
 ) -> str:
-    """分支补写 prompt（write_script v3 第二遍调用）：单分支规格 → BranchScene。
+    """分支补写 prompt（write_script 第二遍调用）：单分支规格 → BranchScene。
 
     `audit_feedback`：doubter 总审打回意见（重写轮才携带）。主干的每轮重写
     都带意见，分支第二遍同样必须带上——否则打回只改主干、分支按原姿势
@@ -617,7 +627,9 @@ class WorkflowNodes:
         round_no = state.get("doubter_round", 0) + 1
         return {
             "doubter_verdict": verdict.verdict,
-            "doubter_issues": [_format_issue(i) for i in verdict.issues],
+            # 结构化问题直接入 state：教师端按 severity/category/field 分块渲染，
+            # LLM 回喂时才经 _feedback_text → _format_issue 拍平。
+            "doubter_issues": list(verdict.issues),
             "doubter_round": round_no,
             "doubter_feedback": (
                 _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
@@ -707,6 +719,11 @@ class WorkflowNodes:
 
         展示事件划分草稿（场景名/参与人物/节拍）与人物设定；教师可编辑
         场景名、人物形象等，编辑稿直接覆盖对应通道传给剧本书写。
+
+        例外：编辑稿的 `endings` 为空而原稿有结局时保留原稿。教师端只有
+        场景名/参与人物的编辑控件，空结局表只可能是客户端回传时丢了字段
+        （丢了会让下游包「有 options 无 endings」，总审被 validate_replay
+        反复打回）。将来开放结局编辑后，需要能区分「未提供」与「清空」。
         """
         division = state.get("division")
         profiles = state.get("merged_profiles") or []
@@ -724,10 +741,21 @@ class WorkflowNodes:
         )
         out: dict[str, Any] = {"directives": self._merge_directives(state, directives)}
         if edits.division is not None:
-            out["division"] = edits.division
+            edited = edits.division
+            # 教师端只编辑场景名/参与者，没有编辑结局的入口：endings 为空而原稿
+            # 有结局，只可能是客户端回传时丢了字段。原样保留，否则 write_script
+            # 之后的包缺结局表，总审会被 validate_replay 反复打回到预算耗尽。
+            if not edited.endings and division is not None and division.endings:
+                edited = edited.model_copy(update={"endings": list(division.endings)})
+                logger.warning(
+                    "[script-gen][pre_write_gate] division edit dropped endings; "
+                    "kept originals (%d)",
+                    len(division.endings),
+                )
+            out["division"] = edited
             logger.info(
                 "[script-gen][pre_write_gate] division edited by teacher (scenes=%d)",
-                len(edits.division.scenes),
+                len(edited.scenes),
             )
         if edits.profiles is not None:
             out["merged_profiles"] = edits.profiles
@@ -1591,6 +1619,9 @@ class WorkflowNodes:
                     "role_hint": f"参与 {key_participants.get(c.name, 0)} 个关键事件",
                     "dossier_json": dossier_json,
                     "session_id": state.get("session_id", ""),
+                    # 并行分支也要能打「id + 剧本名」的阶段日志
+                    "script_id": state.get("script_id"),
+                    "script_name": state.get("script_name", ""),
                 },
             )
             for c in selected
@@ -1833,14 +1864,26 @@ class WorkflowNodes:
             "title": scene.title,
             "participants": list(scene.participants),
             "beats": [
-                {"beat_id": beat.beat_id, "description": beat.description}
+                {
+                    "beat_id": beat.beat_id,
+                    "description": beat.description,
+                    # 戏剧目标：写台词时用来推敲潜台词，不直接说出口
+                    "goal": beat.goal,
+                }
                 for beat in scene.beats
             ],
             "branches": [
                 {
                     "branch_id": branch.branch_id,
                     "label": branch.label,
-                    "beats": [beat.description for beat in branch.beats],
+                    "beats": [
+                        {
+                            "beat_id": beat.beat_id,
+                            "description": beat.description,
+                            "goal": beat.goal,
+                        }
+                        for beat in branch.beats
+                    ],
                 }
                 for branch in scene.branches
             ],
@@ -1916,8 +1959,9 @@ class WorkflowNodes:
         prompt = doubter.build_user_message(
             node_name="write_script",
             artifact_schema_hint="ScriptPackage{title, characters(appearance), scenes+beats"
-            "(visual_notes, interaction_point, branches), teaching_focus,"
-            " playable_roles, stage2_ending_beat_id}",
+            "(description=玩家可见叙述, goal=这一拍谁想要什么/障碍（给角色 agent，"
+            "不播给玩家，非事实断言）), visual_notes, interaction_point, branches},"
+            " teaching_focus, playable_roles, stage2_ending_beat_id}",
             artifact_json=package.model_dump_json(),
             source_digest=self._source_digest(state),
             bundle=await self._bundle(doubter),
@@ -1933,7 +1977,7 @@ class WorkflowNodes:
         )
         return {
             "audit_verdict": verdict.verdict,
-            "audit_issues": [_format_issue(i) for i in verdict.issues],
+            "audit_issues": list(verdict.issues),
             "write_retries": retries,
             "audit_feedback": (
                 _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
@@ -1977,7 +2021,9 @@ class WorkflowNodes:
     async def fail(self, state: WorkflowState) -> dict[str, Any]:
         """打回耗尽的显式失败终点：异常上抛，runner 标记 attempt 失败。"""
         issues = state.get("doubter_issues") or state.get("audit_issues") or []
-        reason = "；".join(issues) or "doubter 打回次数耗尽"
+        reason = (
+            "；".join(_issue_text(i) for i in issues) or "doubter 打回次数耗尽"
+        )
         raise new(codes.CNT_GENERATION_FAILED, extra={"reason": reason})
 
 
