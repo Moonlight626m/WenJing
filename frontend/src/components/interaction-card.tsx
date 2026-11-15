@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useState,
   type CSSProperties,
@@ -19,8 +20,8 @@ import { isImeEnter } from "@/lib/ime";
 import { useInteractionBusy } from "@/lib/interaction-busy";
 import { Thinking } from "@/components/thinking";
 import { VoiceInput } from "@/components/voice-input";
-import { Button, buttonClass } from "@/components/ui/button";
-import { SendIcon } from "@/components/ui/icons";
+import { Button, buttonClass, iconButtonClass } from "@/components/ui/button";
+import { CloseIcon, DialogueIcon, SendIcon } from "@/components/ui/icons";
 import { MotionRoot } from "@/components/ui/motion-root";
 
 /** 出场缓动：先快后慢，落定时不回弹。 */
@@ -39,6 +40,14 @@ const OPTION_ITEM: Variants = {
 /** 数字键直选只认 1–9。 */
 const MAX_HOTKEYS = 9;
 
+/** 面板容器的锚点：圆钮的 `aria-controls` 指向它。 */
+const DOCK_ID = "action-dock";
+
+/** 轮到你出牌：有选项或能自由输入（展开态的流光、收起态的朱砂点同一口径）。 */
+function isYourTurn(allowed: readonly CommandKind[]): boolean {
+  return allowed.includes("choose_option") || allowed.includes("free_input");
+}
+
 /** 焦点在可输入元素里时，数字键是在打字，不是在选。 */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -53,8 +62,12 @@ function isTypingTarget(target: EventTarget | null): boolean {
 /**
  * 三种输入模式：options / free_input / options_with_fallback。
  *
- * 每个 interaction 是一张独立的卡：换了 `interaction_id` 旧卡先退场、新卡再进场，
- * 选项依次滑入。轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
+ * 整块行动面板（场景信息、选项、自由输入）按轮自动收放：**提交后收起、下一轮交互点
+ * 就绪时弹出**，平时只在舞台左下角留一颗圆钮——底下一大块玻璃框会把背景与立绘压掉
+ * 半屏，而它多数时候只是「看得出牌时才需要」。收起态在圆钮上点一颗朱砂，免得面板收着、
+ * 学生错过出牌。展开后每个 interaction 仍是一张独立的卡：换了 `interaction_id` 旧卡先
+ * 退场、新卡再进场，选项依次滑入。
+ * 轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
  *
  * 换景与干涉入口在侧栏（`TranscriptPanel`），这里只留本轮选项与自由输入，
  * 舞台下半屏不再被两排工具占满。窄屏侧栏收起时，卡上补一对直达入口
@@ -71,26 +84,75 @@ export function InteractionCard({
   const interaction = useGameStore((s) => s.interaction);
   const stage = useGameStore((s) => s.stage);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
-  // 自由输入的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
+  const pending = useGameStore((s) => s.pending);
+  // 自由输入的草稿放在最外层：换卡、收起面板都不丢（学生写了一半又去点选项）
   const [freeText, setFreeText] = useState("");
+  // 收起的是「哪一张卡」，不是一个布尔：记下被玩家收起的键（交互点 id，或阶段卡的
+  // `phase:{stage}`）。新的一轮交互点一到键就变了，面板自己弹出来——出牌时它在，
+  // 提交后它退场，玩家只在想单看舞台时手动收一次。
+  const [collapsedKey, setCollapsedKey] = useState<string | null>(null);
   const extras = visibleExtras(allowedCommands, stage);
+  const dockKey = interaction ? interaction.interaction_id : `phase:${stage}`;
+  // 提交后收起：回调身份跟着 dockKey 走，交互点没换就不重挂数字键监听
+  const collapseDock = useCallback(
+    () => setCollapsedKey(dockKey),
+    [dockKey]
+  );
+
+  // 没得选也没阶段命令时整颗圆钮都不渲染，免得贴着一颗点了没反应的按钮
+  if (!interaction && extras.length === 0) return null;
+
+  const open = collapsedKey !== dockKey;
+
+  // 轮到你出牌（或停在阶段之间等你决定）→ 收起态在圆钮上点一颗朱砂
+  const waiting = interaction ? isYourTurn(allowedCommands) : extras.length > 0;
+  const showTurnDot = !open && !pending && waiting;
 
   return (
     <MotionRoot>
-      <AnimatePresence mode="wait">
-        {interaction ? (
-          <InteractionBody
-            key={interaction.interaction_id}
-            interaction={interaction}
-            freeText={freeText}
-            setFreeText={setFreeText}
-            showOperations={showOperations}
-            onRequestOperations={onRequestOperations}
-          />
-        ) : extras.length > 0 ? (
-          <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
-        ) : null}
-      </AnimatePresence>
+      <div className="flex w-full items-end gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsedKey(open ? dockKey : null)}
+          aria-expanded={open}
+          aria-controls={open ? DOCK_ID : undefined}
+          aria-label={
+            open
+              ? "收起行动面板"
+              : waiting
+                ? "展开行动面板（轮到你行动）"
+                : "展开行动面板"
+          }
+          title={open ? "收起行动面板" : "展开行动面板"}
+          className={iconButtonClass(false, "relative", "lg")}
+        >
+          {open ? <CloseIcon /> : <DialogueIcon />}
+          {showTurnDot && (
+            <span
+              aria-hidden
+              className="absolute top-0 right-0 size-2.5 rounded-full bg-flag shadow-[0_0_10px_var(--wj-flag)]"
+            />
+          )}
+        </button>
+        <AnimatePresence mode="wait">
+          {open ? (
+            interaction ? (
+              <InteractionBody
+                key={interaction.interaction_id}
+                interaction={interaction}
+                extras={extras}
+                freeText={freeText}
+                setFreeText={setFreeText}
+                showOperations={showOperations}
+                onRequestOperations={onRequestOperations}
+                onSubmitted={collapseDock}
+              />
+            ) : (
+              <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
+            )
+          ) : null}
+        </AnimatePresence>
+      </div>
     </MotionRoot>
   );
 }
@@ -170,11 +232,12 @@ function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraComm
 
   return (
     <m.div
+      id={DOCK_ID}
       initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
       transition={{ duration: 0.4, ease: EASE }}
-      className="glass glow-border relative rounded-3xl px-4 py-3.5 md:px-5"
+      className="glass glow-border relative min-w-0 flex-1 rounded-3xl px-4 py-3.5 md:px-5"
       style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
     >
       {copy && (
@@ -203,19 +266,24 @@ function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraComm
 
 function InteractionBody({
   interaction,
+  extras: extraCommands,
   freeText,
   setFreeText,
   showOperations,
   onRequestOperations,
+  onSubmitted,
 }: {
   interaction: ActiveInteraction;
+  /** 阶段命令（进入续写/退出游戏）：外层与本卡同一口径算一次，避免两处漂移 */
+  extras: ExtraCommand[];
   freeText: string;
   setFreeText: (update: (prev: string) => string) => void;
   showOperations: boolean;
   onRequestOperations?: (panel: "move" | "intervene") => void;
+  /** 本轮动作已提交：外层据此收起面板，等下一轮交互点再自动弹出 */
+  onSubmitted: () => void;
 }) {
   const allowedCommands = useGameStore((s) => s.allowedCommands);
-  const stage = useGameStore((s) => s.stage);
   const pending = useGameStore((s) => s.pending);
   const sessionInitialized = useGameStore((s) => s.sessionInitialized);
   const submit = useGameStore((s) => s.submitCommand);
@@ -230,13 +298,11 @@ function InteractionBody({
   const canFree = allowedCommands.includes("free_input");
   const sceneOptions = interaction.scene_options ?? [];
   const currentScene = sceneOptions.find((scene) => scene.is_current);
-  const yourTurn = canChoose || canFree;
+  const yourTurn = isYourTurn(allowedCommands);
   const options = interaction.options;
   const quickMove = sceneOptions.length > 0 && allowedCommands.includes("switch_scene");
   const quickIntervene =
     sceneOptions.length > 0 && allowedCommands.includes("intervene");
-
-  const extraCommands = visibleExtras(allowedCommands, stage);
 
   // 数字键直选：选项展开后、焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项。
   // 收起状态下不绑定：看不见选项时按键直接提交等于让玩家盲选。
@@ -254,15 +320,17 @@ function InteractionBody({
       const opt = options[n - 1];
       setChosenId(opt.option_id);
       submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+      onSubmitted();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canChoose, busy, options, optionsOpen, submit]);
+  }, [canChoose, busy, options, optionsOpen, onSubmitted, submit]);
 
   function choose(opt: OptionItem) {
     if (busy) return;
     setChosenId(opt.option_id);
     submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+    onSubmitted();
   }
 
   function sendText(
@@ -276,6 +344,7 @@ function InteractionBody({
     if (!trimmed || busy || !allowed) return;
     submit(kind, { text: trimmed }, label);
     reset();
+    onSubmitted();
   }
 
   function sendFreeInput() {
@@ -294,13 +363,14 @@ function InteractionBody({
 
   return (
     <m.div
+      id={DOCK_ID}
       initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
       transition={{ duration: 0.4, ease: EASE }}
       // 高度封顶 + 内部滚动：横屏/矮屏上选项与输入框不会被舞台裁掉；
       // 滚动放在内层，外层留作 glow-border 的定位容器（会随滚动一起走的伪元素不能裁）
-      className={`glass relative flex max-h-[min(58dvh,34rem)] flex-col rounded-3xl ${
+      className={`glass relative flex max-h-[min(58dvh,34rem)] min-w-0 flex-1 flex-col rounded-3xl ${
         yourTurn || pending ? "glow-border" : ""
       }`}
       style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}

@@ -52,11 +52,12 @@ test("学生完整核心流程：广场 → 详情 → 开局 → 选角 → 游
   await page.getByRole("button", { name: /扮演此角色/ }).first().click();
   await page.waitForURL(/\/game\?id=/);
 
-  // 4. 游戏页：消息流出现 + 交互卡可选项推进
+  // 4. 游戏页：消息流出现 + 行动面板可选项推进（轮到你时面板自动弹出，选项仍默认收起）
   const rows = page.getByTestId("message-row");
   await expect(page.getByText("已连接")).toBeVisible();
   await expect(rows.first()).toBeVisible();
   const messagesBefore = await rows.count();
+  await page.getByRole("button", { name: /选择行动/ }).click();
   await expect(page.getByRole("button", { name: /我提议/ }).first()).toBeVisible();
   await page.getByRole("button", { name: /我提议/ }).first().click();
   await expect

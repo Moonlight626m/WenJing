@@ -27,6 +27,11 @@ const TABS: { id: TranscriptTab; label: string }[] = [
 
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
+/** 「剧情」页默认折叠的消息：`proposal` 是角色 agent 的内部意图，不是既成事实。 */
+function isProposalMessage(message: { eventType?: string | null }): boolean {
+  return message.eventType === "proposal";
+}
+
 /**
  * 剧情回顾面板：「剧情」页是完整消息流 + 回溯栏，「原文」页对照课文里已经演到的段落，
  * 「角色」页是人物档案。
@@ -71,6 +76,11 @@ export function TranscriptPanel({
   const [confirming, setConfirming] = useState(false);
   const activeTarget = target !== null && target.branchId === branchId ? target.seq : null;
   const [interveneText, setInterveneText] = useState("");
+  // 角色提议是内部意图（`proposal` 事件）：默认不进事件记录，记录里留的是真正落地的
+  // 那版方案（Stage2 是验过的提议原文，有探索地图的 Stage3 由导演另拟，都体现在
+  // 选项与「你选择了」里）。
+  // 想对照原始提议时再打开——状态放在面板层，切到「原文」「角色」页再切回来不会丢。
+  const [showProposals, setShowProposals] = useState(false);
   const canRollback = allowedCommands.includes("rollback_to_event");
   const status = sceneStatus(connection, sessionInitialized);
   const sceneOptions = interaction?.scene_options ?? [];
@@ -279,6 +289,8 @@ export function TranscriptPanel({
               statusText={sceneStatusText(status)}
               target={activeTarget}
               confirming={confirming}
+              showProposals={showProposals}
+              onToggleProposals={setShowProposals}
               onTargetChange={(seq) => {
                 setTarget(seq === null ? null : { seq, branchId });
                 setConfirming(false);
@@ -318,6 +330,8 @@ function StoryTab({
   statusText,
   target,
   confirming,
+  showProposals,
+  onToggleProposals,
   onTargetChange,
   onConfirmingChange,
   onPick,
@@ -328,6 +342,9 @@ function StoryTab({
   /** 当前选中的回溯目标（已按分支校验过） */
   target: number | null;
   confirming: boolean;
+  /** 是否把角色提议（`proposal` 事件）也铺进事件记录；默认关 */
+  showProposals: boolean;
+  onToggleProposals: (show: boolean) => void;
   onTargetChange: (target: number | null) => void;
   onConfirmingChange: (confirming: boolean) => void;
   /** 消息行上的「回溯到这一句」：选中即进入确认 */
@@ -335,6 +352,13 @@ function StoryTab({
 }) {
   const messages = useGameStore((s) => s.messages);
   const playerRole = useGameStore((s) => s.playerRole);
+  // 提议只是角色 agent 的内部意图：默认不进记录。最终方案不在这里——Stage2 的选项
+  // 是验过的提议原文，有探索地图的 Stage3 由导演另拟；两种都体现在选项与「你选择了」里。
+  // 与验没验过无关（`verification` 不投影，前端拿不到判定），就是一层视图过滤。
+  const proposalCount = messages.filter(isProposalMessage).length;
+  const visibleMessages = showProposals
+    ? messages
+    : messages.filter((m) => !isProposalMessage(m));
 
   return (
     <div
@@ -343,13 +367,36 @@ function StoryTab({
       aria-labelledby="transcript-tab-story"
       className="flex min-h-0 flex-1 flex-col"
     >
+      {proposalCount > 0 && (
+        <div className="flex justify-end px-3 pt-2">
+          <button
+            type="button"
+            aria-pressed={showProposals}
+            onClick={() => onToggleProposals(!showProposals)}
+            className={`rounded-full border bg-glass px-3 py-1.5 text-2xs backdrop-blur-md transition-colors ${
+              showProposals
+                ? "border-glow-gold/60 text-glow-gold"
+                : "border-glass-edge text-ink-faint hover:text-ink-soft"
+            }`}
+          >
+            {showProposals
+              ? "隐藏角色提议"
+              : `显示角色提议（${proposalCount}）`}
+          </button>
+        </div>
+      )}
       {/* 左边多留一截给开发环境的事件序号 */}
       <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
         {messages.length === 0 ? (
           <p className="py-6 text-center text-sm text-ink-faint">{statusText}</p>
+        ) : visibleMessages.length === 0 ? (
+          // 只剩提议且被收起：别拿「正在重建世界」冒充空时间线
+          <p className="py-6 text-center text-sm text-ink-faint">
+            本轮只记了角色提议，已按设置隐藏。
+          </p>
         ) : (
           <MessageStream
-            messages={messages}
+            messages={visibleMessages}
             playerRole={playerRole}
             showSeq={process.env.NODE_ENV !== "production"}
             rollbackTarget={target}

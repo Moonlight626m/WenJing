@@ -18,13 +18,17 @@ export interface SubtitleLine {
   /** 舞台提示（动作/神态），没有则为 null */
   direction: string | null;
   fading: boolean;
+  /** 来源：在途流（还会长、会收尾）还是已落定的持久发言 */
+  kind: "stream" | "message";
   /** 在途的流式行（#61）：文本还会长，不武装停留/淡出计时器。 */
   live?: boolean;
 }
 
 /** 流式行的稳定键：同一个 `stream_id` 全程同一行，文字在行内增长。 */
+const STREAM_KEY_PREFIX = "stream:";
+
 function streamKey(stream: LiveStream): string {
-  return `stream:${stream.streamId}`;
+  return `${STREAM_KEY_PREFIX}${stream.streamId}`;
 }
 
 /** 多行上限 3 行（ADR-0005 §1 裁决 Q33）。 */
@@ -41,6 +45,7 @@ function toLine(message: ChatMessage): SubtitleLine {
     text: parts.text,
     direction: parts.direction,
     fading: false,
+    kind: "message",
   };
 }
 
@@ -58,6 +63,23 @@ function clearTimer(
     clearTimeout(fade);
     timers.delete(`${key}:fade`);
   }
+}
+
+/**
+ * 顶掉第 `index` 行：作废它的计时器、标记不再复活（流式行收尾后 streams 副作用
+ * 不得再写回来），换上新行。同 speaker 顶替与流式行收尾共用这一份拼写。
+ */
+function replaceLine(
+  visible: SubtitleLine[],
+  index: number,
+  line: SubtitleLine,
+  timers: Map<string, ReturnType<typeof setTimeout>>,
+  released: Set<string>
+): SubtitleLine[] {
+  const old = visible[index];
+  clearTimer(timers, old.key);
+  released.add(old.key);
+  return visible.map((l, i) => (i === index ? line : l));
 }
 
 /**
@@ -100,10 +122,12 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       ? current.findIndex((l) => l.speaker === line.speaker)
       : -1;
     if (sameIndex >= 0) {
-      clearTimer(timersRef.current, current[sameIndex].key);
-      releasedRef.current.add(current[sameIndex].key);
-      visibleRef.current = current.map((l, i) =>
-        i === sameIndex ? line : l
+      visibleRef.current = replaceLine(
+        current,
+        sameIndex,
+        line,
+        timersRef.current,
+        releasedRef.current
       );
       return true;
     }
@@ -113,6 +137,51 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
     }
     queueRef.current.push(line);
     return false;
+  }
+
+  /**
+   * 持久发言抵达时，把同角色的**可见流式行就地收尾**（终态规则的另一半）。
+   *
+   * 不能按普通新消息入队：流式行的 key 是 `stream:*`，换成消息 key 就会重挂节点，
+   * `animate-rise-in` 再播一遍——玩家看到的就是同一句话说两遍（先流式、再整句）。
+   * 所以保留 key 与 DOM，只把文本补成完整版、光标撤下（`live=false`），停留计时器
+   * 从这一刻重新起算，几秒后照常淡出。
+   *
+   * 认行要求**同角色**：同一角色、文本也相等时最可信；文本有出入时（流式文本与
+   * 持久文本可能在标点或动作括号的切分上差一点）仍按角色兜底。已收尾的行不承接
+   * 下一条发言——那是新的一句，该重新入场。
+   */
+  function settleStreamLine(message: ChatMessage): boolean {
+    const line = toLine(message);
+    const lines = visibleRef.current;
+    const lineIndex = (predicate: (l: SubtitleLine) => boolean) =>
+      lines.findIndex(
+        (l) =>
+          l.kind === "stream" &&
+          !releasedRef.current.has(l.key) &&
+          predicate(l)
+      );
+    const byText = lineIndex(
+      (l) => l.speaker === message.speaker && l.text === line.text
+    );
+    const index =
+      byText >= 0 ? byText : lineIndex((l) => l.speaker === message.speaker);
+    if (index < 0) return false;
+    visibleRef.current = replaceLine(
+      visibleRef.current,
+      index,
+      {
+        ...visibleRef.current[index],
+        speaker: line.speaker,
+        text: line.text,
+        direction: line.direction,
+        fading: false,
+        live: false,
+      },
+      timersRef.current,
+      releasedRef.current
+    );
+    return true;
   }
 
   // 1) 新消息入队：同 speaker 替换、未满入列、满则排队。
@@ -125,6 +194,10 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
     let changed = false;
     for (const message of incoming) {
       seenRef.current.add(message.key);
+      if (settleStreamLine(message)) {
+        changed = true;
+        continue;
+      }
       if (admit(toLine(message))) changed = true;
     }
     if (changed) commit();
@@ -189,6 +262,7 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
           text: parts.text,
           direction: parts.direction,
           fading: false,
+          kind: "stream",
           live,
         })
       ) {

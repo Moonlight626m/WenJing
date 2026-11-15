@@ -63,11 +63,22 @@ export function buttonClass(
 /**
  * 舞台上的圆形图标按钮（毛玻璃底）。图标不带语义，可读名必须由调用方给 aria-label。
  * `dim` 用于「关着」的开关态（如静音中）；字色走参数而不是让调用方再叠一个 text-*，
- * 因为没有 twMerge，两个字色类同时在场时谁赢看生成顺序。
+ * 因为没有 twMerge，两个字色类同时在场时谁赢看生成顺序。`lg` 是主操作尺寸（左下角
+ * 行动面板入口这类要够大的触控目标），其余场景用小号。
  */
-export function iconButtonClass(dim = false, className = ""): string {
+const ICON_SIZES = {
+  sm: "size-8 text-base",
+  lg: "size-11 text-lg",
+} as const;
+
+export function iconButtonClass(
+  dim = false,
+  className = "",
+  size: keyof typeof ICON_SIZES = "sm"
+): string {
   return [
-    "inline-grid size-8 shrink-0 place-items-center rounded-full text-base",
+    "inline-grid shrink-0 place-items-center rounded-full",
+    ICON_SIZES[size],
     "border border-glass-edge bg-glass backdrop-blur-md",
     dim ? "text-ink-faint" : "text-ink-soft",
     "transition-[color,box-shadow] duration-150",
