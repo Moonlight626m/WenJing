@@ -88,8 +88,12 @@ collect_materials → verify_materials → [materials_gate] → divide_events
   → design_characters ⇉ Send 扇出 N → design_one_character×N → merge_characters(join)
   → [pre_write_gate] → write_script → write_dialogue → final_audit
   → design_exploration → design_assets → [final_gate] → END
-  （reject 按重试预算打回；耗尽 → fail）
+  （reject 带打回意见回上游重做，不设轮次上限）
 ```
+
+打回没有业务轮次上限，防死循环只靠 `WorkflowRunner` 的图递归上限
+（`WORKFLOW_RECURSION_LIMIT = 10000`；LangGraph 默认 25 会在多轮打回后提前抛
+`GraphRecursionError`）。这条是兜底护栏，不是「还能重试几次」的业务预算。
 
 `design_exploration` 在总审通过后从主场景派生 `ExplorationMap`（起点、地点、在场、
 画面摘要），让所有新剧本都带探索地图；它也是后续删除旧剧本线性路径的前置条件。

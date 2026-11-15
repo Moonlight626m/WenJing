@@ -749,30 +749,46 @@ async def test_audit_reject_then_pass_reruns_writing() -> None:
     assert runner.snapshot().status == "succeeded"
 
 
-async def test_audit_exhaustion_fails_within_contract_rounds() -> None:
-    """三次打回耗尽即失败；DoubterEvent.round 不超契约上限（le=3，S1）。"""
+async def test_audit_reject_rounds_are_unbounded() -> None:
+    """总审打回不设轮次上限：一直重写，直到 doubter 放行。"""
     analysis = make_analysis()
+    # 5 次打回远超旧上限（2），验证轮次不再封顶
     llm = ScriptedWorkflowLLM(
-        analysis, doubter_verdicts=("pass", "reject", "reject", "reject")
+        analysis, doubter_verdicts=("pass",) + ("reject",) * 5
     )
     runner, state = _make_runner(analysis, llm)
-    with pytest.raises(Error):
-        await runner.run(state, thread_id="t-audit-exhaust")
+    final = await runner.run(state, thread_id="t-audit-unbounded")
+
+    assert final["package"] is not None
+    # 五次打回各触发一次重写，第六轮总审（verdicts 用尽后默认 pass）放行
+    assert len(llm.writing_prompts) == 6
     audit_rounds = [
         e.round for e in runner.snapshot().doubter_events if e.node.value == "final_audit"
     ]
-    assert audit_rounds == [1, 2, 3]
+    # 打回轮次逐轮递增、不再封顶；pass 不推进轮次，沿用末轮号
+    assert audit_rounds == [1, 2, 3, 4, 5, 5]
+    assert runner.snapshot().status == "succeeded"
 
 
-async def test_doubter_exhaustion_fails_the_attempt() -> None:
+async def test_doubter_reject_rounds_are_unbounded() -> None:
+    """素材考证打回不设轮次上限：收集重做直到考证通过。"""
     analysis = make_analysis()
-    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject", "reject", "reject"))
+    # 6 次打回远超旧上限（2），验证轮次不再封顶
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject",) * 6)
     runner, state = _make_runner(analysis, llm)
-    with pytest.raises(Error) as excinfo:
-        await runner.run(state, thread_id="t-exhaust")
-    # 失败原因是文本：结构化问题在 fail 节点拍平（教师端另走结构化渲染）
-    reason = excinfo.value.extra["reason"]
-    assert "[must_fix] 人物事实 @era_setting" in reason
+    final = await runner.run(state, thread_id="t-doubter-unbounded")
+
+    assert final["package"] is not None
+    assert llm.calls.count(UsagePurpose.COLLECT_MATERIALS.value) == 7
+    verdicts = [e.verdict for e in runner.snapshot().doubter_events]
+    assert verdicts == ["reject"] * 6 + ["pass", "pass"]
+    verify_rounds = [
+        e.round
+        for e in runner.snapshot().doubter_events
+        if e.node.value == "verify_materials"
+    ]
+    assert verify_rounds == [1, 2, 3, 4, 5, 6, 7]
+    assert runner.snapshot().status == "succeeded"
 
 
 async def test_resume_clears_gate_waiting_detail() -> None:
@@ -928,8 +944,8 @@ def _must_fix(field: str, category: str = "人物事实") -> DoubterIssue:
 def test_audit_reject_on_character_field_routes_to_character_redesign() -> None:
     """人物设定问题必须回人物设计。
 
-    write_script 不重写 `characters`，只回写剧本会让同一 must_fix 每轮原样复现，
-    直到重试预算耗尽（真实事故：父亲背景写反了「谁到徐州奔丧」）。
+    write_script 不重写 `characters`，只回写剧本会让同一 must_fix 每轮原样复现
+    （真实事故：父亲背景写反了「谁到徐州奔丧」）。
     """
     nodes = WorkflowNodes(llm=None)
     state = {
@@ -950,16 +966,20 @@ def test_audit_reject_on_scene_field_rewrites_script() -> None:
     assert nodes.route_after_audit(state) == "write_script"
 
 
-def test_audit_retry_budget_exhausted_fails() -> None:
-    from app.domain.generation.workflow.nodes import MAX_WRITE_RETRIES
-
+def test_reject_routes_have_no_retry_budget() -> None:
+    """打回不设轮次上限：计数再高也回到重做，没有 fail 终点。"""
     nodes = WorkflowNodes(llm=None)
-    state = {
+    audit_state = {
         "audit_verdict": "reject",
         "audit_issues": [_must_fix("characters[0].name")],
-        "write_retries": MAX_WRITE_RETRIES + 1,
+        "write_retries": 99,
     }
-    assert nodes.route_after_audit(state) == "fail"
+    assert nodes.route_after_audit(audit_state) == "redesign_characters"
+    audit_state["audit_issues"] = [_must_fix("scenes[0].beats[0].description", "事件顺序")]
+    assert nodes.route_after_audit(audit_state) == "write_script"
+    assert nodes.route_after_verify({"doubter_verdict": "reject", "doubter_round": 99}) == (
+        "collect_materials"
+    )
 
 
 def test_overlay_profiles_restores_designed_appearance() -> None:

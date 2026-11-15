@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.4.0",
+  "schema_version": "3.5.0",
   "status": "running",
   "nodes": [
     {
@@ -44,7 +44,7 @@
       "verdict": "reject",
       "issues": [
         {
-          "schema_version": "3.4.0",
+          "schema_version": "3.5.0",
           "field": "era_setting",
           "quote": "民国初年",
           "category": "人物事实",

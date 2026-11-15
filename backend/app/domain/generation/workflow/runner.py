@@ -84,9 +84,10 @@ def _interrupt_value(delta: Any) -> dict[str, Any] | None:
         return value if isinstance(value, dict) else None
     return None
 
-# DoubterEvent 契约轮次上限（contracts.generation.DoubterEvent.round le=3）：
-# 终审打回会计入 write_retries，教师可多次打回，轮次投影在此收口。
-MAX_DOUBTER_EVENT_ROUND = 3
+# 打回回路没有业务轮次上限，图递归上限是唯一的死循环兜底：一次完整生成约 15 个
+# super-step，10000 远大于任何真实重做次数（LangGraph 默认 25 会让第 3 轮打回
+# 附近就抛 GraphRecursionError）。
+WORKFLOW_RECURSION_LIMIT = 10_000
 
 
 class WorkflowRunner:
@@ -210,11 +211,10 @@ class WorkflowRunner:
         )
         if verdict:
             # verify 事件用 doubter_round；audit 事件用 write_retries（= 书写轮次，
-            # 含教师终审打回轮，min(3) 收口防超出契约 le=3 上限）
+            # 含教师终审打回轮）
             round_no = int(delta.get("doubter_round") or 0)
             if not round_no:
                 round_no = max(1, int(delta.get("write_retries") or 0))
-            round_no = min(round_no, MAX_DOUBTER_EVENT_ROUND)
             self._doubter_events.append(
                 DoubterEvent(
                     node=contract,
@@ -256,7 +256,7 @@ class WorkflowRunner:
             self._nodes[progress.node] = progress
 
     async def run(self, state: WorkflowState, *, thread_id: str) -> dict[str, Any]:
-        """执行图并收集终态；打回耗尽（fail 节点）时异常上抛由调用方兜底。"""
+        """执行图并收集终态；节点异常时上抛由调用方兜底。"""
         self._set(GenerationNode.COLLECT_MATERIALS, GenerationNodeStatus.RUNNING)
         if self._sink is not None:
             await self._sink(self.snapshot())
@@ -384,7 +384,10 @@ class WorkflowRunner:
             )
 
     async def _consume(self, graph_input: Any, thread_id: str) -> dict[str, Any]:
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": WORKFLOW_RECURSION_LIMIT,
+        }
         final: dict[str, Any] = {}
         async for part in self._graph.astream(
             graph_input, config, stream_mode="updates", version="v2"

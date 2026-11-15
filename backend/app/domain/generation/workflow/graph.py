@@ -8,9 +8,8 @@
         │           → write_script → write_dialogue(逐场景预写台词)
         │             → final_audit(doubter 总审)
         │             ├ pass → design_assets(配图，#48) → (final_gate) → END
-        │             └ reject → write_script（≤MAX_WRITE_RETRIES）→ fail
-        ├ reject → collect_materials（带打回意见，≤MAX_DOUBTER_ROUNDS）
-        └ 耗尽 → fail（显式失败终点，异常上抛）
+        │             └ reject → write_script（带打回意见，不限轮次）
+        └ reject → collect_materials（带打回意见，不限轮次）
 
 - Send 并行：design_characters 经 add_conditional_edges 发出 N 个
   `design_one_character` 分支，character_profiles 通道以 add reducer 聚合，
@@ -59,7 +58,6 @@ _NODE_LABELS: dict[str, str] = {
     "design_exploration": "探索地图",
     "design_assets": "配图设计",
     "final_gate": "终审闸门",
-    "fail": "失败终点",
 }
 
 
@@ -242,7 +240,7 @@ def build_workflow(
     graph.add_node("final_audit", _logged("final_audit")(nodes.final_audit))
     # 总审打回人物设定时的回边落点：下一跳由 Send 条件边重新 fan-out 人物设计。
     # 只回 write_script 的话，`characters[*]` 上的 must_fix 永远修不掉（write_script
-    # 不重写人物设定），重试预算耗尽后必然失败。
+    # 不重写人物设定），打回多少轮都修不掉。
     graph.add_node(
         "redesign_characters",
         _logged("design_characters")(nodes.redesign_characters),
@@ -256,8 +254,6 @@ def build_workflow(
     if gate_on:
         # #34 终审闸门：总审通过后教师终审（通过落库 / 打回重写）
         graph.add_node(FINAL_GATE_NODE, _logged(FINAL_GATE_NODE)(nodes.final_gate))
-    graph.add_node("fail", _logged("fail")(nodes.fail))
-
     graph.add_edge(START, "collect_materials")
     graph.add_edge("collect_materials", "verify_materials")
     after_verify = MATERIALS_GATE_NODE if gate_on else "divide_events"
@@ -267,7 +263,6 @@ def build_workflow(
         {
             "collect_materials": "collect_materials",
             after_verify: after_verify,
-            "fail": "fail",
         },
     )
     if gate_on:
@@ -286,7 +281,6 @@ def build_workflow(
     audit_targets: dict[str, Any] = {
         "write_script": "write_script",
         "redesign_characters": "redesign_characters",
-        "fail": "fail",
         "design_exploration": "design_exploration",
     }
     graph.add_conditional_edges(
@@ -308,5 +302,4 @@ def build_workflow(
         )
     else:
         graph.add_edge("design_assets", END)
-    graph.add_edge("fail", END)
     return graph.compile(checkpointer=checkpointer)

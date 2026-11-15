@@ -77,8 +77,8 @@ from app.infrastructure.errx import codes, exc_reason, new
 
 logger = logging.getLogger("wenjing.generation.workflow")
 
-MAX_DOUBTER_ROUNDS = 2   # doubter 打回上限（沿用 stage1 MAX_RETRIES 心智）
-MAX_WRITE_RETRIES = 2    # final_audit 打回剧本书写的上限
+# doubter / final_audit 打回不设业务轮次上限：打回意见随回边带回上游无限重做，
+# 直到 doubter 放行或教师终审结束。防死循环靠 runner 的图递归上限兜底。
 MAX_MAIN_CHARACTERS = 4  # 复现层主要人物数（骨架上限；#32 深化筛选）
 
 # 节点内子进度回调：(workflow 节点键, detail 文本)；由 runner 注入，转发给进度 sink
@@ -115,20 +115,10 @@ def _needs_character_redesign(issues: list[DoubterIssue | str]) -> bool:
 
     `final_audit` 的打回原来一律回 `write_script` 重写，但人物设定是
     `design_characters` 的产物、write_script 不会重写它——`characters[*]` 上的
-    must_fix 会在每一轮原样复现，直到重试预算耗尽（真实事故：父亲的
-    `public_background` 写反了「谁到徐州奔丧」，两轮打回都在同一字段）。
+    must_fix 会在每一轮原样复现（真实事故：父亲的 `public_background`
+    写反了「谁到徐州奔丧」，两轮打回都在同一字段）。
     """
     return any(_issue_field(issue).startswith("characters") for issue in issues)
-
-
-def _issue_text(issue: DoubterIssue | str) -> str:
-    """打回问题通道混存两种形状；错误文案只接受文本。"""
-    if isinstance(issue, str):
-        return issue
-    if isinstance(issue, DoubterIssue):
-        return _format_issue(issue)
-    # checkpointer 反序列化异常时兜底：至少留下可读内容，不抛二次异常
-    return str(issue)
 
 
 def _feedback_text(issues: list[DoubterIssue]) -> str:
@@ -222,7 +212,7 @@ def _branch_prompt(
 
     `audit_feedback`：doubter 总审打回意见（重写轮才携带）。主干的每轮重写
     都带意见，分支第二遍同样必须带上——否则打回只改主干、分支按原姿势
-    重编，doubter 反复拒绝同一处直到预算耗尽（真实跑《背影》验证过）。
+    重编，doubter 会反复拒绝同一处、打回不收敛（真实跑《背影》验证过）。
     """
     b = bundle if bundle is not None else default_bundle(
         SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION, write_script.DEFAULTS
@@ -698,9 +688,8 @@ class WorkflowNodes:
         verdict = state.get("doubter_verdict", "pass")
         if verdict == "pass":
             return MATERIALS_GATE_NODE if self.gate_enabled else "divide_events"
-        if state.get("doubter_round", 0) <= MAX_DOUBTER_ROUNDS:
-            return "collect_materials"
-        return "fail"
+        # 打回不设轮次上限：带意见回 collect_materials 重做，直到考证通过
+        return "collect_materials"
 
     # ===== 教师闸门（#34：素材 / 人物+场景 / 终审三道闸）=====
 
@@ -802,7 +791,7 @@ class WorkflowNodes:
             edited = edits.division
             # 教师端只编辑场景名/参与者，没有编辑结局的入口：endings 为空而原稿
             # 有结局，只可能是客户端回传时丢了字段。原样保留，否则 write_script
-            # 之后的包缺结局表，总审会被 validate_replay 反复打回到预算耗尽。
+            # 之后的包缺结局表，总审会被 validate_replay 无限打回、永远过不了。
             if not edited.endings and division is not None and division.endings:
                 edited = edited.model_copy(update={"endings": list(division.endings)})
                 logger.warning(
@@ -926,14 +915,13 @@ class WorkflowNodes:
                     + edits.package.model_dump_json()
                 )
             out["audit_feedback"] = "；".join(feedback_parts) or "教师打回，请根据指导重写"
-            # 计入书写轮次（与 doubter 打回同一上限心智）；DoubterEvent 轮次
-            # 投影侧有 min 收口，防超出契约上限。
+            # 计入书写轮次（与 doubter 打回共用 write_retries 计数）
             out["write_retries"] = int(state.get("write_retries", 0)) + 1
         return out
 
     def route_after_final_gate(self, state: WorkflowState) -> str:
-        # 终审打回是教师主动行为，不受 doubter 的 MAX_WRITE_RETRIES 上限
-        # 约束（教学判断优先，#34）；教师可反复打回直到满意。
+        # 终审打回是教师主动行为（教学判断优先，#34）；与 doubter 打回回路
+        # 一样不设轮次上限，教师可反复打回直到满意。
         return "write_script" if state.get("gate_action") == "reject" else "END"
 
     # ===== 场景/角色配图（#48）=====
@@ -959,7 +947,7 @@ class WorkflowNodes:
         if designer is None:
             logger.info("[script-gen][design_assets] no designer wired, skip")
             return {"asset_summary": {"skipped": "no_designer"}}
-        if package is None:  # 防御：打回回路丢失产物时由 fail 节点语义兜底
+        if package is None:  # 防御：打回回路丢失产物时直接失败
             raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
         org_raw = state.get("org_id") or ""
         user_raw = state.get("user_id") or ""
@@ -1837,7 +1825,7 @@ class WorkflowNodes:
         written: dict[tuple[int, str], BranchScene] = {}
         # 重写轮的打回意见同样要约束分支补写：主干按意见修正，分支若不带
         # 意见会按原姿势重编同类问题（visual_notes 编造/事件顺序越界），
-        # doubter 反复拒绝同一处直到预算耗尽。
+        # doubter 会反复拒绝同一处、打回不收敛。
         feedback = state.get("audit_feedback")
         for scene_no, spec in work:
             try:
@@ -2083,29 +2071,14 @@ class WorkflowNodes:
         if verdict == "pass":
             # 总审通过先派生探索地图，再配图；design_assets 之后接终审闸或 END
             return "design_exploration"
-        if state.get("write_retries", 0) > MAX_WRITE_RETRIES:
-            return "fail"
         if _needs_character_redesign(list(state.get("audit_issues") or [])):
             return "redesign_characters"
         return "write_script"
-
-    # ===== 终止 =====
-
-    async def fail(self, state: WorkflowState) -> dict[str, Any]:
-        """打回耗尽的显式失败终点：异常上抛，runner 标记 attempt 失败。"""
-        issues = state.get("doubter_issues") or state.get("audit_issues") or []
-        reason = (
-            "；".join(_issue_text(i) for i in issues) or "doubter 打回次数耗尽"
-        )
-        raise new(codes.CNT_GENERATION_FAILED, extra={"reason": reason})
-
 
 __all__ = [
     "MATERIALS_GATE_NODE",
     "PRE_WRITE_GATE_NODE",
     "FINAL_GATE_NODE",
     "WorkflowNodes",
-    "MAX_DOUBTER_ROUNDS",
-    "MAX_WRITE_RETRIES",
     "DoubterVerdict",
 ]

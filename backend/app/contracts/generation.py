@@ -96,7 +96,8 @@ class DoubterEvent(VersionedContract):
     node: GenerationNode
     verdict: str = Field(pattern=r"^(pass|reject)$")
     issues: list[DoubterIssue | str] = Field(default_factory=list)
-    round: int = Field(ge=1, le=3, default=1)
+    # 打回没有轮次上限（恢复/重做可一直进行），这里只约束下界
+    round: int = Field(ge=1, default=1)
 
 
 class GenerationProgress(VersionedContract):
