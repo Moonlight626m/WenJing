@@ -91,12 +91,16 @@ DB 只存元数据；契约只放稳定引用 `AssetRef{asset_id, kind, status}`
 可配 `WENJING_MEDIA_IMAGE_GEN_STYLE`）与构图尾巴由 `build_generation_prompt` 确定性
 追加；转写失败回退确定性描述（场景永远有图）。
 
-### 剧情主持 Agent / DM
+### 编年史（Chronicle）
 
-剧情主持 Agent（`game_master`，旧名 `screenwriter`）是运行期剧情推进的"主持人"角色：
-旧剧本路径（无珊瑚图/无探索图）的确定性推进与交互设计，以及进入 Stage3 时定 2–3 个
-续写目标。**不是剧本生成器**——剧本由生成期 workflow 产出。"DM"仅口语别名，不是独立
-术语。
+运行期世界的连贯叙事正文（`world_chronicle` 事件）：每轮 NPC 反应之后、导演出选项
+之前，由工作人员 `ChroniclerAgent` 只写**本轮增量**，不重写前文；`derive_chronicle`
+负责拼接。角色拿 `viewer` 限知视角（只含其 `present` 的增量），全量编年史只给
+staff/教师。编年史是 staff 写入的叙事，**不是**世界状态：不推进剧情、不改地点/角色。
+
+旧「剧情主持 Agent / DM」（`GameMasterAgent`）已下线：它曾负责旧剧本线性推进、交互
+设计与 Stage3 续写目标。这些职责分别由珊瑚图纯 IO 播放、Director 选项设计、编年史
+取代；不再存在运行期剧情主持人。"DM"仅口语别名，不是独立术语。
 
 ### 还原（Stage2 珊瑚图）
 
@@ -124,9 +128,9 @@ Stage2 是**纯 IO 的珊瑚形还原**（设计见 `docs/design/play-through-re
 
 Stage3 的 agent 分工（设计 §B1）：**参演**是 `CharacterAgent`（NPC）与人类玩家，
 出场、写台词、进 `speech_log`；**工作人员**是 `DirectorAgent`（设计玩家选项）、
-`WorldBuilderAgent`（解析玩家干涉）、`VerifierAgent`、`GameMasterAgent`，以及
-画师层 `PromptWriter`（由 `SceneDesigner` 注入，不是独立会话 agent），不出场、
-不写角色台词，输出只进系统事件/选项/资产。
+`WorldBuilderAgent`（解析玩家干涉）、`VerifierAgent`、`ChroniclerAgent`（写编年史
+增量），以及画师层 `PromptWriter`（由 `SceneDesigner` 注入，不是独立会话 agent），
+不出场、不写角色台词，输出只进系统事件/选项/资产。
 
 ### 干涉（Intervene）
 

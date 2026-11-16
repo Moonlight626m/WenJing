@@ -25,6 +25,7 @@ from pydantic import ValidationError
 import app.infrastructure.models  # noqa: F401  # 确保 ORM 元数据注册
 from app.composition import get_container
 from app.contracts.dto import (
+    CommandStatusResponse,
     CreateSessionRequest,
     SessionListResponse,
     SessionStatusResponse,
@@ -146,6 +147,35 @@ async def session_status(
     except WJError as exc:
         return _error_response(exc)
     return resp.model_dump(mode="json")
+
+
+@router.get(
+    "/api/sessions/{session_id}/commands/{command_id}",
+    response_model=CommandStatusResponse,
+)
+async def command_status(
+    session_id: str,
+    command_id: str,
+    principal: Annotated[Principal, Depends(get_principal)],
+) -> CommandStatusResponse:
+    """异步命令状态轮询（select_role 202 化）：区分在途 / 成功 / 失败。
+
+    后端执行结果只经 WS event_hub 推给在线连接；REST 轮询方（选角页）靠这个
+    台账口及时发现失败，而不是干等到前端超时。
+    """
+    try:
+        cid = _ensure_uuid(command_id)
+        app = get_application()
+        status = await app.commands_table_status(
+            _ensure_uuid(session_id), cid, actor=principal.actor
+        )
+    except WJError as exc:
+        return _error_response(exc)  # type: ignore[return-value]
+    return CommandStatusResponse(
+        command_id=cid,
+        status=status,
+        inflight=(await app.async_inflight_count(cid)) > 0,
+    )
 
 
 @router.get(
@@ -374,6 +404,10 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             await synthesizer.aclose()
             await channel.aclose()
             await audio.flush()
+            # 回溯真正重写了时间线才清 outbox（幂等重放没有 timeline_reset，
+            # 不能丢掉本连接尚未确认的消息）
+            if any(m["type"] == "timeline_reset" for m in msgs):
+                outbox.clear()
             for msg in msgs:
                 outbox.append(msg)
                 await ws.send_json(msg)
@@ -398,8 +432,14 @@ async def session_ws(ws: WebSocket, session_id: str) -> None:
             outbox[:] = [m for m in outbox if m["seq"] > last]
         elif parsed.type == "resync_request":
             last = parsed.last_confirmed_seq
-            # session_init 是连接引导消息（每次连接都会重发），不参与补发
-            replay = [m for m in outbox if m["seq"] > last and m["type"] != "session_init"]
+            # session_init 是连接引导消息（每次连接都会重发），不参与补发。
+            # last=0 = 从零重建（首连/分支回溯后）：走 DB 活动分支全量重放，
+            # 不能拿 outbox 增量——回溯后的增量缺继承前缀。
+            replay = (
+                []
+                if last == 0
+                else [m for m in outbox if m["seq"] > last and m["type"] != "session_init"]
+            )
             if not replay:
                 replay = await application.replay_after(sid, last, actor=actor)
             for msg in replay:

@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -293,6 +294,9 @@ class ChatLLMService:
         chunks = 0
         emitted = False
         attempt = 0
+        # 墙钟：含等信号量排队、重试退避，流式另含消费端暂停。用于对比各 stage
+        # 的实际占用，不当作 provider 纯延迟。
+        started = time.perf_counter()
         async with self._client(session_id) as client, self._semaphore:
             logger.info(
                 "llm_stream_start",
@@ -355,6 +359,7 @@ class ChatLLMService:
                         "purpose": purpose.value,
                         "chunks": chunks,
                         "retry_count": attempt,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000),
                     },
                 },
             )
@@ -367,6 +372,8 @@ class ChatLLMService:
         purpose: UsagePurpose,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str, tuple[ToolCall, ...], TokenUsage | None]:
+        # 墙钟：含等信号量排队与重试退避；用于对比各 stage 的实际占用。
+        started = time.perf_counter()
         async with self._client(session_id) as client, self._semaphore:
             logger.info(
                 "llm_call_start",
@@ -416,6 +423,7 @@ class ChatLLMService:
                         "prompt_tokens": usage.prompt_tokens if usage else None,
                         "completion_tokens": usage.completion_tokens if usage else None,
                         "retry_count": attempt,
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000),
                     },
                 },
             )

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+import weakref
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -48,6 +49,7 @@ from app.domain.game.media import (
     AssetRepositoryPort,
     SceneAssetRequest,
 )
+from app.domain.game.memory import MemoryStore
 from app.domain.game.offline_ticks import (
     MAX_OFFLINE_TICKS,
     offline_hint_payload,
@@ -57,8 +59,9 @@ from app.domain.game.offline_ticks import (
 from app.domain.game.replay import build_replay_graph
 from app.domain.game.script_adapter import script_package_to_script
 from app.domain.game.streaming import SpeechStreamSink
+from app.domain.game.types import MemoryBackend
 from app.domain.llm import LLMService
-from app.infrastructure.config import get_settings
+from app.infrastructure.config import DEFAULT_MEMORY_FS_ROOT, get_settings
 from app.infrastructure.db.event_store import (
     PersistentEventStore,
     branch_uuid,
@@ -72,6 +75,7 @@ from app.infrastructure.models.event import EVENTS_SCHEMA_VERSION
 from app.infrastructure.models.script import Script as ScriptRecord
 from app.infrastructure.models.session import Session as SessionRecord
 from app.infrastructure.models.session_tick import SessionTick
+from app.services.command_labels import COMMAND_LABELS
 from app.services.scene_assets import RecoveryReport, SceneAssetScheduler
 from app.services.session_events import SessionEventHub
 from app.services.session_projection import (
@@ -86,11 +90,15 @@ from app.services.session_store import SNAPSHOT_KIND_COMMAND, SNAPSHOT_KIND_ROLL
 
 logger = logging.getLogger("wenjing.session.application")
 
-#: 命令外事件落库的 CAS 重试次数。冲突只可能来自「后台任务与玩家命令撞在同一
-#: 版本上」，重试即重放一次（restore → append → commit）；仍冲突就放弃这一次
-#: 投递——事件流是权威，配图下次会由后续命令或 #57 的恢复路径补上，不值得为它
-#: 阻塞或反复抢锁。
+#: 命令外事件落库的 CAS 重试次数。进程内写入已由 `_lock_for` 串行化，冲突只
+#: 可能来自跨进程的同会话写入（多副本部署）——单 worker 下是纯兜底。仍冲突就
+#: 放弃这一次投递：事件流是权威，配图下次会由后续命令或 #57 的恢复路径补上，
+#: 不值得为它阻塞或反复抢锁。
 _RUNTIME_EVENT_MAX_ATTEMPTS = 3
+
+#: 离线 tick 拿会话写锁的最长等待。tick 在 `session_init` 里补算，命令在途时
+#: 不能把 WS 连接/重连堵在一条 30–90s 的命令后面——等不到就留给下次 init。
+_TICK_LOCK_WAIT_SECONDS = 0.5
 
 #: HEAD 阶段本来就不允许回溯的会话不做「按目标选快照」截断：保持整段重放，让
 #: 运行时按 HEAD 阶段的 allowed_commands 拒绝（ended / stage2_complete 等）。
@@ -99,19 +107,6 @@ _ROLLBACK_STAGES = frozenset(
 )
 
 #: 存档点的命令词（label 是给人读的标记，不参与任何判定）
-_COMMAND_LABELS: dict[CommandKind, str] = {
-    CommandKind.SELECT_ROLE: "选角",
-    CommandKind.CHOOSE_OPTION: "选择",
-    CommandKind.FREE_INPUT: "行动",
-    CommandKind.SWITCH_SCENE: "换景",
-    CommandKind.INTERVENE: "干涉世界",
-    CommandKind.ENTER_STAGE3: "进入续写",
-    CommandKind.CONFIRM_ENDING: "收束",
-    CommandKind.EXIT_GAME: "退出",
-    CommandKind.ROLLBACK_TO_EVENT: "回溯",
-}
-
-
 def _rollback_target_index(
     session_id: uuid.UUID, path: list[GameEvent], payload: RollbackToEventPayload
 ) -> int:
@@ -147,7 +142,7 @@ def _snapshot_marker(command: PlayerCommand, export: dict[str, Any]) -> tuple[st
         return (
             f"回溯 · {scene}" if scene else "回溯"
         ), SNAPSHOT_KIND_ROLLBACK
-    word = _COMMAND_LABELS.get(command.kind, command.kind.value)
+    word = COMMAND_LABELS.get(command.kind, command.kind.value)
     return (f"{word} · {scene}" if scene else word), SNAPSHOT_KIND_COMMAND
 
 
@@ -187,6 +182,8 @@ class SessionApplication:
         asset_scheduler: SceneAssetScheduler | None = None,
         event_hub: SessionEventHub | None = None,
         assets: AssetRepositoryPort | None = None,
+        memory_backend: MemoryBackend = "null",
+        memory_fs_root: str = "",
     ) -> None:
         self._factory = session_factory
         self._agent_llm = agent_llm
@@ -203,6 +200,17 @@ class SessionApplication:
         # 强引用兜住 Task 的 GC，进程崩溃时进程内的这里自然消失；台账上的
         # 孤儿 RECEIVED 由 `submit_async` 的 "stale" 语义承接（重发可复原）。
         self._async_inflight: dict[uuid.UUID, asyncio.Task[None]] = {}
+        # 实例记忆后端（§1.3）："fs" 时每个运行时挂自己的 FileMemoryStore
+        # （实例目录 = memory_fs_root/<session_id>/）。事件权威仍在事件存储。
+        self._memory_backend: MemoryBackend = memory_backend
+        self._memory_fs_root = memory_fs_root or DEFAULT_MEMORY_FS_ROOT
+        # fs 后端的会话级句柄缓存：同会话每命令复用同一实例目录锁
+        self._memory_stores: dict[uuid.UUID, MemoryStore] = {}
+        # 会话级写锁（见 `_lock_for`）：进程内串行化「恢复 → LLM → 提交」。
+        # 弱引用字典：没有在途写入时锁对象可被回收，避免长驻进程按会话累积。
+        self._write_locks: weakref.WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
+            weakref.WeakValueDictionary()
+        )
 
     # ===== 创建 =====
 
@@ -301,7 +309,7 @@ class SessionApplication:
                 codes.SESS_NOT_FOUND,
                 extra={"id": str(session_id), "reason": "script not generated"},
             )
-        runtime, store = self._build_runtime(
+        runtime, store = await self._build_runtime(
             session_id,
             package,
             usage_context=self._usage_context(session_id, sess),
@@ -365,9 +373,15 @@ class SessionApplication:
         )
         return AsyncCommandReceipt(claimed=True, state="accepted")
 
-    async def commands_table_status(self, command_id: uuid.UUID) -> str | None:
-        """REST 轮询对账口：命令当前落地状态（未受理 None → 404 语义给调用方）。"""
-        return await self._store.command_status(command_id)
+    async def commands_table_status(
+        self, session_id: uuid.UUID, command_id: uuid.UUID, *, actor: Actor
+    ) -> str | None:
+        """REST 轮询对账口：命令当前落地状态（未受理/不属于该会话为 None）。
+
+        先校验会话访问权，再按会话过滤命令归属——轮询方只应看到自己会话的命令。
+        """
+        await self._access_session(session_id, actor)
+        return await self._store.command_status(command_id, session_id=session_id)
 
     async def drain_async_commands(self) -> None:
         """等待全部在途后台命令收尾（优雅停机 / 测试用，对齐 `SceneAssetScheduler.drain`）。"""
@@ -389,10 +403,11 @@ class SessionApplication:
         task = asyncio.current_task()
         command_id = command.command_id
         try:
-            runtime, store, version = await self._restore_runtime(session_id)
-            update_result, store = await self._submit_claimed(
-                session_id, command, store, runtime, version
-            )
+            async with self._lock_for(session_id):
+                runtime, store, version = await self._restore_runtime(session_id)
+                update_result, store = await self._submit_claimed(
+                    session_id, command, store, runtime, version
+                )
         except WJError as exc:
             logger.error(
                 "async_command_failed",
@@ -474,6 +489,20 @@ class SessionApplication:
         )
         return messages_from_update(session_id, store, update_result)
 
+    def _lock_for(self, session_id: uuid.UUID) -> asyncio.Lock:
+        """取（必要时创建）会话写锁：串行化所有会推进 `session.version` 的进程内写入。
+
+        版本 CAS 是跨进程兜底；进程内若只靠它，命令外事件（运行期配图就绪、
+        离线 tick）会在「恢复 → LLM → 提交」之间抢走版本号，让整条命令失败并
+        重跑一遍 LLM。锁必须覆盖整个窗口而不是只覆盖提交段。单 worker 是既有
+        部署约束，锁与运行时状态同生命周期。
+        """
+        lock = self._write_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._write_locks[session_id] = lock
+        return lock
+
     async def _submit(
         self,
         session_id: uuid.UUID,
@@ -483,26 +512,29 @@ class SessionApplication:
         speech_sink: SpeechStreamSink | None = None,
     ) -> tuple[RuntimeUpdate, PersistentEventStore]:
         await self._access_session(session_id, actor)
-        # 回溯命令先解析目标坐标再恢复：只重放到目标之前（按目标选快照，M8）
-        rollback = (
-            command.payload_model
-            if command.kind is CommandKind.ROLLBACK_TO_EVENT
-            else None
-        )
-        runtime, store, version = await self._restore_runtime(
-            session_id, speech_sink=speech_sink, rollback=rollback
-        )
-
-        # 幂等闸：quota 已受理（含后台命令的 RECEIVED 占位）→ 对账返回当前状态，
-        # 不重复执行。后台命令（202 化）的执行路径走 `_submit_claimed`，越过本闸。
-        if await self._store.has_command(command.command_id):
-            return (
-                project_update(session_id, store, self._idle_result(runtime, duplicate=True)),
-                store,
+        async with self._lock_for(session_id):
+            # 回溯命令先解析目标坐标再恢复：只重放到目标之前（按目标选快照，M8）
+            rollback = (
+                command.payload_model
+                if command.kind is CommandKind.ROLLBACK_TO_EVENT
+                else None
             )
-        return await self._submit_claimed(
-            session_id, command, store, runtime, version, speech_sink=speech_sink
-        )
+            runtime, store, version = await self._restore_runtime(
+                session_id, speech_sink=speech_sink, rollback=rollback
+            )
+
+            # 幂等闸：quota 已受理（含后台命令的 RECEIVED 占位）→ 对账返回当前状态，
+            # 不重复执行。后台命令（202 化）的执行路径走 `_submit_claimed`，越过本闸。
+            if await self._store.has_command(command.command_id):
+                return (
+                    project_update(
+                        session_id, store, self._idle_result(runtime, duplicate=True)
+                    ),
+                    store,
+                )
+            return await self._submit_claimed(
+                session_id, command, store, runtime, version, speech_sink=speech_sink
+            )
 
     async def _submit_claimed(
         self,
@@ -574,13 +606,14 @@ class SessionApplication:
         self, session_id: uuid.UUID, store: PersistentEventStore, *, stage: str
     ) -> None:
         """系统动作（如 runtime.start）产生的事件 + head/stage 推进，单事务。"""
-        await self._store.commit(
-            session_id=session_id,
-            store=store,
-            stage=stage,
-            expected_version=None,
-            op="commit_system_events",
-        )
+        async with self._lock_for(session_id):
+            await self._store.commit(
+                session_id=session_id,
+                store=store,
+                stage=stage,
+                expected_version=None,
+                op="commit_system_events",
+            )
 
     # ===== 命令之外的领域事件（ADR-0005 §5，#56）=====
 
@@ -603,54 +636,55 @@ class SessionApplication:
         ——回溯放弃的分支上补图会让资产挂到已被抛弃的历史上（§9 事件是资产继承的
         唯一权威，错了会静默显示错图）。
 
-        CAS 冲突（与并发命令撞版本）不视为错误：重试到落库或次数耗尽。
+        CAS 冲突在进程内已由 `_lock_for` 排除；保留重试只为跨进程写入兜底。
 
         新增事件类型时别忘了两处登记（漏了都不报错、只静默降级）：要推给前端就得
         进 `session_projection._MESSAGE_CATEGORY_MAP`，要影响运行时状态就得进
         `GameRuntime._replay_event`。
         """
-        for attempt in range(1, _RUNTIME_EVENT_MAX_ATTEMPTS + 1):
-            loaded = await self._store.restore(session_id)
-            active = branch_uuid(session_id, loaded.store.active_branch_id)
-            if active != branch_id:
-                logger.info(
-                    "runtime_event_branch_inactive",
-                    extra={
-                        "session_id": str(session_id),
-                        "event_type": event_type,
-                        "expected_branch": str(branch_id),
-                        "active_branch": str(active),
-                    },
-                )
-                return []
-            loaded.store.append(event_type, payload, session_id=str(session_id))
-            try:
-                await self._store.commit(
-                    session_id=session_id,
-                    store=loaded.store,
-                    stage=loaded.session.current_stage,
-                    expected_version=loaded.version,
-                    op="report_runtime_event",
-                )
-            except WJError as exc:
-                # match_code 而非 `exc.code ==`：沿 cause 链匹配（errx 的指定用法），
-                # commit 哪天把冲突包一层也不会让重试静默失效。
-                if not match_code(exc, codes.SESS_CONFLICT):
-                    raise
-                if attempt < _RUNTIME_EVENT_MAX_ATTEMPTS:
-                    continue
-                logger.warning(
-                    "runtime_event_conflict_give_up",
-                    extra={
-                        "session_id": str(session_id),
-                        "event_type": event_type,
-                    },
-                )
-                return []
-            # 刚追加的事件就是活动分支的最后一条：seq 即它在分支路径上的序号
-            seq = len(loaded.store.active_events()) - 1
-            return project_messages(session_id, loaded.store, after_seq=seq - 1)
-        return []  # 不可达（上面每条路径都 return），仅为类型检查保留
+        async with self._lock_for(session_id):
+            for attempt in range(1, _RUNTIME_EVENT_MAX_ATTEMPTS + 1):
+                loaded = await self._store.restore(session_id)
+                active = branch_uuid(session_id, loaded.store.active_branch_id)
+                if active != branch_id:
+                    logger.info(
+                        "runtime_event_branch_inactive",
+                        extra={
+                            "session_id": str(session_id),
+                            "event_type": event_type,
+                            "expected_branch": str(branch_id),
+                            "active_branch": str(active),
+                        },
+                    )
+                    return []
+                loaded.store.append(event_type, payload, session_id=str(session_id))
+                try:
+                    await self._store.commit(
+                        session_id=session_id,
+                        store=loaded.store,
+                        stage=loaded.session.current_stage,
+                        expected_version=loaded.version,
+                        op="report_runtime_event",
+                    )
+                except WJError as exc:
+                    # match_code 而非 `exc.code ==`：沿 cause 链匹配（errx 的指定用法），
+                    # commit 哪天把冲突包一层也不会让重试静默失效。
+                    if not match_code(exc, codes.SESS_CONFLICT):
+                        raise
+                    if attempt < _RUNTIME_EVENT_MAX_ATTEMPTS:
+                        continue
+                    logger.warning(
+                        "runtime_event_conflict_give_up",
+                        extra={
+                            "session_id": str(session_id),
+                            "event_type": event_type,
+                        },
+                    )
+                    return []
+                # 刚追加的事件就是活动分支的最后一条：seq 即它在分支路径上的序号
+                seq = len(loaded.store.active_events()) - 1
+                return project_messages(session_id, loaded.store, after_seq=seq - 1)
+            return []  # 不可达（上面每条路径都 return），仅为类型检查保留
 
     async def report_asset_ready(
         self,
@@ -720,6 +754,7 @@ class SessionApplication:
                     user_id=sess.owner_user_id,
                     kind=_asset_kind(req.kind),
                     prompt_context=req.prompt_context or {},
+                    reference_asset_ids=req.reference_asset_ids,
                 ),
                 on_ready=self._apply_asset_ready,
             )
@@ -841,7 +876,7 @@ class SessionApplication:
             "last_sequence": state.last_sequence,
             "plot_log": state.plot_context.get("plot_log", []),
             "player_role": state.plot_context.get("player_role"),
-            # 续写目标（从活动分支事件派生）：重连即恢复目标与达成状态
+            # 旧续写目标（已停止写入）：恒为空，仅为历史会话保留字段
             "stage3_goals": [g.model_dump(mode="json") for g in state.stage3_goals],
             # 场景切换背景（#53）：稳定引用 + 键 + 标题，前端据此签 URL / 判淡入
             "scene_key": state.scene_key,
@@ -920,38 +955,54 @@ class SessionApplication:
     async def _run_one_tick(
         self, session_id: uuid.UUID, tick_index: int, tick_id: str
     ) -> tuple[bool, int]:
-        """执行并提交一个 tick；返回 (是否认领成功, 写入的世界事实数)。"""
-        runtime, store, version = await self._restore_runtime(session_id)
-        facts = await runtime.offline_tick(tick_id=tick_id)
+        """执行并提交一个 tick；返回 (是否认领成功, 写入的世界事实数)。
 
-        async def claim(s: AsyncSession) -> bool:
-            # claim-first：这一行就是幂等闸，写入与事件同一事务
-            existing = await s.get(SessionTick, (session_id, tick_index))
-            if existing is not None:
-                return False
-            s.add(SessionTick(session_id=session_id, tick_index=tick_index))
-            return True
-
+        命令在途时只等 `_TICK_LOCK_WAIT_SECONDS`：tick 是增强路径，不能把
+        `session_init`（WS 连接/重连）堵在一条长命令后面，等不到就由下次补算。
+        """
+        lock = self._lock_for(session_id)
         try:
-            claimed = await self._store.commit(
-                session_id=session_id,
-                store=store,
-                stage=runtime.state.stage,
-                expected_version=version,
-                op="offline_tick",
-                claim=claim,
-            )
-        except WJError as exc:
-            logger.warning(
-                "offline_tick_commit_failed",
-                extra={
-                    "session_id": str(session_id),
-                    "tick": tick_index,
-                    "err": exc_reason(exc),
-                },
+            await asyncio.wait_for(lock.acquire(), timeout=_TICK_LOCK_WAIT_SECONDS)
+        except TimeoutError:
+            logger.info(
+                "offline_tick_skipped_lock_busy",
+                extra={"session_id": str(session_id), "tick": tick_index},
             )
             return False, 0
-        return claimed, facts if claimed else 0
+        try:
+            runtime, store, version = await self._restore_runtime(session_id)
+            facts = await runtime.offline_tick(tick_id=tick_id)
+
+            async def claim(s: AsyncSession) -> bool:
+                # claim-first：这一行就是幂等闸，写入与事件同一事务
+                existing = await s.get(SessionTick, (session_id, tick_index))
+                if existing is not None:
+                    return False
+                s.add(SessionTick(session_id=session_id, tick_index=tick_index))
+                return True
+
+            try:
+                claimed = await self._store.commit(
+                    session_id=session_id,
+                    store=store,
+                    stage=runtime.state.stage,
+                    expected_version=version,
+                    op="offline_tick",
+                    claim=claim,
+                )
+            except WJError as exc:
+                logger.warning(
+                    "offline_tick_commit_failed",
+                    extra={
+                        "session_id": str(session_id),
+                        "tick": tick_index,
+                        "err": exc_reason(exc),
+                    },
+                )
+                return False, 0
+            return claimed, facts if claimed else 0
+        finally:
+            lock.release()
 
     async def _write_offline_hint(
         self, session_id: uuid.UUID, *, ticks: list[str], facts: int
@@ -1038,7 +1089,7 @@ class SessionApplication:
             session_id,
             until_resolver=resolve_until if rollback is not None else None,
         )
-        runtime, store = self._build_runtime(
+        runtime, store = await self._build_runtime(
             session_id,
             loaded.package,
             store=loaded.store,
@@ -1090,7 +1141,7 @@ class SessionApplication:
 
     # ===== 内部工具 =====
 
-    def _build_runtime(
+    async def _build_runtime(
         self,
         session_id: uuid.UUID,
         package: ScriptPackage,
@@ -1114,8 +1165,49 @@ class SessionApplication:
             replay_graph=build_replay_graph(package),
             # Stage3 探索地图（M5）：旧剧本无 exploration = 原 3 轮行为
             exploration_map=package.exploration,
+            # fs 实例记忆（§1.3）：单实例部署的角色私有记忆载体；
+            # "null" 后端为 None = 纯进程内事件派生（服务端形态）。
+            memory_store=await self._memory_store_for(
+                session_id, script_name=package.title
+            ),
         )
         return runtime, store
+
+    async def _memory_store_for(
+        self, session_id: uuid.UUID, *, script_name: str = ""
+    ) -> MemoryStore | None:
+        """按后端配置取会话的记忆存储句柄（惰性创建并加单写者锁）。"""
+        if self._memory_backend != "fs":
+            return None
+        cached = self._memory_stores.get(session_id)
+        if cached is not None:
+            return cached
+        from app.infrastructure.memory_store import open_file_memory_store
+
+        store = await open_file_memory_store(
+            self._memory_fs_root,
+            str(session_id),
+            script_name=script_name,
+        )
+        self._memory_stores[session_id] = store
+        return store
+
+    async def aclose(self) -> None:
+        """释放全部会话级实例目录句柄（lifespan 关闭时调用）。
+
+        不释放会让 `instance.lock` 与 fd 跟随进程直到退出；长跑进程重启后
+        只能靠 PID 探测接管。关锁失败不阻塞退出。
+        """
+        stores = list(self._memory_stores.values())
+        self._memory_stores.clear()
+        for store in stores:
+            try:
+                await store.close()
+            except Exception as exc:  # noqa: BLE001 - 关锁失败不阻塞退出
+                logger.warning(
+                    "memory_store_close_failed",
+                    extra={"wj_extra": {"reason": exc_reason(exc)}},
+                )
 
     def _usage_context(self, session_id: uuid.UUID, sess: SessionRecord):
         """构造该会话的 LLM 用量归属上下文（无 recorder 时返回 None）。"""
@@ -1143,6 +1235,10 @@ class SessionApplication:
             return {"option_id": p.option_id}
         if kind is CommandKind.FREE_INPUT:
             return {"text": p.text}
+        if kind is CommandKind.INTERVENE:
+            return {"text": p.text}
+        if kind is CommandKind.SWITCH_SCENE:
+            return {"scene_key": p.scene_key}
         if kind is CommandKind.ROLLBACK_TO_EVENT:
             path = store.active_events()
             index = _rollback_target_index(session_id, path, p)

@@ -3,8 +3,11 @@
 import { useId } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
+import { useCastRoster } from "@/lib/cast-roster";
 import type { CharacterProfile } from "@/lib/contracts/types";
+import { useSpeakingSpeakers } from "@/lib/audio-session";
 import { initialOf } from "@/lib/stage-cast";
+import { useGameStore } from "@/stores/gameStore";
 import { Tag } from "@/components/ui/tag";
 
 /** 头像组最多排几位，再多收成「+N」。 */
@@ -94,29 +97,16 @@ function CastChip({
 }
 
 /**
- * 角色头像组：浮在舞台左上角的一排圆印，你演的角色是朱砂实心，正在说话的人
- * 套一圈青碧光，配音在放时向外扩声纹。悬停或 Tab 聚焦看人物小传，
- * 完整档案在剧情回顾面板的「角色」页。
+ * 角色头像组：侧栏里的在场名单。你演的角色是朱砂实心，正在说话的人套一圈青碧光，
+ * 配音在放时向外扩声纹。悬停或 Tab 聚焦看人物小传，完整档案在侧栏「角色」页。
+ *
+ * 从舞台左上角挪进侧栏：头像浮在背景上会被误当成场景的一部分。
  */
-export function CastDock({
-  characters,
-  dynamic,
-  present,
-  playableRoles,
-  playerRole,
-  active,
-  speaking,
-}: {
-  characters: CharacterProfile[];
-  /** 运行期登场的角色名（不是剧本包里的） */
-  dynamic: ReadonlySet<string>;
-  /** 当前在场名单；null = 没有探索地图（旧剧本/Stage2），不做弱化 */
-  present: ReadonlySet<string> | null;
-  playableRoles: string[];
-  playerRole: string | null;
-  active: string | null;
-  speaking: readonly string[];
-}) {
+export function CastDock() {
+  const { listed: characters, dynamic, presentNames: present, cast } = useCastRoster();
+  const speaking = useSpeakingSpeakers();
+  const playableRoles = useGameStore((s) => s.playableRoles);
+  const playerRole = useGameStore((s) => s.playerRole);
   if (characters.length === 0) return null;
   const playable = new Set(
     characters.filter((c) => c.is_player_playable.value).map((c) => c.name)
@@ -128,21 +118,22 @@ export function CastDock({
     ...characters.filter((c) => c.name === playerRole),
     ...characters.filter((c) => c.name !== playerRole),
   ];
-    const shown = ordered.slice(0, MAX_CHIPS);
+  const shown = ordered.slice(0, MAX_CHIPS);
   const rest = ordered.length - shown.length;
-  // 玩家永远在当前地点；运行期角色没有可靠的在场名单（拉人/新增不进静态名单），
-  // 宁可保持点亮，也不要把在场的人误弱化。
+  // 玩家永远在当前地点；运行期拉入/新增的角色已经并入服务端下发的
+  // `scene_options[].participants`，所以这里不再为 `dynamic` 开例外——
+  // 否则在别处的新角色也会一直亮着，和「当前在场」那一行自相矛盾。
   const isPresent = (name: string) =>
-    name === playerRole || dynamic.has(name) || (present ? present.has(name) : true);
+    name === playerRole || (present ? present.has(name) : true);
 
   return (
-    <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       {shown.map((c) => (
         <CastChip
           key={c.name}
           profile={c}
           isPlayer={c.name === playerRole}
-          active={c.name === active}
+          active={c.name === cast.active}
           speaking={speaking.includes(c.name)}
           playable={playable.has(c.name)}
           present={isPresent(c.name)}

@@ -426,6 +426,38 @@ async def test_ark_payload_has_no_n_and_keeps_watermark_default():
     assert payload["sequential_image_generation"] == "disabled"
 
 
+async def test_ark_reference_images_go_into_image_field():
+    """角色参考图（2026-11）：字节 → base64 data URL 数组，进 `image` 字段。"""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(_PNG).decode()}]})
+
+    adapter = _ark(handler)
+    await adapter.generate(
+        prompt="站台回望",
+        kind=AssetKind.SCENE_MONTAGE,
+        reference_images=[_PNG, _PNG],
+    )
+    images = captured["payload"]["image"]
+    assert len(images) == 2
+    assert images[0].startswith("data:image/png;base64,")
+    assert base64.b64decode(images[0].split(",", 1)[1]) == _PNG
+
+
+async def test_ark_without_references_has_no_image_field():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(_PNG).decode()}]})
+
+    adapter = _ark(handler)
+    await adapter.generate(prompt="空镜", kind=AssetKind.BACKGROUND)
+    assert "image" not in captured["payload"]
+
+
 async def test_ark_exacts_below_min_pixels_lift_by_kind():
     """低于 seedream 5.0 像素下限的 kind 按比例抬档（直发会 400）。"""
     async def _noop(request: httpx.Request) -> httpx.Response:

@@ -16,15 +16,20 @@ export interface StageCast {
  *
  * 台上的人取最近开口的 {@link MAX_ON_STAGE} 位（在途流算最新）；说话人优先取还在流式
  * 生成的那一路，否则看最后一条非系统消息是不是台词。纯函数，便于不起浏览器断言。
+ *
+ * 给了 `present`（当前地点在场名单）时只留**在场**的人：换景之后上一幕的人不该还站在
+ * 台上，否则和侧栏名册、交互卡的「当前在场」互相矛盾。旁白或无人在场时 `active` 为 null。
  */
 export function stageCast(
   messages: ChatMessage[],
   streams: LiveStream[],
+  present: ReadonlySet<string> | null = null,
   limit = MAX_ON_STAGE
 ): StageCast {
   const recent: string[] = [];
   const note = (name: string | null) => {
-    if (name && !recent.includes(name) && recent.length < limit) recent.push(name);
+    if (!name || (present && !present.has(name))) return;
+    if (!recent.includes(name) && recent.length < limit) recent.push(name);
   };
 
   const live = streams.filter((s) => !s.ended);
@@ -43,6 +48,7 @@ export function stageCast(
       break;
     }
   }
+  if (active && present && !present.has(active)) active = null;
 
   return { onStage: recent.reverse(), active };
 }

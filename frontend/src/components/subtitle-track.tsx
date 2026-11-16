@@ -3,21 +3,32 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatMessage, LiveStream } from "@/stores/gameStore";
+import { useGameStore } from "@/stores/gameStore";
+import { speechParts, splitStageDirection } from "@/lib/stage-direction";
 
-/** 屏幕中下方字幕：角色行 + 旁白行（ADR-0005 §1）。 */
+/**
+ * 屏幕中下方字幕：只播角色发言（旁白/系统提示归侧栏）。
+ *
+ * 角色台词里的动作括号在这里拆出来单列一行，台词本身只留说出口的部分。
+ */
 export interface SubtitleLine {
   key: string;
-  kind: "narrative" | "character_speech";
   speaker: string | null;
   text: string;
+  /** 舞台提示（动作/神态），没有则为 null */
+  direction: string | null;
   fading: boolean;
+  /** 来源：在途流（还会长、会收尾）还是已落定的持久发言 */
+  kind: "stream" | "message";
   /** 在途的流式行（#61）：文本还会长，不武装停留/淡出计时器。 */
   live?: boolean;
 }
 
 /** 流式行的稳定键：同一个 `stream_id` 全程同一行，文字在行内增长。 */
+const STREAM_KEY_PREFIX = "stream:";
+
 function streamKey(stream: LiveStream): string {
-  return `stream:${stream.streamId}`;
+  return `${STREAM_KEY_PREFIX}${stream.streamId}`;
 }
 
 /** 多行上限 3 行（ADR-0005 §1 裁决 Q33）。 */
@@ -27,12 +38,14 @@ const DWELL_MS = 2500;
 const FADE_MS = 600;
 
 function toLine(message: ChatMessage): SubtitleLine {
+  const parts = speechParts(message.text, message.stageDirection);
   return {
     key: message.key,
-    kind: message.kind === "character_speech" ? "character_speech" : "narrative",
     speaker: message.speaker,
-    text: message.text,
+    text: parts.text,
+    direction: parts.direction,
     fading: false,
+    kind: "message",
   };
 }
 
@@ -50,6 +63,23 @@ function clearTimer(
     clearTimeout(fade);
     timers.delete(`${key}:fade`);
   }
+}
+
+/**
+ * 顶掉第 `index` 行：作废它的计时器、标记不再复活（流式行收尾后 streams 副作用
+ * 不得再写回来），换上新行。同 speaker 顶替与流式行收尾共用这一份拼写。
+ */
+function replaceLine(
+  visible: SubtitleLine[],
+  index: number,
+  line: SubtitleLine,
+  timers: Map<string, ReturnType<typeof setTimeout>>,
+  released: Set<string>
+): SubtitleLine[] {
+  const old = visible[index];
+  clearTimer(timers, old.key);
+  released.add(old.key);
+  return visible.map((l, i) => (i === index ? line : l));
 }
 
 /**
@@ -92,10 +122,12 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       ? current.findIndex((l) => l.speaker === line.speaker)
       : -1;
     if (sameIndex >= 0) {
-      clearTimer(timersRef.current, current[sameIndex].key);
-      releasedRef.current.add(current[sameIndex].key);
-      visibleRef.current = current.map((l, i) =>
-        i === sameIndex ? line : l
+      visibleRef.current = replaceLine(
+        current,
+        sameIndex,
+        line,
+        timersRef.current,
+        releasedRef.current
       );
       return true;
     }
@@ -107,18 +139,65 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
     return false;
   }
 
+  /**
+   * 持久发言抵达时，把同角色的**可见流式行就地收尾**（终态规则的另一半）。
+   *
+   * 不能按普通新消息入队：流式行的 key 是 `stream:*`，换成消息 key 就会重挂节点，
+   * `animate-rise-in` 再播一遍——玩家看到的就是同一句话说两遍（先流式、再整句）。
+   * 所以保留 key 与 DOM，只把文本补成完整版、光标撤下（`live=false`），停留计时器
+   * 从这一刻重新起算，几秒后照常淡出。
+   *
+   * 认行要求**同角色**：同一角色、文本也相等时最可信；文本有出入时（流式文本与
+   * 持久文本可能在标点或动作括号的切分上差一点）仍按角色兜底。已收尾的行不承接
+   * 下一条发言——那是新的一句，该重新入场。
+   */
+  function settleStreamLine(message: ChatMessage): boolean {
+    const line = toLine(message);
+    const lines = visibleRef.current;
+    const lineIndex = (predicate: (l: SubtitleLine) => boolean) =>
+      lines.findIndex(
+        (l) =>
+          l.kind === "stream" &&
+          !releasedRef.current.has(l.key) &&
+          predicate(l)
+      );
+    const byText = lineIndex(
+      (l) => l.speaker === message.speaker && l.text === line.text
+    );
+    const index =
+      byText >= 0 ? byText : lineIndex((l) => l.speaker === message.speaker);
+    if (index < 0) return false;
+    visibleRef.current = replaceLine(
+      visibleRef.current,
+      index,
+      {
+        ...visibleRef.current[index],
+        speaker: line.speaker,
+        text: line.text,
+        direction: line.direction,
+        fading: false,
+        live: false,
+      },
+      timersRef.current,
+      releasedRef.current
+    );
+    return true;
+  }
+
   // 1) 新消息入队：同 speaker 替换、未满入列、满则排队。
   useEffect(() => {
     const incoming = messages.filter(
-      (m) =>
-        (m.kind === "narrative" || m.kind === "character_speech") &&
-        !seenRef.current.has(m.key)
+      (m) => m.kind === "character_speech" && !seenRef.current.has(m.key)
     );
     if (incoming.length === 0) return;
 
     let changed = false;
     for (const message of incoming) {
       seenRef.current.add(message.key);
+      if (settleStreamLine(message)) {
+        changed = true;
+        continue;
+      }
       if (admit(toLine(message))) changed = true;
     }
     if (changed) commit();
@@ -144,13 +223,20 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       const key = streamKey(stream);
       if (releasedRef.current.has(key)) continue;
       const live = !stream.ended;
+      const parts = splitStageDirection(stream.text);
       const current = visibleRef.current;
 
       const own = current.findIndex((l) => l.key === key);
       if (own >= 0) {
-        if (current[own].text !== stream.text || current[own].live !== live) {
+        if (
+          current[own].text !== parts.text ||
+          current[own].direction !== parts.direction ||
+          current[own].live !== live
+        ) {
           visibleRef.current = current.map((l, i) =>
-            i === own ? { ...l, text: stream.text, live } : l
+            i === own
+              ? { ...l, text: parts.text, direction: parts.direction, live }
+              : l
           );
           changed = true;
         }
@@ -161,7 +247,8 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       if (queued >= 0) {
         queueRef.current[queued] = {
           ...queueRef.current[queued],
-          text: stream.text,
+          text: parts.text,
+          direction: parts.direction,
           live,
         };
         continue;
@@ -171,10 +258,11 @@ export function useSubtitleQueue(messages: ChatMessage[], streams: LiveStream[])
       if (
         admit({
           key,
-          kind: "character_speech",
           speaker: stream.speaker,
-          text: stream.text,
+          text: parts.text,
+          direction: parts.direction,
           fading: false,
+          kind: "stream",
           live,
         })
       ) {
@@ -250,16 +338,13 @@ function splitTail(text: string, n: number): [string, string] {
  * 舞台上它是一条对白带：自下而上的暗场托底，顶端一道泥金细线。每行进场时由虚到实，
  * 你演的角色名用朱砂、其他角色用泥金；还在流式生成的行，最后几个字带青碧辉光，
  * 行尾一支发光的笔尖。
+ *
+ * 自己订阅消息流与在途流：流式台词每来一段只重渲这一条字幕带。
  */
-export function SubtitleTrack({
-  messages,
-  streams,
-  playerRole = null,
-}: {
-  messages: ChatMessage[];
-  streams: LiveStream[];
-  playerRole?: string | null;
-}) {
+export function SubtitleTrack() {
+  const messages = useGameStore((s) => s.messages);
+  const streams = useGameStore((s) => s.streams);
+  const playerRole = useGameStore((s) => s.playerRole);
   const lines = useSubtitleQueue(messages, streams);
   if (lines.length === 0) return null;
 
@@ -274,47 +359,47 @@ export function SubtitleTrack({
       />
       {lines.map((line) => {
         const fade = line.fading ? "opacity-0" : "opacity-100";
-        if (line.kind !== "character_speech") {
-          return (
-            <p
-              key={line.key}
-              data-testid="subtitle-line"
-              className={`animate-rise-in max-w-[92%] font-serif text-base leading-[1.7] break-words whitespace-pre-wrap text-center italic text-ink-soft transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-lg ${fade}`}
-            >
-              {line.text}
-            </p>
-          );
-        }
-
         const own = playerRole !== null && line.speaker === playerRole;
         const [settled, fresh] = line.live
           ? splitTail(line.text, FRESH_CHARS)
           : [line.text, ""];
         return (
-          <p
+          <div
             key={line.key}
-            data-testid="subtitle-line"
-            className={`animate-rise-in max-w-[92%] font-serif text-lg leading-[1.75] break-words whitespace-pre-wrap text-center text-ink transition-opacity duration-500 [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl ${fade}`}
+            className={`flex max-w-[92%] flex-col items-center gap-0.5 transition-opacity duration-500 ${fade}`}
           >
-            <span
-              className={`font-semibold ${
-                own
-                  ? "text-flag [text-shadow:0_0_14px_var(--wj-flag)]"
-                  : "text-glow-gold [text-shadow:0_0_14px_var(--wj-glow-gold)]"
-              }`}
+            {line.direction && (
+              <p
+                data-testid="subtitle-direction"
+                className="animate-rise-in text-center font-serif text-xs italic leading-relaxed text-ink-faint [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-sm"
+              >
+                （{line.direction}）
+              </p>
+            )}
+            <p
+              data-testid="subtitle-line"
+              className="animate-rise-in break-words whitespace-pre-wrap text-center font-serif text-lg leading-[1.75] text-ink [text-shadow:0_1px_4px_rgba(0,0,0,0.95)] md:text-2xl"
             >
-              {line.speaker ?? "角色"}：
-            </span>
-            {settled}
-            {fresh && <span className="ink-fresh">{fresh}</span>}
-            {line.live ? (
               <span
-                aria-hidden
-                data-testid="subtitle-caret"
-                className="animate-caret-glow ml-1 inline-block h-[1.05em] w-[3px] translate-y-[0.18em] rounded-full bg-glow-jade"
-              />
-            ) : null}
-          </p>
+                className={`font-semibold ${
+                  own
+                    ? "text-flag [text-shadow:0_0_14px_var(--wj-flag)]"
+                    : "text-glow-gold [text-shadow:0_0_14px_var(--wj-glow-gold)]"
+                }`}
+              >
+                {line.speaker ?? "角色"}：
+              </span>
+              {settled}
+              {fresh && <span className="ink-fresh">{fresh}</span>}
+              {line.live ? (
+                <span
+                  aria-hidden
+                  data-testid="subtitle-caret"
+                  className="animate-caret-glow ml-1 inline-block h-[1.05em] w-[3px] translate-y-[0.18em] rounded-full bg-glow-jade"
+                />
+              ) : null}
+            </p>
+          </div>
         );
       })}
     </div>

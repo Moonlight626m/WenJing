@@ -19,7 +19,6 @@ from app.contracts.script import ScriptPackage
 from app.domain.content.pipeline import ContentPipeline
 from app.domain.generation.stage1 import synthesize_script_package
 from app.domain.generation.workflow import WorkflowNodes, WorkflowRunner, initial_state
-from app.domain.generation.workflow.nodes import _format_issue
 from app.domain.prompts import character_design, collect_materials, divide_events
 from app.infrastructure.config import DEFAULT_DATABASE_URL, get_settings
 from app.infrastructure.errx import Error
@@ -212,12 +211,15 @@ class ScriptedWorkflowLLM:
         raise AssertionError(f"unexpected purpose: {name}")
 
 
-def _make_runner(analysis, llm, *, sink=None, gate=False, checkpointer=None):
+def _make_runner(analysis, llm, *, sink=None, gate=False, checkpointer=None, review_sink=None):
     from langgraph.checkpoint.memory import MemorySaver
 
     nodes = WorkflowNodes(llm, teacher_gates=gate)
     runner = WorkflowRunner(
-        nodes, checkpointer=checkpointer or MemorySaver(), progress_sink=sink
+        nodes,
+        checkpointer=checkpointer or MemorySaver(),
+        progress_sink=sink,
+        review_sink=review_sink,
     )
     state = initial_state(
         script_id=1,
@@ -261,6 +263,36 @@ async def test_materials_gate_pauses_before_divide() -> None:
     assert statuses["divide_events"] == "pending"
 
 
+async def test_review_sink_persists_review_before_awaiting_snapshot() -> None:
+    """审阅载荷必须在 awaiting_review 快照广播前落库。
+
+    教师端收到 SSE 终态帧后立刻回读详情；若 review 晚于该帧才写库，这段窗口
+    里详情是 null，面板退化为「未提供可编辑的素材结论」（素材闸门空面板）。
+    """
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    order: list[str] = []
+    paused: list[dict | None] = []
+
+    async def review_sink(review: dict | None) -> None:
+        paused.append(review)
+        order.append("review_saved")
+
+    async def sink(snapshot) -> None:  # noqa: ANN001 - 进度快照
+        if snapshot.status == "awaiting_review":
+            order.append("awaiting_snapshot")
+
+    runner, state = _make_runner(
+        analysis, llm, gate=True, sink=sink, review_sink=review_sink
+    )
+    await runner.run(state, thread_id="t-pause-order")
+
+    assert paused and paused[0] is not None
+    assert paused[0]["gate"] == "materials"
+    assert paused[0]["dossier"]["background"]
+    assert order.index("review_saved") < order.index("awaiting_snapshot")
+
+
 async def test_materials_gate_resume_carries_directives() -> None:
     """教师恢复：指令经闸门并入 state，下游划分 prompt 可感知（#34 指导语义）。
 
@@ -299,6 +331,8 @@ async def test_materials_gate_resume_carries_directives() -> None:
     assert final["package"] is not None
     # #34 指导语义：指令同样到达剧本书写节点（下游 agent 可感知）
     assert any(directives[0] in p for p in llm.writing_prompts)
+    # write_dialogue 的 beat 输入带 goal（写潜台词用，不直接说出口）
+    assert any('"goal"' in p for p in llm.writing_prompts)
     assert approved.snapshot().status == "awaiting_review"  # 终审闸门再停
     assert approved.review["gate"] == "final"
 
@@ -506,6 +540,41 @@ async def test_pre_write_gate_resume_applies_edits() -> None:
     assert resumed.review["gate"] == "final"
 
 
+async def test_pre_write_gate_edit_without_endings_keeps_original() -> None:
+    """pre_write 恢复载荷丢了 endings 时不得清空结局表。
+
+    线上故障：教师端闸门草稿只重建 scenes 回传，EventDivisionDraft.endings
+    缺省成 []，回填后剧本包「有 options 无结局」，总审被 validate_replay
+    同一理由打回三次后报 CONTENT_GENERATION_FAILED。
+    """
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    await _pause_at(analysis, llm, checkpointer, "t-pre-write-endings", "pre_write")
+
+    lossy = json.loads(_DIVISION_JSON)
+    del lossy["endings"]  # 模拟前端只回传 scenes
+    lossy["scenes"][0]["title"] = "雪夜启程"
+
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+    )
+    final = await resumed.resume(
+        thread_id="t-pre-write-endings",
+        resume_payload={"edits": {"division": lossy}},
+        gate="pre_write",
+    )
+
+    # 教师的场景编辑生效，结局表按原稿保留
+    assert final["division"].scenes[0].title == "雪夜启程"
+    assert [e.ending_id for e in final["division"].endings] == ["e1", "e2"]
+    # 总审不再因缺结局被反复打回，顺利走到终审闸门
+    assert resumed.snapshot().status == "awaiting_review"
+    assert resumed.review["gate"] == "final"
+
+
 async def test_final_gate_approve_with_package_edit() -> None:
     """#34 终审闸门：逐闸恢复到终审；教师编辑剧本标题后通过 → 编辑稿生效。"""
     analysis = make_analysis()
@@ -525,6 +594,9 @@ async def test_final_gate_approve_with_package_edit() -> None:
     resumed = WorkflowRunner(
         WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
     )
+    # 生产路径会播种闸门前的进度快照（`_resume_attempt`）；不播种就看不出
+    # 「闸门 delta 把已完成节点重新置 running」这类投影 bug。
+    resumed.seed_nodes(runner.snapshot().nodes)
     final = await resumed.resume(
         thread_id="t-final",
         resume_payload={"edits": {"package": package_edit}, "action": "approve"},
@@ -534,6 +606,10 @@ async def test_final_gate_approve_with_package_edit() -> None:
     assert final["package"].title == "教师修订的标题"
     assert final["gate_action"] == "approve"
     assert resumed.snapshot().status == "succeeded"
+    statuses = {n.node.value: n for n in resumed.snapshot().nodes}
+    assert statuses["design_exploration"].status == "succeeded"
+    assert statuses["design_assets"].status == "succeeded"
+    assert all(n.status != "running" for n in statuses.values())
 
 
 async def test_final_gate_reject_with_package_edit_keeps_edits() -> None:
@@ -548,8 +624,11 @@ async def test_final_gate_reject_with_package_edit_keeps_edits() -> None:
     package_edit = json.loads(json.dumps(runner.review["package"]))
     package_edit["title"] = "打回前教师修订的标题"
 
+    snapshots: list = []
     resumed = WorkflowRunner(
-        WorkflowNodes(llm, teacher_gates=True), checkpointer=checkpointer
+        WorkflowNodes(llm, teacher_gates=True),
+        checkpointer=checkpointer,
+        progress_sink=lambda s: _collect(snapshots, s),
     )
     await resumed.resume(
         thread_id="t-final-edit-reject",
@@ -560,6 +639,12 @@ async def test_final_gate_reject_with_package_edit_keeps_edits() -> None:
         },
         gate="final",
     )
+
+    # 打回路径不能显示「已通过终审」：写回重做中
+    first = {n.node.value: n for n in snapshots[0].nodes}
+    assert first["write_script"].status == "running"
+    assert first["write_script"].detail == "教师打回，重写剧本"
+    assert first["final_audit"].detail == "教师打回，重写剧本"
 
     # 重写以教师编辑稿为基线：编辑文本进入书写 prompt，不被静默丢弃
     assert any("打回前教师修订的标题" in p for p in llm.writing_prompts)
@@ -640,7 +725,12 @@ async def test_doubter_reject_then_pass_reruns_collection() -> None:
     events = runner.snapshot().doubter_events
     # verify 节点 reject→pass 各记一条；总审再记一条 pass
     assert [e.verdict for e in events] == ["reject", "pass", "pass"]
-    assert events[0].issues == [_format_issue(_verdict_issue())]
+    # 结构化问题原样进事件（教师端按 severity/category/field 渲染，不再拍平）
+    issue = events[0].issues[0]
+    assert isinstance(issue, DoubterIssue)
+    assert issue.field == _verdict_issue().field
+    assert issue.severity == "must_fix"
+    assert issue.suggestion == _verdict_issue().suggestion
     assert runner.snapshot().status == "succeeded"
 
 
@@ -659,27 +749,124 @@ async def test_audit_reject_then_pass_reruns_writing() -> None:
     assert runner.snapshot().status == "succeeded"
 
 
-async def test_audit_exhaustion_fails_within_contract_rounds() -> None:
-    """三次打回耗尽即失败；DoubterEvent.round 不超契约上限（le=3，S1）。"""
+async def test_audit_reject_rounds_are_unbounded() -> None:
+    """总审打回不设轮次上限：一直重写，直到 doubter 放行。"""
     analysis = make_analysis()
+    # 5 次打回远超旧上限（2），验证轮次不再封顶
     llm = ScriptedWorkflowLLM(
-        analysis, doubter_verdicts=("pass", "reject", "reject", "reject")
+        analysis, doubter_verdicts=("pass",) + ("reject",) * 5
     )
     runner, state = _make_runner(analysis, llm)
-    with pytest.raises(Error):
-        await runner.run(state, thread_id="t-audit-exhaust")
+    final = await runner.run(state, thread_id="t-audit-unbounded")
+
+    assert final["package"] is not None
+    # 五次打回各触发一次重写，第六轮总审（verdicts 用尽后默认 pass）放行
+    assert len(llm.writing_prompts) == 6
     audit_rounds = [
         e.round for e in runner.snapshot().doubter_events if e.node.value == "final_audit"
     ]
-    assert audit_rounds == [1, 2, 3]
+    # 打回轮次逐轮递增、不再封顶；pass 不推进轮次，沿用末轮号
+    assert audit_rounds == [1, 2, 3, 4, 5, 5]
+    assert runner.snapshot().status == "succeeded"
 
 
-async def test_doubter_exhaustion_fails_the_attempt() -> None:
+async def test_doubter_reject_rounds_are_unbounded() -> None:
+    """素材考证打回不设轮次上限：收集重做直到考证通过。"""
     analysis = make_analysis()
-    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject", "reject", "reject"))
+    # 6 次打回远超旧上限（2），验证轮次不再封顶
+    llm = ScriptedWorkflowLLM(analysis, doubter_verdicts=("reject",) * 6)
     runner, state = _make_runner(analysis, llm)
+    final = await runner.run(state, thread_id="t-doubter-unbounded")
+
+    assert final["package"] is not None
+    assert llm.calls.count(UsagePurpose.COLLECT_MATERIALS.value) == 7
+    verdicts = [e.verdict for e in runner.snapshot().doubter_events]
+    assert verdicts == ["reject"] * 6 + ["pass", "pass"]
+    verify_rounds = [
+        e.round
+        for e in runner.snapshot().doubter_events
+        if e.node.value == "verify_materials"
+    ]
+    assert verify_rounds == [1, 2, 3, 4, 5, 6, 7]
+    assert runner.snapshot().status == "succeeded"
+
+
+async def test_resume_clears_gate_waiting_detail() -> None:
+    """恢复后不得残留「等待教师审阅」：那是闸门暂停时的 detail，跑起来就该换掉。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    paused = await _pause_at(analysis, llm, checkpointer, "t-resume-detail", "materials")
+    waiting = {n.node.value: n for n in paused.snapshot().nodes}
+    assert waiting["divide_events"].detail == "等待教师审阅"
+
+    snapshots: list = []
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True),
+        checkpointer=checkpointer,
+        progress_sink=lambda s: _collect(snapshots, s),
+    )
+    await resumed.resume(
+        thread_id="t-resume-detail",
+        resume_payload={"directives": []},
+        gate="materials",
+    )
+    first = {n.node.value: n for n in snapshots[0].nodes}
+    assert first["divide_events"].status == "running"
+    assert first["divide_events"].detail == "教师已通过素材审定"
+
+
+async def test_pre_write_resume_detail_is_not_waiting() -> None:
+    """pre_write 恢复后同样不得残留「等待教师审阅」。"""
+    analysis = make_analysis()
+    llm = ScriptedWorkflowLLM(analysis)
+    from langgraph.checkpoint.memory import MemorySaver
+
+    checkpointer = MemorySaver()
+    paused = await _pause_at(
+        analysis, llm, checkpointer, "t-pre-write-detail", "pre_write"
+    )
+    waiting = {n.node.value: n for n in paused.snapshot().nodes}
+    assert waiting["write_script"].detail == "等待教师审阅"
+
+    snapshots: list = []
+    resumed = WorkflowRunner(
+        WorkflowNodes(llm, teacher_gates=True),
+        checkpointer=checkpointer,
+        progress_sink=lambda s: _collect(snapshots, s),
+    )
+    await resumed.resume(
+        thread_id="t-pre-write-detail",
+        resume_payload={"directives": []},
+        gate="pre_write",
+    )
+    first = {n.node.value: n for n in snapshots[0].nodes}
+    assert first["write_script"].status == "running"
+    assert first["write_script"].detail == "教师已通过人物与场景审定"
+
+
+async def test_node_failure_marks_progress_node_failed() -> None:
+    """节点内异常：在途节点标红，管线图不能停在 running（否则看起来还在跑）。"""
+    analysis = make_analysis()
+    bad_division = json.loads(_DIVISION_JSON)
+    bad_division["scenes"][0]["beats"][0]["key_event_order"] = 99
+    llm = ScriptedWorkflowLLM(
+        analysis, division_json=json.dumps(bad_division, ensure_ascii=False)
+    )
+    snapshots: list = []
+    runner, state = _make_runner(
+        analysis, llm, sink=lambda s: _collect(snapshots, s)
+    )
     with pytest.raises(Error):
-        await runner.run(state, thread_id="t-exhaust")
+        await runner.run(state, thread_id="t-node-fail")
+
+    final = snapshots[-1]
+    nodes = {n.node.value: n for n in final.nodes}
+    assert nodes["divide_events"].status == "failed"
+    assert nodes["divide_events"].detail == "生成失败"
+    assert final.status == "failed"
 
 
 async def test_invalid_division_is_rejected_by_machine_check() -> None:
@@ -748,6 +935,97 @@ def test_prompts_embed_prompt_version() -> None:
     assert character_design.PROMPT_VERSION in character_design.build_user_message(
         name="我", original_traits="", dossier_json="{}"
     )
+
+
+def _must_fix(field: str, category: str = "人物事实") -> DoubterIssue:
+    return DoubterIssue(field=field, category=category, severity="must_fix")
+
+
+def test_audit_reject_on_character_field_routes_to_character_redesign() -> None:
+    """人物设定问题必须回人物设计。
+
+    write_script 不重写 `characters`，只回写剧本会让同一 must_fix 每轮原样复现
+    （真实事故：父亲背景写反了「谁到徐州奔丧」）。
+    """
+    nodes = WorkflowNodes(llm=None)
+    state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("characters[1].public_background")],
+        "write_retries": 1,
+    }
+    assert nodes.route_after_audit(state) == "redesign_characters"
+
+
+def test_audit_reject_on_scene_field_rewrites_script() -> None:
+    nodes = WorkflowNodes(llm=None)
+    state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("scenes[0].beats[0].description", "事件顺序")],
+        "write_retries": 1,
+    }
+    assert nodes.route_after_audit(state) == "write_script"
+
+
+def test_reject_routes_have_no_retry_budget() -> None:
+    """打回不设轮次上限：计数再高也回到重做，没有 fail 终点。"""
+    nodes = WorkflowNodes(llm=None)
+    audit_state = {
+        "audit_verdict": "reject",
+        "audit_issues": [_must_fix("characters[0].name")],
+        "write_retries": 99,
+    }
+    assert nodes.route_after_audit(audit_state) == "redesign_characters"
+    audit_state["audit_issues"] = [_must_fix("scenes[0].beats[0].description", "事件顺序")]
+    assert nodes.route_after_audit(audit_state) == "write_script"
+    assert nodes.route_after_verify({"doubter_verdict": "reject", "doubter_round": 99}) == (
+        "collect_materials"
+    )
+
+
+def test_overlay_profiles_restores_designed_appearance() -> None:
+    """写作模型重抄 characters 时丢掉的 appearance 必须由设定节点补回来。"""
+    from app.contracts.script import (
+        Appearance,
+        Beat,
+        CharacterProfile,
+        Scene,
+        ScriptPackage,
+    )
+    from app.domain.generation.workflow.nodes import _overlay_profiles
+
+    designed = CharacterProfile(
+        name="我",
+        public_background="在北京念书的青年",
+        appearance=Appearance(
+            gender="男",
+            age="青年",
+            face="清瘦",
+            hair="短发",
+            clothing="深色皮大衣",
+            accessories="",
+            build="中等",
+        ),
+    )
+    written = CharacterProfile(name="我", public_background="在北京念书的青年")
+    package = ScriptPackage(
+        title="背影",
+        characters=[written],
+        scenes=[
+            Scene(
+                scene_id=1,
+                title="读信",
+                participants=["我"],
+                beats=[Beat(beat_id=1, description="我读父亲的来信")],
+            )
+        ],
+        playable_roles=["我"],
+        stage2_ending_beat_id=1,
+    )
+
+    merged = _overlay_profiles(package, [designed])
+
+    assert merged.characters[0].appearance is not None
+    assert merged.characters[0].appearance.clothing == "深色皮大衣"
 
 
 @pytest.mark.skipif(

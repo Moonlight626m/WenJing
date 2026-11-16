@@ -68,10 +68,10 @@ class ActiveInteraction(VersionedContract):
 
 
 class Stage3Goal(VersionedContract):
-    """Stage 3 续写的小目标：目标导向自然收敛（spec 决策）。
+    """旧 Stage3 续写目标（已停止写入，仅为历史会话保留读兼容）。
 
-    进入续写时由剧情主持 Agent 定下、每轮由验证 Agent 判定是否达成；两者都是事件
-    （`stage3_goals_set` / `stage3_goal_achieved`），本模型是从活动分支事件派生的投影。
+    2026-11 起续写没有目标体系；本模型只用于把旧事件投影出来，新会话恒为空。
+    下一主版本随字段一起删除。
     """
 
     goal_id: int
@@ -109,7 +109,7 @@ class RuntimeState(VersionedContract):
     # 当前活动交互点（无则引擎处于推进态）
     active_interaction: ActiveInteraction | None = None
 
-    # Stage3 目标状态
+    # 旧 Stage3 目标（已停止写入；只为历史会话保留空字段兼容）
     stage3_goals: list[Stage3Goal] = Field(default_factory=list)
 
     def allowed_commands(self) -> list[CommandKind]:

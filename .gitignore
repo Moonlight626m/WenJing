@@ -44,3 +44,14 @@ playwright-report/
 docker-compose.override.yml
 docker-compose.local.yml
 /etc/
+
+# 本地演示链路产物（run_recipe.py 输出）
+local-run-out/
+
+# 本地实例记忆目录（memory_backend=fs 的运行时产物）
+backend/data/
+# 从仓库根启动后端时落到这里的同一份运行时数据
+/data/
+
+# Stage3 试运行产物
+test/runs/

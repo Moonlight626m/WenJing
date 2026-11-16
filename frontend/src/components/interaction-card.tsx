@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  useCallback,
   useEffect,
   useState,
   type CSSProperties,
@@ -14,13 +15,14 @@ import type {
   OptionItem,
   StageValue,
 } from "@/lib/contracts/types";
-import { useGameStore, type ChatMessage } from "@/stores/gameStore";
+import { useGameStore } from "@/stores/gameStore";
+import { isImeEnter } from "@/lib/ime";
+import { useInteractionBusy } from "@/lib/interaction-busy";
 import { Thinking } from "@/components/thinking";
 import { VoiceInput } from "@/components/voice-input";
-import { Button, buttonClass } from "@/components/ui/button";
-import { SendIcon } from "@/components/ui/icons";
+import { Button, buttonClass, iconButtonClass } from "@/components/ui/button";
+import { CloseIcon, DialogueIcon, SendIcon } from "@/components/ui/icons";
 import { MotionRoot } from "@/components/ui/motion-root";
-import { Tag } from "@/components/ui/tag";
 
 /** 出场缓动：先快后慢，落定时不回弹。 */
 const EASE = [0.2, 0.7, 0.2, 1] as const;
@@ -38,6 +40,14 @@ const OPTION_ITEM: Variants = {
 /** 数字键直选只认 1–9。 */
 const MAX_HOTKEYS = 9;
 
+/** 面板容器的锚点：圆钮的 `aria-controls` 指向它。 */
+const DOCK_ID = "action-dock";
+
+/** 轮到你出牌：有选项或能自由输入（展开态的流光、收起态的朱砂点同一口径）。 */
+function isYourTurn(allowed: readonly CommandKind[]): boolean {
+  return allowed.includes("choose_option") || allowed.includes("free_input");
+}
+
 /** 焦点在可输入元素里时，数字键是在打字，不是在选。 */
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -49,74 +59,100 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
-/** 输入法选词时的回车是「上屏」不是发送。Safari 在 keydown 时 isComposing 已复位，
- * 只能再看一眼 keyCode 229。 */
-function isImeEnter(e: { nativeEvent: { isComposing: boolean }; keyCode: number }): boolean {
-  return e.nativeEvent.isComposing || e.keyCode === 229;
-}
-
-/** 最近一次干涉的结果：请求之后的第一条拒绝/生效事件。 */
-function latestInterventionFeedback(
-  messages: ChatMessage[]
-): { status: "applied" | "rejected"; text: string } | null {
-  let requestIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].eventType === "intervention_requested") {
-      requestIndex = i;
-      break;
-    }
-  }
-  if (requestIndex < 0) return null;
-  for (let i = requestIndex + 1; i < messages.length; i += 1) {
-    const message = messages[i];
-    if (message.eventType === "intervention_rejected") {
-      return {
-        status: "rejected",
-        text: message.intervention?.reason || message.text,
-      };
-    }
-    if (
-      message.eventType === "scene_created" ||
-      message.eventType === "character_created" ||
-      message.eventType === "pull_in_character"
-    ) {
-      return { status: "applied", text: message.text };
-    }
-  }
-  return null;
-}
-
 /**
  * 三种输入模式：options / free_input / options_with_fallback。
  *
- * 每个 interaction 是一张独立的卡：换了 `interaction_id` 旧卡先退场、新卡再进场，
- * 选项依次滑入。轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
+ * 整块行动面板（场景信息、选项、自由输入）按轮自动收放：**提交后收起、下一轮交互点
+ * 就绪时弹出**，平时只在舞台左下角留一颗圆钮——底下一大块玻璃框会把背景与立绘压掉
+ * 半屏，而它多数时候只是「看得出牌时才需要」。收起态在圆钮上点一颗朱砂，免得面板收着、
+ * 学生错过出牌。展开后每个 interaction 仍是一张独立的卡：换了 `interaction_id` 旧卡先
+ * 退场、新卡再进场，选项依次滑入。
+ * 轮到学生时卡边有一段流光绕行，提交后流光转快，直到引擎推进完。
+ *
+ * 换景与干涉入口在侧栏（`TranscriptPanel`），这里只留本轮选项与自由输入，
+ * 舞台下半屏不再被两排工具占满。窄屏侧栏收起时，卡上补一对直达入口
+ * （`showOperations`），否则玩家找不到换景/干涉。
  */
-export function InteractionCard() {
+export function InteractionCard({
+  showOperations = false,
+  onRequestOperations,
+}: {
+  /** 侧栏收起时在卡上显示「场景移动 / 干涉世界」直达按钮 */
+  showOperations?: boolean;
+  onRequestOperations?: (panel: "move" | "intervene") => void;
+}) {
   const interaction = useGameStore((s) => s.interaction);
   const stage = useGameStore((s) => s.stage);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
-  // 自由输入/干涉的草稿放在外层：换卡时不丢（学生写了一半又改点选项，草稿还在）
+  const pending = useGameStore((s) => s.pending);
+  // 自由输入的草稿放在最外层：换卡、收起面板都不丢（学生写了一半又去点选项）
   const [freeText, setFreeText] = useState("");
-  const [interveneText, setInterveneText] = useState("");
-  const extras = allowedCommands.filter(isExtraCommand);
+  // 收起的是「哪一张卡」，不是一个布尔：记下被玩家收起的键（交互点 id，或阶段卡的
+  // `phase:{stage}`）。新的一轮交互点一到键就变了，面板自己弹出来——出牌时它在，
+  // 提交后它退场，玩家只在想单看舞台时手动收一次。
+  const [collapsedKey, setCollapsedKey] = useState<string | null>(null);
+  const extras = visibleExtras(allowedCommands, stage);
+  const dockKey = interaction ? interaction.interaction_id : `phase:${stage}`;
+  // 提交后收起：回调身份跟着 dockKey 走，交互点没换就不重挂数字键监听
+  const collapseDock = useCallback(
+    () => setCollapsedKey(dockKey),
+    [dockKey]
+  );
+
+  // 没得选也没阶段命令时整颗圆钮都不渲染，免得贴着一颗点了没反应的按钮
+  if (!interaction && extras.length === 0) return null;
+
+  const open = collapsedKey !== dockKey;
+
+  // 轮到你出牌（或停在阶段之间等你决定）→ 收起态在圆钮上点一颗朱砂
+  const waiting = interaction ? isYourTurn(allowedCommands) : extras.length > 0;
+  const showTurnDot = !open && !pending && waiting;
 
   return (
     <MotionRoot>
-      <AnimatePresence mode="wait">
-        {interaction ? (
-          <InteractionBody
-            key={interaction.interaction_id}
-            interaction={interaction}
-            freeText={freeText}
-            setFreeText={setFreeText}
-            interveneText={interveneText}
-            setInterveneText={setInterveneText}
-          />
-        ) : extras.length > 0 ? (
-          <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
-        ) : null}
-      </AnimatePresence>
+      <div className="flex w-full items-end gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsedKey(open ? dockKey : null)}
+          aria-expanded={open}
+          aria-controls={open ? DOCK_ID : undefined}
+          aria-label={
+            open
+              ? "收起行动面板"
+              : waiting
+                ? "展开行动面板（轮到你行动）"
+                : "展开行动面板"
+          }
+          title={open ? "收起行动面板" : "展开行动面板"}
+          className={iconButtonClass(false, "relative", "lg")}
+        >
+          {open ? <CloseIcon /> : <DialogueIcon />}
+          {showTurnDot && (
+            <span
+              aria-hidden
+              className="absolute top-0 right-0 size-2.5 rounded-full bg-flag shadow-[0_0_10px_var(--wj-flag)]"
+            />
+          )}
+        </button>
+        <AnimatePresence mode="wait">
+          {open ? (
+            interaction ? (
+              <InteractionBody
+                key={interaction.interaction_id}
+                interaction={interaction}
+                extras={extras}
+                freeText={freeText}
+                setFreeText={setFreeText}
+                showOperations={showOperations}
+                onRequestOperations={onRequestOperations}
+                onSubmitted={collapseDock}
+              />
+            ) : (
+              <PhaseCard key={`phase:${stage}`} stage={stage} commands={extras} />
+            )
+          ) : null}
+        </AnimatePresence>
+      </div>
     </MotionRoot>
   );
 }
@@ -125,6 +161,22 @@ type ExtraCommand = Extract<CommandKind, "enter_stage3" | "confirm_ending" | "ex
 
 function isExtraCommand(k: CommandKind): k is ExtraCommand {
   return k === "enter_stage3" || k === "confirm_ending" || k === "exit_game";
+}
+
+/**
+ * 当前阶段实际渲染的阶段命令。
+ *
+ * `confirm_ending` 是旧契约里给「课文结局确认」用的收束命令，仍冻结在
+ * `ALLOWED_COMMANDS` 里；但 Stage3 自由探索没有叙事结局，在续写阶段展示它
+ * 只会把玩家带进一个没有结局卡的死角。关闭本局走 `exit_game`。
+ */
+function visibleExtras(
+  allowed: readonly CommandKind[],
+  stage: StageValue
+): ExtraCommand[] {
+  return allowed
+    .filter(isExtraCommand)
+    .filter((k) => !(stage === "stage3_extending" && k === "confirm_ending"));
 }
 
 /** 阶段卡的引导语：没有交互点、只剩阶段命令时（如还原演完）告诉学生下一步是什么。 */
@@ -174,17 +226,18 @@ function ExtraCommands({ commands, busy }: { commands: ExtraCommand[]; busy: boo
  */
 function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraCommand[] }) {
   const pending = useGameStore((s) => s.pending);
-  const connection = useGameStore((s) => s.connection);
-  const busy = pending !== null || connection !== "connected";
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
+  const busy = useInteractionBusy();
   const copy = PHASE_PROMPTS[stage];
 
   return (
     <m.div
+      id={DOCK_ID}
       initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
       transition={{ duration: 0.4, ease: EASE }}
-      className="glass glow-border relative rounded-3xl px-4 py-3.5 md:px-5"
+      className="glass glow-border relative min-w-0 flex-1 rounded-3xl px-4 py-3.5 md:px-5"
       style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
     >
       {copy && (
@@ -204,47 +257,57 @@ function PhaseCard({ stage, commands }: { stage: StageValue; commands: ExtraComm
           className="mt-3 text-xs"
         />
       )}
+      {!sessionInitialized && !pending && (
+        <p className="mt-3 text-xs text-ink-faint">正在重建世界…</p>
+      )}
     </m.div>
   );
 }
 
 function InteractionBody({
   interaction,
+  extras: extraCommands,
   freeText,
   setFreeText,
-  interveneText,
-  setInterveneText,
+  showOperations,
+  onRequestOperations,
+  onSubmitted,
 }: {
   interaction: ActiveInteraction;
+  /** 阶段命令（进入续写/退出游戏）：外层与本卡同一口径算一次，避免两处漂移 */
+  extras: ExtraCommand[];
   freeText: string;
   setFreeText: (update: (prev: string) => string) => void;
-  interveneText: string;
-  setInterveneText: (update: (prev: string) => string) => void;
+  showOperations: boolean;
+  onRequestOperations?: (panel: "move" | "intervene") => void;
+  /** 本轮动作已提交：外层据此收起面板，等下一轮交互点再自动弹出 */
+  onSubmitted: () => void;
 }) {
   const allowedCommands = useGameStore((s) => s.allowedCommands);
   const pending = useGameStore((s) => s.pending);
-  const connection = useGameStore((s) => s.connection);
-  const messages = useGameStore((s) => s.messages);
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
   const submit = useGameStore((s) => s.submitCommand);
   const sessionId = useGameStore((s) => s.sessionId);
   const [chosenId, setChosenId] = useState<string | null>(null);
+  // 选项默认收起：抉择卡是舞台下半屏最大的一块，展开四条整句中文就把背景压没了。
+  // 每轮新卡（外层按 interaction_id 设 key）都会回到收起态。
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
-  const busy = pending !== null || connection !== "connected";
+  const busy = useInteractionBusy();
   const canChoose = allowedCommands.includes("choose_option");
   const canFree = allowedCommands.includes("free_input");
-  const canSwitch = allowedCommands.includes("switch_scene");
-  const canIntervene = allowedCommands.includes("intervene");
   const sceneOptions = interaction.scene_options ?? [];
   const currentScene = sceneOptions.find((scene) => scene.is_current);
-  const interventionFeedback = latestInterventionFeedback(messages);
-  const yourTurn = canChoose || canFree;
+  const yourTurn = isYourTurn(allowedCommands);
   const options = interaction.options;
+  const quickMove = sceneOptions.length > 0 && allowedCommands.includes("switch_scene");
+  const quickIntervene =
+    sceneOptions.length > 0 && allowedCommands.includes("intervene");
 
-  const extraCommands = allowedCommands.filter(isExtraCommand);
-
-  // 数字键直选：焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项
+  // 数字键直选：选项展开后、焦点不在输入框里、没按修饰键时，按 1–9 等于点对应选项。
+  // 收起状态下不绑定：看不见选项时按键直接提交等于让玩家盲选。
   useEffect(() => {
-    if (!canChoose || busy) return;
+    if (!canChoose || busy || !optionsOpen) return;
     function onKeyDown(e: globalThis.KeyboardEvent) {
       if (e.defaultPrevented || e.isComposing) return;
       if (e.altKey || e.ctrlKey || e.metaKey) return;
@@ -257,15 +320,17 @@ function InteractionBody({
       const opt = options[n - 1];
       setChosenId(opt.option_id);
       submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+      onSubmitted();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canChoose, busy, options, submit]);
+  }, [canChoose, busy, options, optionsOpen, onSubmitted, submit]);
 
   function choose(opt: OptionItem) {
     if (busy) return;
     setChosenId(opt.option_id);
     submit("choose_option", { option_id: opt.option_id }, `选项 ${opt.label}`);
+    onSubmitted();
   }
 
   function sendText(
@@ -279,14 +344,11 @@ function InteractionBody({
     if (!trimmed || busy || !allowed) return;
     submit(kind, { text: trimmed }, label);
     reset();
+    onSubmitted();
   }
 
   function sendFreeInput() {
     sendText("free_input", freeText, canFree, () => setFreeText(() => ""), "自由输入");
-  }
-
-  function sendIntervene() {
-    sendText("intervene", interveneText, canIntervene, () => setInterveneText(() => ""), "干涉世界");
   }
 
   function onComposerKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -301,16 +363,20 @@ function InteractionBody({
 
   return (
     <m.div
+      id={DOCK_ID}
       initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
       animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
       exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
       transition={{ duration: 0.4, ease: EASE }}
-      className={`glass relative rounded-3xl px-4 py-3.5 md:px-5 ${
+      // 高度封顶 + 内部滚动：横屏/矮屏上选项与输入框不会被舞台裁掉；
+      // 滚动放在内层，外层留作 glow-border 的定位容器（会随滚动一起走的伪元素不能裁）
+      className={`glass relative flex max-h-[min(58dvh,34rem)] min-w-0 flex-1 flex-col rounded-3xl ${
         yourTurn || pending ? "glow-border" : ""
       }`}
       style={{ "--wj-glow-speed": pending ? "2.2s" : "7s" } as CSSProperties}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3.5 md:px-5">
+        <div className="flex items-start gap-2.5">
         {yourTurn && (
           <span
             aria-hidden
@@ -335,66 +401,64 @@ function InteractionBody({
         </div>
       </div>
 
-      {/* Stage3 换景（M5）：已解锁地点的前进式切换；当前地点置灰 */}
-      {canSwitch && sceneOptions.length > 0 && (
-        <div className="mt-3">
-          <p className="font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
-            前往
-          </p>
-          <div
-            role="group"
-            aria-label="换景"
-            className="mt-1.5 flex flex-wrap gap-1.5"
-          >
-            {sceneOptions.map((scene) => (
+      {/* 侧栏收起时的直达入口：换景与干涉藏在侧栏里，窄屏上不点开就找不到 */}
+      {showOperations &&
+        onRequestOperations &&
+        (quickMove || quickIntervene) && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5 pl-4">
+            {quickMove && (
               <button
-                key={scene.scene_key}
                 type="button"
-                disabled={busy || scene.is_current}
-                aria-current={scene.is_current || undefined}
-                aria-label={
-                  scene.is_current
-                    ? `${scene.title}（当前）`
-                    : scene.participants.length > 0
-                      ? `前往${scene.title}，在场：${scene.participants.join("、")}`
-                      : `前往${scene.title}`
-                }
-                onClick={() =>
-                  submit(
-                    "switch_scene",
-                    { scene_key: scene.scene_key },
-                    `前往 ${scene.title}`,
-                  )
-                }
-                title={
-                  scene.participants.length > 0
-                    ? `在场：${scene.participants.join("、")}`
-                    : undefined
-                }
-                className={[
-                  "rounded-full border px-3 py-1 font-serif text-sm transition-colors",
-                  scene.is_current
-                    ? "border-glass-edge/60 text-ink-faint"
-                    : "border-glass-edge text-ink hover:border-glow-jade/60 hover:text-glow-jade",
-                  busy && !scene.is_current ? "opacity-40" : "opacity-100",
-                ].join(" ")}
+                onClick={() => onRequestOperations("move")}
+                className="rounded-full border border-glass-edge px-3 py-1 font-serif text-xs text-ink-soft transition-colors hover:border-glow-jade/60 hover:text-glow-jade"
               >
-                {scene.title}
-                {scene.is_current && <span className="ml-1">（当前）</span>}
+                场景移动
               </button>
-            ))}
+            )}
+            {quickIntervene && (
+              <button
+                type="button"
+                onClick={() => onRequestOperations("intervene")}
+                className="rounded-full border border-glass-edge px-3 py-1 font-serif text-xs text-ink-soft transition-colors hover:border-glow-gold/60 hover:text-glow-gold"
+              >
+                干涉世界
+              </button>
+            )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* 抉择按整行排：选项往往是整句中文，左对齐的条目比一排药丸好读 */}
+      {/* 选项默认收起：卡上只留一行入口，展开后才铺开整句中文的选项 */}
       {canChoose && options.length > 0 && (
-        <m.ol
-          variants={OPTION_LIST}
-          initial="hidden"
-          animate="show"
-          className="mt-3 flex flex-col gap-2"
-        >
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setOptionsOpen((open) => !open)}
+            aria-expanded={optionsOpen}
+            aria-controls="interaction-options"
+            className="flex w-full items-center justify-between rounded-2xl border border-glass-edge bg-surface/35 px-3.5 py-2 font-serif text-sm text-ink-soft transition-colors hover:bg-surface/60 hover:text-ink"
+          >
+            <span>
+              {optionsOpen
+                ? "收起行动选项"
+                : `选择行动（${options.length} 个可选）`}
+            </span>
+            <span
+              aria-hidden
+              className={`text-xs transition-transform duration-200 ${
+                optionsOpen ? "rotate-180" : ""
+              }`}
+            >
+              ▾
+            </span>
+          </button>
+          {optionsOpen && (
+            <m.ol
+              id="interaction-options"
+              variants={OPTION_LIST}
+              initial="hidden"
+              animate="show"
+              className="mt-2 flex flex-col gap-2"
+            >
           {options.map((opt, i) => {
             const chosen = activeChoice === opt.option_id;
             return (
@@ -438,6 +502,8 @@ function InteractionBody({
             );
           })}
         </m.ol>
+          )}
+        </div>
       )}
 
       {canFree && (
@@ -472,58 +538,8 @@ function InteractionBody({
           </div>
           <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
             Enter 发送，Shift + Enter 换行
-            {canChoose && options.length > 0 ? "；也可以直接按数字键选上面的选项" : ""}
+            {canChoose && options.length > 0 ? "；展开选项后可按数字键直选" : ""}
           </p>
-        </div>
-      )}
-
-      {/* 干涉世界（M6）：自然语言改变世界——建场景/拉人/新增角色，世界构建裁定。
-          旧剧本没有探索地图（scene_options 为空），引擎会拒绝，不显示入口 */}
-      {canIntervene && sceneOptions.length > 0 && (
-        <div className="mt-3">
-          <p className="font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
-            干涉世界
-          </p>
-          <div className="mt-1.5 flex items-center gap-1.5 rounded-2xl border border-dashed border-glass-edge bg-surface/20 p-1 pl-3 transition-[border-color] duration-200 focus-within:border-glow-gold/50">
-            <input
-              value={interveneText}
-              onChange={(e) => setInterveneText(() => e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter" || isImeEnter(e)) return;
-                e.preventDefault();
-                sendIntervene();
-              }}
-              placeholder="如：建一间雨夜客栈 / 叫船夫过来 / 让一个乞丐加入"
-              aria-label="干涉世界"
-              maxLength={2000}
-              disabled={busy}
-              className="min-w-0 flex-1 bg-transparent py-1.5 font-serif text-sm text-ink placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
-            />
-            <Button
-              tone="glow"
-              size="sm"
-              onClick={sendIntervene}
-              disabled={busy || !interveneText.trim()}
-            >
-              干涉
-            </Button>
-          </div>
-          <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
-            每轮可以干涉一次；世界构建可能不答应。
-          </p>
-          {interventionFeedback && (
-            <p
-              role="status"
-              className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
-            >
-              <Tag tone={interventionFeedback.status === "applied" ? "ok" : "warn"}>
-                {interventionFeedback.status === "applied" ? "已生效" : "未应允"}
-              </Tag>
-              <span className="min-w-0 flex-1 text-ink-soft">
-                {interventionFeedback.text}
-              </span>
-            </p>
-          )}
         </div>
       )}
 
@@ -537,6 +553,10 @@ function InteractionBody({
         </div>
       )}
 
+      {!sessionInitialized && !pending && (
+        <p className="mt-3 text-xs text-ink-faint">正在重建世界…</p>
+      )}
+
       {pending && (
         <Thinking
           label={`正在推进 ${pending.label}`}
@@ -545,6 +565,7 @@ function InteractionBody({
           className="mt-3 text-xs"
         />
       )}
+      </div>
     </m.div>
   );
 }

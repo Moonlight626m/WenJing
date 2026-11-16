@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence } from "motion/react";
 
-import { ApiError, getScriptDetail, getStatus, submitAsyncCommandRest } from "@/lib/api";
+import { ApiError, getCommandStatus, getScriptDetail, getStatus, submitAsyncCommandRest } from "@/lib/api";
 import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
 import { useEffectsLevel, useUiStore } from "@/stores/uiStore";
@@ -129,6 +129,27 @@ function RolesContent() {
           pending.current = null;
           router.push(`/game?id=${sessionId}`);
           return; // 等待态保持：跳转期间过场不撤、按钮仍禁用
+        }
+        // 台账对账：执行结果只经 WS 推给在线连接，选角页没有 WS；不查这条
+        // 就要等前端 5 分钟超时才知道失败。`received` 且本进程无在途 task =
+        // 上个进程留下的孤儿受理，同样按失败处理并换新 command_id 重试。
+        let commandStatus: Awaited<ReturnType<typeof getCommandStatus>> | null = null;
+        try {
+          commandStatus = await getCommandStatus(sessionId, command.command_id);
+        } catch {
+          // 台账查询抖动不终止等待：命令可能仍在跑，下一拍再查
+        }
+        if (
+          commandStatus &&
+          (commandStatus.status === "failed" ||
+            (commandStatus.status === "received" && !commandStatus.inflight))
+        ) {
+          pending.current = null;
+          throw new Error(
+            commandStatus.status === "failed"
+              ? "选角生成失败，请重试"
+              : "选角生成已中断，请重试"
+          );
         }
       }
     } catch (err) {

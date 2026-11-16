@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import { AnimatePresence, m } from "motion/react";
 
-import type { Stage3Goal } from "@/lib/contracts/types";
 import type { ChatMessage, MessageEnding } from "@/stores/gameStore";
 import { useGameStore } from "@/stores/gameStore";
 import { Button, buttonClass } from "@/components/ui/button";
@@ -36,7 +35,6 @@ export function EndingPanel({
   scriptTitle,
   playerRole,
   messages,
-  goals = [],
   ending = null,
   onReview,
   onClose,
@@ -44,15 +42,12 @@ export function EndingPanel({
   scriptTitle: string | null;
   playerRole: string | null;
   messages: ChatMessage[];
-  /** 续写目标；没进续写就结束时为空，不显示那一块 */
-  goals?: Stage3Goal[];
   /** 重演到达的具体结局（title/kind/description）；旧剧本或非重演为空 */
   ending?: MessageEnding | null;
   onReview: () => void;
   onClose?: () => void;
 }) {
   const { yours, lines, rollbacks } = endingStats(messages, playerRole);
-  const achieved = goals.filter((g) => g.achieved);
 
   return (
     <div className="glass glow-border relative flex w-[min(30rem,calc(100vw-2rem))] flex-col items-center rounded-3xl px-8 pt-10 pb-7 text-center">
@@ -110,32 +105,6 @@ export function EndingPanel({
         ) : null}
         。
       </p>
-      {goals.length > 0 && (
-        <div className="mt-5 w-full rounded-2xl border border-glass-edge px-4 py-3 text-left">
-          <p className="text-xs text-ink-faint">
-            续写目标达成{" "}
-            <span className="text-glow-gold tabular-nums">
-              {achieved.length}/{goals.length}
-            </span>
-          </p>
-          <ul className="mt-1.5 flex flex-col gap-1">
-            {goals.map((g) => (
-              <li
-                key={g.goal_id}
-                className={`flex gap-1.5 text-xs leading-relaxed ${
-                  g.achieved ? "text-ink-soft" : "text-ink-faint"
-                }`}
-              >
-                <span aria-hidden className={g.achieved ? "text-glow-gold" : ""}>
-                  {g.achieved ? "✓" : "·"}
-                </span>
-                {g.description}
-                <span className="sr-only">{g.achieved ? "（已达成）" : "（未达成）"}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
         <Button tone="glow" size="sm" onClick={onReview}>
           回看全剧
@@ -153,54 +122,95 @@ export function EndingPanel({
   );
 }
 
+/** 最后一条带结局的消息（重演到达的具体结局）。引用稳定，可直接作 store 选择器。 */
+function lastEndingOf(state: { messages: ChatMessage[] }): MessageEnding | null {
+  for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+    const ending = state.messages[i].ending;
+    if (ending) return ending;
+  }
+  return null;
+}
+
+/** 这一局是否进过续写：进了就不再弹 Stage2 的结局卡（它只服务重演结局）。 */
+function enteredStage3Of(state: { stage: string; messages: ChatMessage[] }): boolean {
+  if (state.stage === "stage3_extending") return true;
+  return state.messages.some((m) => m.stage === "stage3_extending");
+}
+
 /**
  * 结局卡：阶段进入「已结束」时浮到舞台中央。可以收起留在舞台上，
  * 或者直接打开剧情回顾从头看一遍。
+ *
+ * 这里的订阅只返回到原始值（结局引用 / 布尔量），代价是一次不回退的扫描；真正重的
+ * 统计（`endingStats` 全量遍历）只在卡片打开、`EndingDialog` 挂载后才做。
  */
 export function EndingCard({ onReview }: { onReview: () => void }) {
   const stage = useGameStore((s) => s.stage);
   const scriptTitle = useGameStore((s) => s.scriptTitle);
   const playerRole = useGameStore((s) => s.playerRole);
-  const messages = useGameStore((s) => s.messages);
-  const goals = useGameStore((s) => s.stage3Goals);
-  const ending =
-    [...messages].reverse().find((m) => m.ending)?.ending ?? null;
+  const ending = useGameStore(lastEndingOf);
+  const enteredStage3 = useGameStore(enteredStage3Of);
   const [dismissed, setDismissed] = useState(false);
-  const open = stage === "ended" && !dismissed;
+  const open = stage === "ended" && !enteredStage3 && !dismissed;
 
   return (
     <AnimatePresence>
       {open && (
-        <m.div
-          key="ending"
-          role="dialog"
-          aria-modal="false"
-          aria-label="结局"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-[3px]"
-        >
-          <m.div
-            initial={{ opacity: 0, y: 24, scale: 0.96, filter: "blur(8px)" }}
-            animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
-            transition={{ duration: 0.6, ease: EASE }}
-          >
-            <EndingPanel
-              scriptTitle={scriptTitle}
-              playerRole={playerRole}
-              messages={messages}
-              goals={goals}
-              ending={ending}
-              onReview={() => {
-                setDismissed(true);
-                onReview();
-              }}
-              onClose={() => setDismissed(true)}
-            />
-          </m.div>
-        </m.div>
+        <EndingDialog
+          scriptTitle={scriptTitle}
+          playerRole={playerRole}
+          ending={ending}
+          onReview={() => {
+            setDismissed(true);
+            onReview();
+          }}
+          onClose={() => setDismissed(true)}
+        />
       )}
     </AnimatePresence>
+  );
+}
+
+function EndingDialog({
+  scriptTitle,
+  playerRole,
+  ending,
+  onReview,
+  onClose,
+}: {
+  scriptTitle: string | null;
+  playerRole: string | null;
+  ending: MessageEnding | null;
+  onReview: () => void;
+  onClose: () => void;
+}) {
+  const messages = useGameStore((s) => s.messages);
+
+  return (
+    <m.div
+      key="ending"
+      role="dialog"
+      aria-modal="false"
+      aria-label="结局"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-[3px]"
+    >
+      <m.div
+        initial={{ opacity: 0, y: 24, scale: 0.96, filter: "blur(8px)" }}
+        animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+        transition={{ duration: 0.6, ease: EASE }}
+      >
+        <EndingPanel
+          scriptTitle={scriptTitle}
+          playerRole={playerRole}
+          messages={messages}
+          ending={ending}
+          onReview={onReview}
+          onClose={onClose}
+        />
+      </m.div>
+    </m.div>
   );
 }

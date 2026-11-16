@@ -29,9 +29,11 @@ class DeterministicAgentLLM:
         *,
         proposal_text: str = DEFAULT_PROPOSAL,
         react_text: str = DEFAULT_REACTION,
+        chronicler_text: str = "众人沉默片刻，天色渐渐暗了下来。",
     ) -> None:
         self._proposal_text = proposal_text
         self._react_text = react_text
+        self._chronicler_text = chronicler_text
         self.call_count = 0
 
     async def chat(
@@ -45,6 +47,8 @@ class DeterministicAgentLLM:
         user = messages[-1]["content"] if messages else ""
         if "验证 Agent" in user or "你是验证" in user:
             return "pass"
+        if "上一段编年史" in user:
+            return self._chronicler_text
         if "react" in user:
             return self._react_text
         return self._proposal_text

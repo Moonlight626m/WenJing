@@ -418,7 +418,37 @@ def test_generation_progress_surfaces_a_readable_timeout():
 
     exc = new(codes.LLM_TIMEOUT, extra={"reason": "TimeoutError: ", "timeout": "240"})
     text = _failure_text(exc)
-    assert text == "LLM_TIMEOUT：模型响应超时，请稍后重试。"
+    # `timeout` 不是原因，不外泄；`reason` 附在文案后（去空白）
+    assert text == "LLM_TIMEOUT：模型响应超时，请稍后重试。（TimeoutError:）"
 
     # 不带码的异常仍保留自身措辞（否则真实原因会被笼统的「服务内部错误」盖掉）。
     assert _failure_text(_QuietError()) == "_QuietError: "
+
+
+def test_generation_progress_surfaces_failure_reason():
+    """笼统文案 + 具体原因：原因必须带出去，教师才知道该改什么。
+
+    `CONTENT_GENERATION_FAILED` 的文案是「请稍后重试」，真实原因（总审被
+    validate_replay 打回的 issues）只在 errx 的 extra 里。
+    """
+    from app.services.script_library import _failure_text
+
+    content = new(
+        codes.CNT_GENERATION_FAILED,
+        extra={
+            "reason": "graph script requires endings；branch b1 references unknown ending e1"
+        },
+    )
+    assert _failure_text(content) == (
+        "CONTENT_GENERATION_FAILED：剧本生成失败，请稍后重试。"
+        "（graph script requires endings；branch b1 references unknown ending e1）"
+    )
+
+    # 换行压平（详情页单行渲染）
+    multiline = new(codes.CNT_GENERATION_FAILED, extra={"reason": "第一行\n第二行"})
+    assert _failure_text(multiline).endswith("（第一行 第二行）")
+
+    # 超长原因截断并明示，别让教师以为原因就这么多
+    long = new(codes.CNT_GENERATION_FAILED, extra={"reason": "x" * 500})
+    truncated = _failure_text(long)
+    assert truncated.endswith("…）（已截断）") and len(truncated) < 300

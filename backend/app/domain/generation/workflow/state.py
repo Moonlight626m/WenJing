@@ -13,6 +13,7 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 from app.contracts.content import TextAnalysis
+from app.contracts.generation import DoubterIssue
 from app.contracts.material import WebEvidence
 from app.contracts.script import CharacterProfile, ScriptPackage
 from app.domain.generation.workflow.types import EventDivisionDraft, MaterialDossier
@@ -23,6 +24,8 @@ class WorkflowState(TypedDict, total=False):
 
     # ===== 输入（运行前注入）=====
     script_id: int
+    # 剧本名（日志可读性用；旧 checkpoint 可能没有）
+    script_name: str
     session_id: str
     # 资产归属（#48）：字符串通道——UUID 不进图状态，规避 checkpointer msgpack
     # 序列化坑（同 web_evidence 的教训）；节点侧用 uuid.UUID(...) 还原。
@@ -59,13 +62,15 @@ class WorkflowState(TypedDict, total=False):
 
     # ===== doubter 打回回路 =====
     doubter_verdict: str
-    doubter_issues: list[str]
+    # 结构化问题（doubter 产出）与规则校验字符串混存；LLM 回喂前经
+    # `_format_issue` 拍平，教师端按结构渲染（见 DoubterEvent）。
+    doubter_issues: list[DoubterIssue | str]
     doubter_round: int
     doubter_feedback: str | None
 
     # ===== final_audit 打回回路 =====
     audit_verdict: str
-    audit_issues: list[str]
+    audit_issues: list[DoubterIssue | str]
     write_retries: int
     audit_feedback: str | None
 
@@ -79,9 +84,11 @@ def initial_state(
     directives: list[str] | None = None,
     org_id: str = "",
     user_id: str = "",
+    script_name: str = "",
 ) -> WorkflowState:
     return WorkflowState(
         script_id=script_id,
+        script_name=script_name,
         session_id=session_id,
         analysis=analysis,
         web_evidence=[e.model_dump(mode="json") for e in web_evidence],

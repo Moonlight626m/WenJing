@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from app.domain.agents.game_master import total_beats
+from app.domain.game.chronicle import derive_chronicle
+from app.domain.game.types import total_beats
 
 if TYPE_CHECKING:  # 仅类型提示，避免与 game_runtime 循环导入
     from app.domain.game.game_runtime import GameRuntime
@@ -67,6 +68,12 @@ class RuntimeWorldView:
             return False
         return self._viewer in self._runtime._scene_participants(scene_key)  # noqa: SLF001 - 同包适配器
 
+    def chronicle(self) -> str:
+        """该角色目睹的编年史增量（限知视角，按 `present` 过滤）。"""
+        return derive_chronicle(
+            self._runtime.event_store.active_events(), viewer=self._viewer
+        )
+
     def world_facts(self) -> list[dict[str, Any]]:
         """该角色可见的世界事实（M6 §B6）：public 全量 + 只说给 audience 的 private。"""
         return [
@@ -84,7 +91,11 @@ class RuntimeWorldView:
                 "scene_id": scene.scene_id,
                 "title": scene.title,
                 "participants": list(scene.participants),
-                "beats": [b.description for b in scene.beats],
+                # 演员知道人物想要什么（goal），玩家听到的是 description：
+                # 两者分开给，不在这一层重新拼成一段文本
+                "beats": [
+                    {"description": b.description, "goal": b.goal} for b in scene.beats
+                ],
             }
             for scene in self._runtime.script.scenes
             if viewer is None or viewer in scene.participants

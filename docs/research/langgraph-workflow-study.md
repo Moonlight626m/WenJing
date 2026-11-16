@@ -56,7 +56,7 @@
 |---|---|---|
 | 素材收集→考证→事件划分→…→总审 | `StateGraph` + `add_edge` 线性主链 | `add_edge("material", "verify")` |
 | 全局 doubter 打回 | 条件边回环（targeted 循环） | `add_conditional_edges("doubter", route)`，`route` 返回 `"revise"` 回上游或 `END` |
-| 打回次数上限 | 条件边内判断 + 失败节点 | `round >= MAX → "fail"` 边（不要靠 recursion_limit 兜底） |
+| 打回次数上限 | 条件边内判断 + 失败节点 | `round >= MAX → "fail"` 边（本仓库 2026-11 起取消业务上限，仅用 `recursion_limit` 作死循环兜底，见 AGENTS.md） |
 | 每主要人物独立 agent | `Send` fan-out（map-reduce） | 条件边返回 `[Send("character_agent", {...}) for ...]` |
 | 人物设定合并裁决 | join 节点 + reducer | `profiles: Annotated[list, operator.add]`，fan-out 边都指向 join 节点 |
 | 教师分阶段闸门 | `interrupt()` + `Command(resume=...)` | 节点内动态暂停，checkpointer 持久化 |
@@ -372,7 +372,7 @@ class ScriptState(TypedDict):
     material: dict            # 素材收集输出
     verified: dict            # 考证输出 + doubter_notes
     doubter_notes: Annotated[list[str], operator.add]      # 全局 doubter 打回痕迹
-    doubter_round: int                                     # 打回上限计数（last-value）
+    doubter_round: int                                     # 打回轮次计数（last-value，仅用于进度投影）
     characters: list[str]
     profiles: Annotated[list[dict], operator.add]          # Send fan-out join
     event_division: dict
@@ -400,7 +400,8 @@ class ScriptState(TypedDict):
    token 用量）由 `astream(stream_mode="updates", version="v2")` 事件单独写 `generation_state`
    JSONB。理由：Pydantic State 的坏输入污染 checkpoint 坑真实存在；且进度字段（给前端契约）不应
    绑死在图 state 上。打回上限计数放 state（`doubter_round`）+ 条件边判断，不要用 recursion_limit
-   兜底（25 默认值是调试护栏，不是业务上限）。
+   兜底（25 默认值是调试护栏，不是业务上限）。——2026-11 变更：本仓库取消了打回业务上限，
+   `WORKFLOW_RECURSION_LIMIT=10000` 仅作死循环兜底；轮次计数仍留 state 供进度投影。
 
 3. **LLM 适配层用 BaseChatModel 包装现有 ChatLLMService，结构化输出先走「节点内 JSON+Pydantic 校验」。**
    保留计量（`chat_with_usage` → `usage_metadata`）、purpose 分类、限流、错误码包装；

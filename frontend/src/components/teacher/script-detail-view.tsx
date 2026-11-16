@@ -102,6 +102,36 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
     setError(null);
   }, [scriptId]);
 
+  // 闸门暂停时补取审阅载荷：SSE 帧只带 generation，review 只在 GET 详情里。
+  // 不补取的话，暂停帧到达后 detail.review 仍是生成开始前的 null，面板会退化成
+  // 「未提供可编辑的素材结论」（素材闸门的空面板）。最多轮询 5 次：旧数据行
+  // 没有审阅载荷时不能无限请求，5 次后交给面板的「请刷新页面」提示。
+  const hasReview = detail?.review != null;
+  useEffect(() => {
+    if (!awaitingReview || hasReview) return;
+    let cancelled = false;
+    let attempts = 0;
+    const load = () => {
+      getScriptDetail(scriptId)
+        .then((next) => {
+          if (!cancelled) setDetail(next);
+        })
+        .catch(() => {
+          // 瞬时错误忽略，下一拍重试
+        });
+    };
+    const timer = setInterval(() => {
+      attempts += 1;
+      load();
+      if (attempts >= 5) clearInterval(timer);
+    }, 1500);
+    load();
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [awaitingReview, hasReview, scriptId]);
+
   async function run(key: string, action: () => Promise<unknown>) {
     if (busy) return;
     setBusy(key);
@@ -208,7 +238,7 @@ export function ScriptDetailView({ scriptId }: { scriptId: number }) {
 
       {awaitingReview && (
         <GateReviewPanel
-          key={detail.review ? detail.review.gate : "legacy"}
+          key={detail.review ? detail.review.gate : "pending"}
           scriptId={scriptId}
           review={detail.review}
           busy={busy}

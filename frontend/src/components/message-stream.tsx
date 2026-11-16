@@ -1,18 +1,56 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components } from "react-markdown";
 
 import type { ChatMessage } from "@/stores/gameStore";
 import { useGameStore } from "@/stores/gameStore";
+import { speechParts } from "@/lib/stage-direction";
 import { RewindIcon } from "@/components/ui/icons";
 import { Tag } from "@/components/ui/tag";
 
-/** 正文用宋体（课文本身就是宋体印的），行高放开到 1.85 供中文长句阅读。 */
-const PROSE = "font-serif text-base leading-[1.85] [&_p]:m-0 [&_strong]:font-semibold";
+/**
+ * 正文用宋体（课文本身就是宋体印的），行高放开到 1.85 供中文长句阅读。
+ *
+ * 模型偶尔会输出 `#` 标题、列表、引用、代码——不补样式的话会按浏览器默认
+ * 渲染成大字号/大缩进，和正文观感割裂，所以统一压回正文字号。
+ */
+const PROSE = [
+  "font-serif text-base leading-[1.85]",
+  "[&_p]:m-0 [&_strong]:font-semibold",
+  "[&_h1]:m-0 [&_h1]:text-base [&_h1]:font-semibold",
+  "[&_h2]:m-0 [&_h2]:text-base [&_h2]:font-semibold",
+  "[&_h3]:m-0 [&_h3]:text-base [&_h3]:font-semibold",
+  "[&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-5",
+  "[&_ol]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:my-0.5",
+  "[&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-rule-strong",
+  "[&_blockquote]:pl-3 [&_blockquote]:text-ink-soft",
+  "[&_code]:font-mono [&_code]:text-sm",
+  "[&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-canvas/60 [&_pre]:p-2",
+].join(" ");
 
-function ContentMessage({
+/** 模型输出里的外链：新窗口打开，别把正在进行的对局页顶掉；站内锚点保持原样。 */
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ href, children }) => {
+    const external = /^https?:\/\//i.test(href ?? "");
+    return (
+      <a
+        href={href}
+        {...(external ? { target: "_blank", rel: "noreferrer noopener" } : {})}
+        className="text-accent underline underline-offset-2"
+      >
+        {children}
+      </a>
+    );
+  },
+};
+
+/**
+ * 一条消息的正文。`memo` 是硬需求：消息数组只追加不修改，旧条目引用不变，
+ * 每来一段流式台词时只有新增那条需要重新解析 Markdown。
+ */
+const ContentMessage = memo(function ContentMessage({
   message,
   playerRole,
 }: {
@@ -45,6 +83,7 @@ function ContentMessage({
   // 名牌：一道发光短竖 + 名字。你演的角色用朱砂，其他角色用泥金
   if (message.kind === "character_speech") {
     const isOwn = playerRole !== null && message.speaker === playerRole;
+    const parts = speechParts(message.text, message.stageDirection);
     return (
       <div className="animate-rise-in my-3.5 flex flex-col gap-1">
         <span
@@ -63,15 +102,17 @@ function ContentMessage({
           {message.speaker ?? "角色"}
           {isOwn && <Tag tone="flag">你</Tag>}
         </span>
-        {message.stageDirection && (
+        {parts.direction && (
           <span className="pl-2.5 text-2xs text-ink-faint">
-            {message.stageDirection}
+            {parts.direction}
           </span>
         )}
         <div
           className={`max-w-[85%] pl-2.5 ${PROSE} text-ink [text-shadow:0_1px_3px_rgba(0,0,0,0.7)]`}
         >
-          <ReactMarkdown>{message.text}</ReactMarkdown>
+          <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+            {parts.text}
+          </ReactMarkdown>
         </div>
       </div>
     );
@@ -82,14 +123,20 @@ function ContentMessage({
     <div
       className={`animate-rise-in my-3.5 ${PROSE} text-ink-soft [text-shadow:0_1px_3px_rgba(0,0,0,0.7)]`}
     >
-      <ReactMarkdown>{message.text}</ReactMarkdown>
+      <ReactMarkdown components={MARKDOWN_COMPONENTS}>
+        {message.text}
+      </ReactMarkdown>
     </div>
   );
-}
+});
 
-/** 能回溯到的消息：有事件序号、有正文（与回溯下拉框的候选同一口径）。 */
+/** 能回溯到的消息：只有叙事拍（服务端也按最后一个叙事拍恢复，系统提示/台词不可作目标）。 */
 export function isRollbackTarget(message: ChatMessage): boolean {
-  return message.seq > 0 && message.text.trim().length > 0;
+  return (
+    message.kind === "narrative" &&
+    message.seq > 0 &&
+    message.text.trim().length > 0
+  );
 }
 
 /**

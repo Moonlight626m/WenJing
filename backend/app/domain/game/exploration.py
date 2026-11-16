@@ -126,10 +126,17 @@ def derive_exploration(
 
     运行期新增的地点（`scene_created`，M6）在事件流里先于任何 `scene_switch`
     出现，故与地点表一起构成「已存在地点」集合——换进动态场景的进度不会丢。
+
+    还没有换景/结算事件时，**从剧情结束的场景继续**而不是回到地图起点：Stage2
+    珊瑚图播放的最后一个 `replay_node_entered` 就是玩家此刻所在的位置。否则
+    「北来读信」收束后点进入续写，人会被瞬移回第一场（徐州），在场名单与配图
+    也跟着回到开场。
     """
     current = registry.start_key
     visited: list[str] = [current]
     dynamic: set[str] = set()
+    last_replay_scene: str | None = None
+    switched = False
     for ev in events:
         if isinstance(ev, dict):
             etype = ev.get("event_type")
@@ -142,6 +149,14 @@ def derive_exploration(
             if key is not None:
                 dynamic.add(key)
             continue
+        if etype == evt.EVENT_REPLAY_NODE_ENTERED:
+            scene_key = payload.get("scene_key")
+            if isinstance(scene_key, str):
+                # 分支节点 `scene:6::branch:b1` 属于 scene_6 的空间：取 `::` 之前的基座
+                base = scene_key.split("::", 1)[0]
+                if base.startswith("scene:"):
+                    last_replay_scene = base.split(":", 1)[1]
+            continue
         key: str | None = None
         if etype == evt.EVENT_SCENE_SWITCH:
             key = payload.get("to")
@@ -151,9 +166,15 @@ def derive_exploration(
             key not in dynamic and registry.get(key) is None
         ):
             continue
+        switched = True
         current = key
         if key not in visited:
             visited.append(key)
+    if not switched and last_replay_scene is not None:
+        candidate = f"scene_{last_replay_scene}"
+        if registry.get(candidate) is not None:
+            current = candidate
+            visited = [candidate]
     return ExplorationProgress(current_location_key=current, visited=tuple(visited))
 
 

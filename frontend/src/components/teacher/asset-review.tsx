@@ -4,6 +4,7 @@ import { Fragment, useRef } from "react";
 
 import { ASSET_IMAGE_BG, AssetImage } from "@/components/asset-image";
 import { Button } from "@/components/ui/button";
+import { Tag } from "@/components/ui/tag";
 import { formatApiError, uploadScriptAsset } from "@/lib/api";
 import { useUiStore } from "@/stores/uiStore";
 import type { AssetOp, AssetRef, CharacterProfile, Scene } from "@/lib/contracts/types";
@@ -218,69 +219,88 @@ export function AssetReviewSection({
   }
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-3">
       <p className="measure text-xs text-warn">
         配图审批：自动配图已完成，可逐槽重新生成 / 检索替换 / 上传 / 删除，通过后生效。
+        建议先审人物头像（它是各场景图的参考图），再审各场景——头像换脸后场景应重绘。
       </p>
-      {scenes.map((scene) => {
-        const subjectKey = `scene:${scene.scene_id}`;
-        // 旧脚本的槽位是纯空镜 background；新生成的是含人物的 scene_montage。
-        // 槽位操作的 kind 必须与现有资产对齐，否则「重新生成」会改错槽。
-        const kind: AssetOp["kind"] =
-          scene.background_asset?.kind === "background"
-            ? "background"
-            : "scene_montage";
-        return (
-          <Fragment key={subjectKey}>
+      {/* 章节式分组：先人物（角色卡，一致性源头），再按场景逐章审其场面与分支 */}
+      <section className="flex flex-col gap-1.5">
+        <h4 className="text-xs font-medium text-ink">人物头像（角色一致性的源头）</h4>
+        {characters.map((character) => {
+          const subjectKey = `character:${character.name}`;
+          return (
             <AssetSlotCard
-              label={
-                kind === "background"
-                  ? `场景「${scene.title}」背景`
-                  : `场景「${scene.title}」场面图`
-              }
+              key={subjectKey}
+              label={`人物「${character.name}」头像`}
               subjectKey={subjectKey}
-              kind={kind}
-              asset={scene.background_asset ?? null}
-              op={drafts.get(assetOpKey(subjectKey, kind)) ?? null}
+              kind="avatar"
+              asset={character.avatar_asset ?? null}
+              op={drafts.get(assetOpKey(subjectKey, "avatar")) ?? null}
               scriptId={scriptId}
-              onChange={(op) => setOp(subjectKey, kind, op)}
+              onChange={(op) => setOp(subjectKey, "avatar", op)}
               disabled={disabled}
             />
-            {(scene.branches ?? []).map((branch) => {
-              const branchKey = `${subjectKey}::branch:${branch.branch_id}`;
-              return (
-                <AssetSlotCard
-                  key={branchKey}
-                  label={`分支「${branch.title}」场面图`}
-                  subjectKey={branchKey}
-                  kind="scene_montage"
-                  asset={branch.background_asset ?? null}
-                  op={drafts.get(assetOpKey(branchKey, "scene_montage")) ?? null}
-                  scriptId={scriptId}
-                  onChange={(op) => setOp(branchKey, "scene_montage", op)}
-                  disabled={disabled}
-                />
-              );
-            })}
-          </Fragment>
-        );
-      })}
-      {characters.map((character) => {
-        const subjectKey = `character:${character.name}`;
-        return (
-          <AssetSlotCard
-            key={subjectKey}
-            label={`人物「${character.name}」头像`}
-            subjectKey={subjectKey}
-            kind="avatar"
-            asset={character.avatar_asset ?? null}
-            op={drafts.get(assetOpKey(subjectKey, "avatar")) ?? null}
-            scriptId={scriptId}
-            onChange={(op) => setOp(subjectKey, "avatar", op)}
-            disabled={disabled}
-          />
-        );
-      })}
+          );
+        })}
+      </section>
+      <section className="flex flex-col gap-1.5">
+        <h4 className="text-xs font-medium text-ink">场景场面图（按章节）</h4>
+        {scenes.map((scene) => {
+          const subjectKey = `scene:${scene.scene_id}`;
+          // 旧脚本的槽位是纯空镜 background；新生成的是含人物的 scene_montage。
+          // 槽位操作的 kind 必须与现有资产对齐，否则「重新生成」会改错槽。
+          const kind: AssetOp["kind"] =
+            scene.background_asset?.kind === "background"
+              ? "background"
+              : "scene_montage";
+          const sceneOps = [
+            assetOpKey(subjectKey, kind),
+            ...(scene.branches ?? []).map((b) =>
+              assetOpKey(`${subjectKey}::branch:${b.branch_id}`, "scene_montage")
+            ),
+          ];
+          const hasPending = sceneOps.some((k) => drafts.get(k));
+          return (
+            <Fragment key={subjectKey}>
+              <p className="flex items-center gap-2 text-2xs text-ink-faint">
+                <span className="font-medium text-ink-soft">{scene.title}</span>
+                {hasPending && <Tag tone="warn">有改动</Tag>}
+              </p>
+              <AssetSlotCard
+                label={
+                  kind === "background"
+                    ? `背景（空镜）`
+                    : `场面图（含在场人物）`
+                }
+                subjectKey={subjectKey}
+                kind={kind}
+                asset={scene.background_asset ?? null}
+                op={drafts.get(assetOpKey(subjectKey, kind)) ?? null}
+                scriptId={scriptId}
+                onChange={(op) => setOp(subjectKey, kind, op)}
+                disabled={disabled}
+              />
+              {(scene.branches ?? []).map((branch) => {
+                const branchKey = `${subjectKey}::branch:${branch.branch_id}`;
+                return (
+                  <AssetSlotCard
+                    key={branchKey}
+                    label={`分支「${branch.title}」场面图`}
+                    subjectKey={branchKey}
+                    kind="scene_montage"
+                    asset={branch.background_asset ?? null}
+                    op={drafts.get(assetOpKey(branchKey, "scene_montage")) ?? null}
+                    scriptId={scriptId}
+                    onChange={(op) => setOp(branchKey, "scene_montage", op)}
+                    disabled={disabled}
+                  />
+                );
+              })}
+            </Fragment>
+          );
+        })}
+      </section>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -19,7 +19,7 @@ import {
   type SessionTimeline,
   type TimelineEntry,
 } from "@/lib/api";
-import type { AssetRef } from "@/lib/contracts/types";
+import type { AssetRef, PlayerCommand } from "@/lib/contracts/types";
 import { stageLabel } from "@/lib/labels";
 import { buildCommand } from "@/lib/session-cache";
 import { useGameStore } from "@/stores/gameStore";
@@ -392,6 +392,11 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
   const [confirming, setConfirming] = useState<RollbackTarget | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
+  // 超时/失败重试复用同一 command_id：服务端可能已经跑完并切了分支，换新 id
+  // 会在新分支上再开一条（再付一次 LLM）。换目标才换命令。
+  const pendingRollback = useRef<{ eventId: string; command: PlayerCommand } | null>(
+    null
+  );
 
   useEffect(() => {
     // 每次切换分支/重试都是新的 effect：cleanup 把上一轮的 active 置否，
@@ -473,15 +478,19 @@ export function RollbackTimeline({ sessionId }: { sessionId: string }) {
 
   async function doRollback() {
     if (!confirming || submitting) return;
+    if (pendingRollback.current?.eventId !== confirming.eventId) {
+      pendingRollback.current = {
+        eventId: confirming.eventId,
+        command: buildCommand(sessionId, "rollback_to_event", {
+          target_event_id: confirming.eventId,
+        }),
+      };
+    }
     setSubmitting(true);
     setRollbackError(null);
     try {
-      await submitCommandRest(
-        sessionId,
-        buildCommand(sessionId, "rollback_to_event", {
-          target_event_id: confirming.eventId,
-        })
-      );
+      await submitCommandRest(sessionId, pendingRollback.current.command);
+      pendingRollback.current = null;
       push({
         kind: "success",
         title: `已回到 #${confirming.sequence}`,

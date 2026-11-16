@@ -3,12 +3,19 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
 
+import { latestInterventionFeedback } from "@/lib/intervention";
+import { useInteractionBusy } from "@/lib/interaction-busy";
+import { isImeEnter } from "@/lib/ime";
 import { useGameStore } from "@/stores/gameStore";
+import { sceneStatus, sceneStatusText } from "@/lib/session-status";
+import { CastDock } from "@/components/cast-dock";
 import { MessageStream } from "@/components/message-stream";
 import { OriginalTextPanel } from "@/components/original-text-panel";
 import { RolePanel } from "@/components/role-panel";
 import { RollbackBar } from "@/components/rollback-bar";
+import { Button } from "@/components/ui/button";
 import { CloseIcon } from "@/components/ui/icons";
+import { Tag } from "@/components/ui/tag";
 
 export type TranscriptTab = "story" | "text" | "cast";
 
@@ -19,6 +26,11 @@ const TABS: { id: TranscriptTab; label: string }[] = [
 ];
 
 const EASE = [0.2, 0.7, 0.2, 1] as const;
+
+/** 「剧情」页默认折叠的消息：`proposal` 是角色 agent 的内部意图，不是既成事实。 */
+function isProposalMessage(message: { eventType?: string | null }): boolean {
+  return message.eventType === "proposal";
+}
 
 /**
  * 剧情回顾面板：「剧情」页是完整消息流 + 回溯栏，「原文」页对照课文里已经演到的段落，
@@ -34,6 +46,8 @@ export function TranscriptPanel({
   tab,
   onTabChange,
   onClose,
+  panel,
+  onPanelChange,
 }: {
   open: boolean;
   /** 窄屏抽屉模式：浮在舞台上、带遮罩 */
@@ -41,18 +55,47 @@ export function TranscriptPanel({
   tab: TranscriptTab;
   onTabChange: (tab: TranscriptTab) => void;
   onClose: () => void;
+  /** 侧栏操作面板：场景移动 / 干涉世界。主舞台只留选项与输入。 */
+  panel: "move" | "intervene" | null;
+  onPanelChange: (panel: "move" | "intervene" | null) => void;
 }) {
-  const messages = useGameStore((s) => s.messages);
-  const playerRole = useGameStore((s) => s.playerRole);
-  const characters = useGameStore((s) => s.characters);
-  const playableRoles = useGameStore((s) => s.playableRoles);
   const allowedCommands = useGameStore((s) => s.allowedCommands);
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
+  const connection = useGameStore((s) => s.connection);
   const scenes = useGameStore((s) => s.scenes);
   const sceneKey = useGameStore((s) => s.sceneKey);
   const stage = useGameStore((s) => s.stage);
-  const [target, setTarget] = useState<number | null>(null);
+  const interaction = useGameStore((s) => s.interaction);
+  const branchId = useGameStore((s) => s.branchId);
+  const submit = useGameStore((s) => s.submitCommand);
+  // 回溯目标记下选择时所在的分支：回溯/新会话换了分支，旧 seq 已不指向同一句，
+  // 派生出的 activeTarget 自动作废——不用 effect 追消息清空，切 tab 也不会丢选择。
+  const [target, setTarget] = useState<{ seq: number; branchId: string | null } | null>(
+    null
+  );
   const [confirming, setConfirming] = useState(false);
+  const activeTarget = target !== null && target.branchId === branchId ? target.seq : null;
+  const [interveneText, setInterveneText] = useState("");
+  // 角色提议是内部意图（`proposal` 事件）：默认不进事件记录，记录里留的是真正落地的
+  // 那版方案（Stage2 是验过的提议原文，有探索地图的 Stage3 由导演另拟，都体现在
+  // 选项与「你选择了」里）。
+  // 想对照原始提议时再打开——状态放在面板层，切到「原文」「角色」页再切回来不会丢。
+  const [showProposals, setShowProposals] = useState(false);
   const canRollback = allowedCommands.includes("rollback_to_event");
+  const status = sceneStatus(connection, sessionInitialized);
+  const sceneOptions = interaction?.scene_options ?? [];
+  const canMove = allowedCommands.includes("switch_scene") && sceneOptions.length > 0;
+  const canIntervene =
+    allowedCommands.includes("intervene") && sceneOptions.length > 0;
+  const busy = useInteractionBusy();
+
+  function sendIntervene() {
+    const text = interveneText.trim();
+    if (!text || busy || !canIntervene) return;
+    submit("intervene", { text }, "干涉世界");
+    setInterveneText("");
+    // 面板保持展开：提交后的「已生效 / 未应允」反馈就渲染在输入框下面
+  }
 
   useEffect(() => {
     if (!open || !overlay) return;
@@ -129,41 +172,135 @@ export function TranscriptPanel({
             </button>
           </div>
 
-          {tab === "story" ? (
-            <div
-              role="tabpanel"
-              id="transcript-panel-story"
-              aria-labelledby="transcript-tab-story"
-              className="flex min-h-0 flex-1 flex-col"
-            >
-              {/* 左边多留一截给开发环境的事件序号 */}
-              <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
-                {messages.length === 0 ? (
-                  <p className="py-6 text-center text-sm text-ink-faint">等待剧情开始…</p>
-                ) : (
-                  <MessageStream
-                    messages={messages}
-                    playerRole={playerRole}
-                    showSeq={process.env.NODE_ENV !== "production"}
-                    rollbackTarget={target}
-                    onRollback={
-                      canRollback
-                        ? (seq) => {
-                            setTarget(seq);
-                            setConfirming(true);
-                          }
-                        : undefined
-                    }
-                  />
-                )}
-              </div>
-              <RollbackBar
-                target={target}
-                confirming={confirming}
-                onTargetChange={setTarget}
-                onConfirmingChange={setConfirming}
-              />
+          {(canMove || canIntervene) && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-glass-edge px-3 py-2">
+              <span className="mr-1 font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+                操作
+              </span>
+              {canMove && (
+                <button
+                  type="button"
+                  aria-pressed={panel === "move"}
+                  onClick={() => onPanelChange(panel === "move" ? null : "move")}
+                  className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
+                    panel === "move"
+                      ? "border-glow-jade/60 text-glow-jade"
+                      : "border-glass-edge text-ink-soft hover:text-ink"
+                  }`}
+                >
+                  场景移动
+                </button>
+              )}
+              {canIntervene && (
+                <button
+                  type="button"
+                  aria-pressed={panel === "intervene"}
+                  onClick={() =>
+                    onPanelChange(panel === "intervene" ? null : "intervene")
+                  }
+                  className={`rounded-full border px-3 py-1 font-serif text-sm transition-colors ${
+                    panel === "intervene"
+                      ? "border-glow-gold/60 text-glow-gold"
+                      : "border-glass-edge text-ink-soft hover:text-ink"
+                  }`}
+                >
+                  干涉世界
+                </button>
+              )}
             </div>
+          )}
+
+          {panel === "move" && (
+            <div className="border-b border-glass-edge px-3 py-2">
+              <div role="group" aria-label="换景" className="flex flex-wrap gap-1.5">
+                {sceneOptions.map((scene) => (
+                  <button
+                    key={scene.scene_key}
+                    type="button"
+                    disabled={busy || scene.is_current}
+                    aria-current={scene.is_current || undefined}
+                    onClick={() => {
+                      submit(
+                        "switch_scene",
+                        { scene_key: scene.scene_key },
+                        `前往 ${scene.title}`
+                      );
+                      onPanelChange(null);
+                    }}
+                    className={[
+                      "rounded-full border px-3 py-1 font-serif text-sm transition-colors",
+                      scene.is_current
+                        ? "border-glass-edge/60 text-ink-faint"
+                        : "border-glass-edge text-ink hover:border-glow-jade/60 hover:text-glow-jade",
+                      busy && !scene.is_current ? "opacity-40" : "opacity-100",
+                    ].join(" ")}
+                  >
+                    {scene.title}
+                    {scene.is_current && <span className="ml-1">（当前）</span>}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {panel === "intervene" && (
+            <div className="border-b border-glass-edge px-3 py-2">
+              <div className="flex items-center gap-1.5 rounded-2xl border border-dashed border-glass-edge bg-surface/20 p-1 pl-3 transition-[border-color] duration-200 focus-within:border-glow-gold/50">
+                <input
+                  value={interveneText}
+                  onChange={(e) => setInterveneText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || isImeEnter(e)) return;
+                    e.preventDefault();
+                    sendIntervene();
+                  }}
+                  placeholder="如：建一间雨夜客栈 / 叫船夫过来"
+                  aria-label="干涉世界"
+                  maxLength={2000}
+                  disabled={busy}
+                  className="min-w-0 flex-1 bg-transparent py-1.5 font-serif text-sm text-ink placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+                />
+                <Button
+                  tone="glow"
+                  size="sm"
+                  onClick={sendIntervene}
+                  disabled={busy || !interveneText.trim()}
+                >
+                  干涉
+                </Button>
+              </div>
+              <p className="mt-1.5 pl-1 text-2xs text-ink-faint">
+                每轮可以干涉一次；世界构建可能不答应。
+              </p>
+              <InterventionFeedback />
+            </div>
+          )}
+
+          <div className="border-b border-glass-edge px-3 py-2">
+            <p className="mb-1.5 font-sans text-2xs uppercase tracking-[0.2em] text-ink-faint">
+              在场
+            </p>
+            <CastDock />
+          </div>
+
+          {tab === "story" ? (
+            <StoryTab
+              canRollback={canRollback}
+              statusText={sceneStatusText(status)}
+              target={activeTarget}
+              confirming={confirming}
+              showProposals={showProposals}
+              onToggleProposals={setShowProposals}
+              onTargetChange={(seq) => {
+                setTarget(seq === null ? null : { seq, branchId });
+                setConfirming(false);
+              }}
+              onConfirmingChange={setConfirming}
+              onPick={(seq) => {
+                setTarget({ seq, branchId });
+                setConfirming(true);
+              }}
+            />
           ) : tab === "text" ? (
             <div
               role="tabpanel"
@@ -174,22 +311,148 @@ export function TranscriptPanel({
               <OriginalTextPanel scenes={scenes} sceneKey={sceneKey} stage={stage} />
             </div>
           ) : (
-            <div
-              role="tabpanel"
-              id="transcript-panel-cast"
-              aria-labelledby="transcript-tab-cast"
-              className="min-h-0 flex-1 overflow-y-auto p-3"
-            >
-              <RolePanel
-                characters={characters}
-                messages={messages}
-                playableRoles={playableRoles}
-                playerRole={playerRole}
-              />
-            </div>
+            <CastTab />
           )}
         </m.aside>
       )}
     </AnimatePresence>
+  );
+}
+
+/**
+ * 「剧情」页：完整消息流 + 回溯栏。
+ *
+ * 自己订阅消息流（`StoryTab` / `CastTab` / `InterventionFeedback` 各取所需）——
+ * 侧栏的操作区与在场名册不该因为每来一段台词就跟着重渲。
+ */
+function StoryTab({
+  canRollback,
+  statusText,
+  target,
+  confirming,
+  showProposals,
+  onToggleProposals,
+  onTargetChange,
+  onConfirmingChange,
+  onPick,
+}: {
+  canRollback: boolean;
+  /** 时间线为空时占位显示的场景状态文案 */
+  statusText: string;
+  /** 当前选中的回溯目标（已按分支校验过） */
+  target: number | null;
+  confirming: boolean;
+  /** 是否把角色提议（`proposal` 事件）也铺进事件记录；默认关 */
+  showProposals: boolean;
+  onToggleProposals: (show: boolean) => void;
+  onTargetChange: (target: number | null) => void;
+  onConfirmingChange: (confirming: boolean) => void;
+  /** 消息行上的「回溯到这一句」：选中即进入确认 */
+  onPick: (seq: number) => void;
+}) {
+  const messages = useGameStore((s) => s.messages);
+  const playerRole = useGameStore((s) => s.playerRole);
+  // 提议只是角色 agent 的内部意图：默认不进记录。最终方案不在这里——Stage2 的选项
+  // 是验过的提议原文，有探索地图的 Stage3 由导演另拟；两种都体现在选项与「你选择了」里。
+  // 与验没验过无关（`verification` 不投影，前端拿不到判定），就是一层视图过滤。
+  const proposalCount = messages.filter(isProposalMessage).length;
+  const visibleMessages = showProposals
+    ? messages
+    : messages.filter((m) => !isProposalMessage(m));
+
+  return (
+    <div
+      role="tabpanel"
+      id="transcript-panel-story"
+      aria-labelledby="transcript-tab-story"
+      className="flex min-h-0 flex-1 flex-col"
+    >
+      {proposalCount > 0 && (
+        <div className="flex justify-end px-3 pt-2">
+          <button
+            type="button"
+            aria-pressed={showProposals}
+            onClick={() => onToggleProposals(!showProposals)}
+            className={`rounded-full border bg-glass px-3 py-1.5 text-2xs backdrop-blur-md transition-colors ${
+              showProposals
+                ? "border-glow-gold/60 text-glow-gold"
+                : "border-glass-edge text-ink-faint hover:text-ink-soft"
+            }`}
+          >
+            {showProposals
+              ? "隐藏角色提议"
+              : `显示角色提议（${proposalCount}）`}
+          </button>
+        </div>
+      )}
+      {/* 左边多留一截给开发环境的事件序号 */}
+      <div className="min-h-0 flex-1 overflow-y-auto py-2 pr-3 pl-8">
+        {messages.length === 0 ? (
+          <p className="py-6 text-center text-sm text-ink-faint">{statusText}</p>
+        ) : visibleMessages.length === 0 ? (
+          // 只剩提议且被收起：别拿「正在重建世界」冒充空时间线
+          <p className="py-6 text-center text-sm text-ink-faint">
+            本轮只记了角色提议，已按设置隐藏。
+          </p>
+        ) : (
+          <MessageStream
+            messages={visibleMessages}
+            playerRole={playerRole}
+            showSeq={process.env.NODE_ENV !== "production"}
+            rollbackTarget={target}
+            onRollback={canRollback ? onPick : undefined}
+          />
+        )}
+      </div>
+      <RollbackBar
+        target={target}
+        confirming={confirming}
+        onTargetChange={onTargetChange}
+        onConfirmingChange={onConfirmingChange}
+      />
+    </div>
+  );
+}
+
+/** 「角色」页：人物档案。 */
+function CastTab() {
+  const messages = useGameStore((s) => s.messages);
+  const characters = useGameStore((s) => s.characters);
+  const playableRoles = useGameStore((s) => s.playableRoles);
+  const playerRole = useGameStore((s) => s.playerRole);
+
+  return (
+    <div
+      role="tabpanel"
+      id="transcript-panel-cast"
+      aria-labelledby="transcript-tab-cast"
+      className="min-h-0 flex-1 overflow-y-auto p-3"
+    >
+      <RolePanel
+        characters={characters}
+        messages={messages}
+        playableRoles={playableRoles}
+        playerRole={playerRole}
+      />
+    </div>
+  );
+}
+
+/** 最近一次干涉的结果：只订阅消息流的这一小块，不牵动整个侧栏。 */
+function InterventionFeedback() {
+  const messages = useGameStore((s) => s.messages);
+  const feedback = latestInterventionFeedback(messages);
+  if (!feedback) return null;
+
+  return (
+    <p
+      role="status"
+      className="mt-1 flex flex-wrap items-baseline gap-1.5 pl-1 text-xs"
+    >
+      <Tag tone={feedback.status === "applied" ? "ok" : "warn"}>
+        {feedback.status === "applied" ? "已生效" : "未应允"}
+      </Tag>
+      <span className="min-w-0 flex-1 text-ink-soft">{feedback.text}</span>
+    </p>
   );
 }

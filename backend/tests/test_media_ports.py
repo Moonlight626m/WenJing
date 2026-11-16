@@ -59,7 +59,7 @@ def test_ports_are_runtime_checkable_protocols():
 
 
 def test_port_method_shapes():
-    assert set(_methods(ObjectStoragePort)) == {"put", "presign"}
+    assert set(_methods(ObjectStoragePort)) == {"put", "get", "presign"}
     assert set(_methods(ImageGenPort)) == {"generate"}
     assert set(_methods(ImageSearchPort)) == {"search"}
     assert set(_methods(AssetRepositoryPort)) == {

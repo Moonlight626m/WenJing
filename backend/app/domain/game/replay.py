@@ -28,6 +28,7 @@ from app.contracts.script import (
     ScriptPackage,
 )
 from app.domain.game import event as evt
+from app.domain.game.beat_text import split_goal_note
 from app.domain.game.types import InteractionPoint
 
 logger = logging.getLogger("wenjing.core.replay")
@@ -116,7 +117,8 @@ class ReplayState:
 def _beat_list(raw_beats: list) -> tuple[ReplayBeat, ...]:
     """契约 beats → 播放节拍（场景 beat 自带台词；分支 beat 的台词为空）。"""
     return tuple(
-        ReplayBeat(b.beat_id, b.description, tuple(b.dialogue)) for b in raw_beats
+        ReplayBeat(b.beat_id, split_goal_note(b.description, b.goal)[0], tuple(b.dialogue))
+        for b in raw_beats
     )
 
 
@@ -377,14 +379,16 @@ class ReplayDirector:
     def _scene_cues(self, scene: ReplayScene, player_role: str | None) -> list[ReplayCue]:
         cues = [self._enter_cue(scene)]
         for beat in scene.beats:
-            cues.append(self._narration_cue(scene.node_id, beat.description))
+            if beat.description:
+                cues.append(self._narration_cue(scene.node_id, beat.description))
             cues.extend(self._line_cues(scene.node_id, beat.dialogue, player_role))
         return cues
 
     def _branch_cues(self, branch: ReplayBranch, player_role: str | None) -> list[ReplayCue]:
         cues = [self._enter_cue(branch)]
         for beat in branch.beats:
-            cues.append(self._narration_cue(branch.node_id, beat.description))
+            if beat.description:
+                cues.append(self._narration_cue(branch.node_id, beat.description))
         cues.extend(self._line_cues(branch.node_id, branch.dialogue, player_role))
         return cues
 

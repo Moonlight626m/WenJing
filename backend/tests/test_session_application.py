@@ -166,17 +166,27 @@ async def test_restore_after_restart_replays_state(factory, actor):
     assert upd2.state.plot_context["player_role"] == role
 
 
-async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, monkeypatch):
-    """#21：命令路径无状态 + 乐观锁。两个命令从同一版本恢复时，只有一个能提交。"""
+async def test_commands_from_two_instances_conflict_via_cas(factory, actor, monkeypatch):
+    """#21：跨进程/跨实例仍由版本 CAS 兜底。
+
+    进程内同一实例的写入已由 `_write_lock` 串行化（见
+    `test_runtime_events.py::test_command_and_runtime_event_serialize`），
+    所以这里用**两个应用实例**模拟多进程：它们各自持锁，同一版本恢复后
+    只有一个能提交。
+    """
     from conftest import make_playable_session
     from sqlalchemy import text
 
     from app.infrastructure.errx import codes
+    from app.infrastructure.llm.fake import DeterministicAgentLLM
 
     app, sid = await make_playable_session(factory, actor)
+    peer = SessionApplication(
+        session_factory=factory, agent_llm=DeterministicAgentLLM()
+    )
     role = (await app.get_status(sid, actor=actor)).playable_roles[0]
 
-    # 用 barrier 确保两个协程都在同一版本完成恢复（都不持锁）后再各自提交
+    # 用 barrier 确保两个实例都在同一版本完成恢复后再各自提交
     barrier = asyncio.Barrier(2)
     original = SessionApplication._restore_runtime
 
@@ -191,7 +201,7 @@ async def test_concurrent_commands_conflict_via_optimistic_lock(factory, actor, 
         app.submit_command(
             sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
         ),
-        app.submit_command(
+        peer.submit_command(
             sid, _cmd(sid, CommandKind.SELECT_ROLE, {"role_name": role}), actor=actor
         ),
         return_exceptions=True,

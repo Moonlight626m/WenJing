@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.game.offline_ticks import MAX_OFFLINE_TICKS
+from app.domain.game.types import MemoryBackend
 from app.infrastructure.llm.factory import KNOWN_PROVIDERS, ModelConfig
 
 # 绝对锚定 backend/.env：不随启动 cwd 漂移（从仓库根/IDE 启动也能读到配置）
@@ -18,6 +19,10 @@ MEDIA_ASSET_JOB_TTL_SECONDS_DEFAULT = 900
 
 #: 本地默认数据库（服务与集成测试共用；测试在 WENJING_DATABASE_URL 未设置时回落到它）
 DEFAULT_DATABASE_URL = "postgresql+asyncpg://wenjing:wenjing@localhost:5432/wenjing_v2"
+
+#: fs 记忆后端的实例目录根（会话 id 作子目录名）。服务层默认值也引用它，
+#: 避免「配置默认」与「服务回退」各写一份。
+DEFAULT_MEMORY_FS_ROOT = "data/instances"
 
 
 class Settings(BaseSettings):
@@ -33,6 +38,13 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
     database_url: str = DEFAULT_DATABASE_URL
+
+    # 实例记忆存储（stage3-chronicle-redesign §1.3/§1.4）：null = 进程内事件派生
+    # （现状，权威都在事件流）；fs = 本地实例目录（单实例部署：events.jsonl +
+    # instance.lock + memory/<character>.json 派生缓存）。
+    memory_backend: MemoryBackend = "null"
+    # fs 后端的实例目录根（会话 id 作子目录名）。
+    memory_fs_root: str = DEFAULT_MEMORY_FS_ROOT
 
     # 账号会话（issue #17 / ADR-0002）。生产走 HTTPS 时应置 WENJING_AUTH_COOKIE_SECURE=1。
     auth_cookie_secure: bool = False
@@ -88,6 +100,14 @@ class Settings(BaseSettings):
     # 课本插画风格 + 中国水墨山水意韵 + 手绘线描淡彩 + 非照片写实）。
     # 参与去重键：改画风 = 改产出，旧缓存不命中、按新画风重付一次。
     media_image_gen_style: str = ""
+
+    # 视觉评审（P2，2026-11）：生成图由视觉模型按 rubric 打分，多候选挑最好。
+    # `media_image_vision_review=off` 时完全关闭（每张图只生成一次，不评审）。
+    media_image_vision_review: Literal["off", "on"] = "off"
+    # 每个 subject 平行生成的候选数（评审开启时生效；1 = 单张直出）。
+    media_image_candidates: int = 2
+    # 全候选落选后带评审意见重绘的轮数（0 = 不重绘，落选采用最高分兜底）。
+    media_image_regen_rounds: int = 1
 
     # 检索 provider（M2 #44 接入）。
     media_image_search_provider: Literal["null", "openverse", "wikimedia"] = "null"

@@ -19,6 +19,7 @@ from app.domain.game.image_review import ImageReviewAgent
 from app.domain.game.media import DEFAULT_STYLE, MediaKind, SceneDesigner
 from app.domain.game.prompt_writer import SCENE_PROMPT_VERSION, LLMPromptWriter
 from app.domain.game.tts import VoiceMap
+from app.domain.game.vision_review import VisionReviewAgent
 from app.infrastructure.config import Settings, get_settings
 from app.infrastructure.db.session import SessionLocal, engine
 from app.infrastructure.errx import exc_reason
@@ -37,6 +38,7 @@ from app.infrastructure.media import (
     build_tts,
     build_voice_map,
 )
+from app.infrastructure.media.image_encode import data_url as image_data_url
 from app.infrastructure.usage import UsageRecorder
 from app.infrastructure.websearch.service import WebSearchService, build_search_provider
 from app.services.admin import AdminService
@@ -144,6 +146,9 @@ class Container:
         # 否则新一轮 lifespan 会拿着上一轮的内存计数继续扣。
         self._tts_factory = None
         self._asr_transcriber = None
+        # 实例记忆目录：释放单写者锁与 fd（下次 open 重新惰性创建）。
+        if self._session_application is not None:
+            await self._session_application.aclose()
 
     async def _aclose_port(self, attr: str) -> None:
         port = getattr(self, attr, None)
@@ -225,6 +230,10 @@ class Container:
                 asset_scheduler=self.asset_scheduler,
                 event_hub=self.event_hub,
                 assets=self.asset_repo,
+                # 实例记忆后端（§1.3）：fs = 每会话一个本地实例目录
+                # （memory_fs_root/<session_id>/，单写者锁 + events.jsonl）。
+                memory_backend=self.settings.memory_backend,
+                memory_fs_root=self.settings.memory_fs_root,
             )
         return self._session_application
 
@@ -394,6 +403,19 @@ class Container:
             # 无 key 时 _build_agent_llm 降级安全实现，画师层写出的画面语质量
             # 有限但管线安全（转写失败回退确定性 description 拼装）。
             prompt_writer = LLMPromptWriter(llm=self._build_agent_llm())
+            # 视觉评审（P2）：off 时传 None（每图只生成一次）。审核与评审共用
+            # agent 侧 LLM（评审走 IMAGE_REVIEW 计量）；评审失败内部降级为
+            # 「放行原图」，不拖垮配图链路。
+            reviewer_llm = self._build_agent_llm()
+            vision_reviewer = (
+                VisionReviewAgent(
+                    reviewer_llm, encode=image_data_url
+                )
+                if self.settings.media_image_vision_review == "on"
+                else None
+            )
+            if vision_reviewer is None:
+                logger.info("vision_review_disabled")
             self._scene_designer = SceneDesigner(
                 storage=self.object_storage,
                 image_gen=self.image_gen,
@@ -414,6 +436,10 @@ class Container:
                     session_factory=self.session_factory,
                     limits={MediaKind.IMAGE: self.settings.media_org_image_budget},
                 ),
+                # 视觉评审 + 多候选 + 重绘回路（P2）：数量可配，cost 随之涨。
+                vision_reviewer=vision_reviewer,
+                candidates=max(1, self.settings.media_image_candidates),
+                max_regen_rounds=max(0, self.settings.media_image_regen_rounds),
             )
         return self._scene_designer
 

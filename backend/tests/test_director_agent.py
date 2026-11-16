@@ -88,7 +88,7 @@ async def test_design_options_never_raises_on_llm_failure():
         present=[("乙", "船夫")],
         plot_log=["船靠岸"],
         direction={"conflict": "船要走了"},
-        goals=[("劝船夫再等一会儿", False)],
+        chronicle_tail="船夫催着开船，甲还没拿定主意。",
         teaching_focus=["同舟共济"],
     )
     assert options == []
@@ -110,7 +110,7 @@ async def test_design_options_returns_parsed_list():
         present=[],
         plot_log=[],
         direction={},
-        goals=[],
+        chronicle_tail="",
         teaching_focus=[],
     )
     assert [o.label for o in options] == ["与船夫攀谈", "检查船绳"]
@@ -127,7 +127,7 @@ async def test_design_options_passes_new_context_to_prompt():
         present=[("乙", "船夫")],
         plot_log=["船靠岸"],
         direction={"conflict": "船要走了"},
-        goals=[("劝船夫再等一会儿", False)],
+        chronicle_tail="船夫催着开船，甲还没拿定主意。",
         teaching_focus=["同舟共济"],
         recent_speeches=[("船夫", "再不走就涨潮了")],
         last_options=["看看四周"],
@@ -137,3 +137,4 @@ async def test_design_options_passes_new_context_to_prompt():
     assert "再不走就涨潮了" in prompt
     assert "看看四周" in prompt
     assert "昨夜上游下了暴雨" in prompt
+    assert "船夫催着开船" in prompt

@@ -351,8 +351,55 @@ async def test_report_asset_ready_gives_up_after_conflicts(factory, actor, monke
     assert (await app.session_init(sid, actor=actor))["current_asset"] is None
 
 
-# ===== 失败占位不阻塞游玩 =====
+async def test_command_and_runtime_event_serialize(factory, actor, monkeypatch):
+    """命令在「恢复 → LLM → 提交」期间，命令外事件必须排队而不是撞版本重跑。
 
+    没有会话写锁时，配图就绪会在命令跑完 LLM、尚未提交时提交自己的事件，
+    命令随后 CAS 失败、整条 LLM 链重跑一遍（双倍费用与墙钟）。
+    """
+    app, sid, scene_key, branch_id = await _playable_in_scene(factory, actor)
+
+    gate = asyncio.Event()
+    command_at_commit = asyncio.Event()
+    order: list[str] = []
+    original = app._store.commit
+
+    async def _gated(**kwargs):
+        op = str(kwargs.get("op"))
+        if op == "persist_command":
+            # 模拟「LLM 已跑完、正要提交」的窗口
+            command_at_commit.set()
+            await gate.wait()
+        order.append(op)
+        await original(**kwargs)
+
+    monkeypatch.setattr(app._store, "commit", _gated)
+
+    command = asyncio.create_task(
+        app.submit_command(
+            sid, _cmd(sid, CommandKind.CHOOSE_OPTION, {"option_id": "0"}), actor=actor
+        )
+    )
+    # 命令已持锁并卡在提交前
+    await asyncio.wait_for(command_at_commit.wait(), timeout=5)
+
+    event = asyncio.create_task(
+        app.report_asset_ready(
+            sid, branch_id=branch_id, scene_key=scene_key, asset_id=uuid.uuid4()
+        )
+    )
+    # 让事件任务跑到锁上：有锁时它停在这里；没有锁时它会先于命令提交
+    await asyncio.sleep(0.05)
+    assert not event.done()
+
+    gate.set()
+    await command
+    msgs = await event
+    assert msgs and msgs[0]["type"] == "asset_ready"
+    assert order.index("persist_command") < order.index("report_runtime_event")
+
+
+# ===== 失败占位不阻塞游玩 =====
 
 async def test_failed_generation_does_not_block_play(factory, actor):
     harness = await _make_harness(factory, actor, status=AssetStatus.FAILED)

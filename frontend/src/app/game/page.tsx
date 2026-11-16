@@ -102,7 +102,8 @@ function GameContent() {
   return (
     <main
       data-surface="stage"
-      className="flex h-screen w-full flex-col overflow-clip bg-canvas"
+      // dvh 而非 vh：手机横屏/地址栏收放时 h-screen 会把抉择卡裁在视口外
+      className="flex h-dvh w-full flex-col overflow-clip bg-canvas"
     >
       <GameScreen />
       <ToastHost />

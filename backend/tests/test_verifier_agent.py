@@ -1,13 +1,11 @@
 """验证 Agent：结构化判定与降级口径。
 
-提议验证走 JSON（兼容旧的纯文本输出）；目标判定失败一律视为本轮未达成，
-不让一次异常输出把续写提前收掉。
+提议验证走 JSON（兼容旧的纯文本输出）；LLM 失败按条件通过，不阻塞主流程。
 """
 
 from __future__ import annotations
 
 from app.domain.agents.verifier import VerifierAgent, _parse_verdict
-from app.domain.game.goals import GoalState
 from app.domain.game.types import Proposal
 
 
@@ -66,26 +64,3 @@ async def test_verify_proposal_degrades_to_conditional_without_llm():
     )
     assert result.verdict == "conditional_pass"
     assert result.score == 0.5
-
-
-async def test_judge_stage3_goals_parses_achieved_ids():
-    llm = _FixedLLM('{"achieved":[2],"reason":"船夫答应了"}')
-    achieved, reason = await VerifierAgent(llm).judge_stage3_goals(
-        [GoalState(1, "劝船夫留下"), GoalState(2, "让船夫改变态度")],
-        player_role="甲",
-        action="向船夫道歉",
-        reactions=[("船夫", "好吧，再等一会儿。")],
-    )
-    assert achieved == [2]
-    assert reason == "船夫答应了"
-
-
-async def test_judge_stage3_goals_fails_closed_on_unparseable_output():
-    achieved, reason = await VerifierAgent(_FixedLLM("本轮达成了目标")).judge_stage3_goals(
-        [GoalState(1, "劝船夫留下")],
-        player_role="甲",
-        action="说话",
-        reactions=[],
-    )
-    assert achieved == []
-    assert reason == ""

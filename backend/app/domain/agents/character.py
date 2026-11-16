@@ -33,6 +33,7 @@ from app.domain.game.event import (
     EVENT_CHARACTER_SPEECH,
     EVENT_PROPOSAL,
 )
+from app.domain.game.memory import MemoryStore
 from app.domain.game.types import CharacterSetting, PlayerAction, Proposal
 from app.domain.llm import LLMService
 from app.infrastructure.errx import Error, codes, exc_reason, new, wrap
@@ -109,14 +110,8 @@ class CharacterIdentity:
         self.voice_style = ""
 
     def to_system_prompt(self) -> str:
-        return build_character_system(
-            name=self.name,
-            public_background=self.public_background,
-            personality_traits=self.personality_traits,
-            speech_style=self.speech_style,
-            knows=self.knows,
-            not_knows=self.not_knows,
-        )
+        """共享 system（所有人一致）；persona/私有知识在 user 里。"""
+        return build_character_system()
 
 
 class CharacterAgent:
@@ -126,8 +121,9 @@ class CharacterAgent:
         self.identity = CharacterIdentity(setting)
         self.memory = CharacterMemory()
         self.llm = llm
+        self.world = world
         self._proposal_seq = 0
-        # system 一次构造、全场复用：同一角色+阶段逐字节稳定，动态内容只进 user。
+        # 共享 system：所有角色逐字节一致，动态内容（persona/秘密/编年史）只进 user。
         self._system_prompt = self.identity.to_system_prompt()
         self._model = WenjingChatModel(service=llm)
         self._tools = build_character_tools(memory=self.memory, world=world)
@@ -270,9 +266,34 @@ class CharacterAgent:
             raise wrap(exc, codes.LLM_CALL_FAILED, extra={"reason": exc_reason(exc)}) from exc
         return _final_text(list(merged.values()))
 
+    def _my_recent_lines(self) -> list[str]:
+        """自己的近期言行：工作记忆里的发言 + 个人日志（提议/前史）。
+
+        这两份记忆以前只能经 `view_my_memory` 工具自查，模型常常不查——于是
+        「我写过一封信」这类自身经历在回应里丢失。它们只属于本角色，不涉及他人隐私。
+        """
+        lines = [
+            f"我说过：{entry.get('content', '')}"
+            for entry in self.memory.working_memory[-CHARACTER_MEMORY_LIMIT:]
+        ]
+        lines.extend(self.memory.personal_log[-CHARACTER_MEMORY_LIMIT:])
+        return lines[-CHARACTER_MEMORY_LIMIT:]
+
     def _build_user_message(self, stage: str, *, instruction: str, extra: str = "") -> str:
+        recent_parts = list(self.world.plot_log(limit=5))
+        conflict = self.world.direction().get("conflict", "")
+        if conflict:
+            recent_parts.append(f"当前处境：{conflict}")
+        recent = "\n".join(f"- {part}" for part in recent_parts if part)
         return build_character_prompt(
-            system_prompt=self._system_prompt,
+            name=self.identity.name,
+            background=self.identity.public_background,
+            personality_traits=self.identity.personality_traits,
+            speech_style=self.identity.speech_style,
+            knows=self.identity.knows,
+            chronicle=self.world.chronicle(),
+            recent=recent,
+            my_recent=self._my_recent_lines(),
             stage=stage,
             instruction=instruction,
             extra=extra,
@@ -309,26 +330,125 @@ def _message_text(message: BaseMessage) -> str:
     return "" if content is None else str(content)
 
 
+@dataclass(frozen=True)
+class CharacterTemplate:
+    """静态角色模板：可复用的身份、性格、说话风格与知识种子。
+
+    模板是跨局资产（生成期产物 / 教师预置 / 手工模板），不随某局状态变化；
+    `CharacterFactory` 用它在具体实例里创建角色，记忆绑定到实例而非模板。
+    """
+
+    name: str
+    public_background: str
+    personality_traits: tuple[str, ...] = ()
+    speech_style: str = ""
+    knowledge_seeds: tuple[str, ...] = ()
+    playable: bool = False
+
+    @classmethod
+    def from_setting(cls, setting: CharacterSetting) -> CharacterTemplate:
+        """从剧本设定卡投影模板（旧剧本角色也走同一条创建路径）。"""
+        return cls(
+            name=setting.name,
+            public_background=setting.public_background,
+            personality_traits=tuple(setting.personality_traits),
+            speech_style=setting.speech_style,
+            knowledge_seeds=tuple(setting.knows),
+            playable=setting.is_player_playable,
+        )
+
+    def to_setting(self) -> CharacterSetting:
+        return CharacterSetting(
+            name=self.name,
+            public_background=self.public_background,
+            personality_traits=list(self.personality_traits),
+            speech_style=self.speech_style,
+            knows=list(self.knowledge_seeds),
+            is_player_playable=self.playable,
+        )
+
+
+class CharacterFactory:
+    """按模板创建角色实例；同一模板的不同实例互不共享记忆。"""
+
+    def __init__(self, llm: LLMService) -> None:
+        self.llm = llm
+
+    def create(self, template: CharacterTemplate, *, world: WorldView) -> CharacterAgent:
+        """创建角色；`world` 必须是按 `viewer` 裁剪过的视图，不能传全局视图。"""
+        return CharacterAgent(template.to_setting(), self.llm, world)
+
+
+@dataclass
+class CharacterInstance:
+    """角色实例（§1.2）：agent 常驻对象 + 实例级记忆句柄。
+
+    `memory` 非空时提供**实例目录侧**的持久化载体（本地文件系统存储）；
+    `None` 表示只活在进程内（服务端多会话形态，记忆仍由事件流/快照派生）。
+    事件是唯一权威——无论哪种形态，记忆都可从事件流重建。
+    """
+
+    agent: CharacterAgent
+    name: str
+    memory: MemoryStore | None = None
+
+    async def persist_private_knowledge(self) -> None:
+        """把进程内记忆窗口刷到实例存储（派生缓存，丢了可重建）。"""
+        if self.memory is None:
+            return
+        mem = self.agent.memory
+        try:
+            await self.memory.save_private_knowledge(
+                self.name,
+                [
+                    *(str(item) for item in mem.personal_log),
+                    *(f"{d['role']} 说过：{d['content']}" for d in mem.working_memory),
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001 - 记忆缓存失败不阻塞游玩
+            logger.warning(
+                "character_memory_persist_failed",
+                extra={"character": self.name, "reason": exc_reason(exc)},
+            )
+
+
 class CharacterAgentManager:
-    """角色 Agent 集群管理器（design_01 §4.6 精简版）。"""
+    """角色 Agent 集群管理器（design_01 §4.6 精简版）。
+
+    内部持 `CharacterInstance`（agent + 实例级记忆句柄），对外接口同形状——
+    `agents` 字典的值是实例；`instance`/`agent` 属性经实例透出。
+    """
 
     def __init__(
         self,
         llm: LLMService,
         world: WorldView,
         player_role: str | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.llm = llm
         self.world = world
-        self.agents: dict[str, CharacterAgent] = {}
+        self.factory = CharacterFactory(llm)
+        self.instances: dict[str, CharacterInstance] = {}
+        self.memory_store = memory_store
         self.player_role: str | None = player_role
+
+    @property
+    def agents(self) -> dict[str, _AgentFacade]:
+        """兼容视图：名字 → agent 对象（`agent.memory`/`identity` 照常可访问）。"""
+        return {n: _AgentFacade(inst) for n, inst in self.instances.items()}
 
     def create_agents(self, characters: list[CharacterSetting]) -> None:
         for setting in characters:
             # 机制层知识边界：每个角色拿**自己**的裁剪视图（在场/可公开），
             # 未裁剪的全局视图不进任何 agent 的工具闭包。
             scoped = self.world.bind(setting.name)
-            self.agents[setting.name] = CharacterAgent(setting, self.llm, scoped)
+            template = CharacterTemplate.from_setting(setting)
+            self.instances[setting.name] = CharacterInstance(
+                agent=self.factory.create(template, world=scoped),
+                name=setting.name,
+                memory=self.memory_store,
+            )
             if setting.is_player_playable:
                 self.player_role = setting.name
 
@@ -339,21 +459,29 @@ class CharacterAgentManager:
         初始记忆为空；「为何在此」的 provenance 由 `derive_memories` 从
         `character_created` 事件折叠（实时与重放同一写者，不双计）。
         """
-        if setting.name in self.agents:
+        if setting.name in self.instances:
             return  # 幂等：重放/实时双写同一次 character_created
         self.create_agents([setting])
 
     def remove_character(self, name: str) -> None:
         """移除运行期新增角色（回溯到 `character_created` 之前 = 从未存在）。"""
-        self.agents.pop(name, None)
+        self.instances.pop(name, None)
 
     def active_names(self, *, include_player: bool = False) -> list[str]:
-        return [n for n in self.agents if include_player or n != self.player_role]
+        return [n for n in self.instances if include_player or n != self.player_role]
 
     def get(self, name: str) -> CharacterAgent:
-        if name not in self.agents:
+        return self.instance(name).agent
+
+    def instance(self, name: str) -> CharacterInstance:
+        if name not in self.instances:
             raise new(codes.AGENT_NOT_IN_SESSION, extra={"name": name})
-        return self.agents[name]
+        return self.instances[name]
+
+    async def persist_memories(self) -> None:
+        """把全部角色的私有记忆刷到实例存储（无句柄时 no-op）。"""
+        for inst in self.instances.values():
+            await inst.persist_private_knowledge()
 
     def broadcast_plot_context(self, summary: str) -> None:
         """全局广播剧情摘要到 `plot_context`。
@@ -362,29 +490,29 @@ class CharacterAgentManager:
         内容，直接暴露会破坏知识边界；若未来要接入，必须先按 viewer 裁剪。
         角色读剧情请走 `view_plot_log`（事件派生的 visible 摘要）。
         """
-        for agent in self.agents.values():
-            agent.memory.plot_context = summary
+        for inst in self.instances.values():
+            inst.agent.memory.plot_context = summary
 
     def broadcast_direction(self, direction: dict[str, str]) -> None:
         """全局广播当前处境到 `current_direction`（同样 write-only，见上）。"""
-        for agent in self.agents.values():
-            agent.memory.current_direction = direction
+        for inst in self.instances.values():
+            inst.agent.memory.current_direction = direction
 
     def snapshot_memories(self) -> dict[str, dict[str, Any]]:
-        return {name: agent.memory.snapshot() for name, agent in self.agents.items()}
+        return {name: inst.agent.memory.snapshot() for name, inst in self.instances.items()}
 
     def restore_memories(self, snapshot: dict[str, dict[str, Any]]) -> None:
         for name, data in snapshot.items():
             # 快照可能引用当前分支已不存在的动态角色（回溯到创建前）——跳过
-            agent = self.agents.get(name)
-            if agent is not None:
-                agent.memory.restore(data)
+            inst = self.instances.get(name)
+            if inst is not None:
+                inst.agent.memory.restore(data)
 
     def clear_memories(self) -> None:
         """原地清空全部角色记忆（保持 agent/memory 对象身份——工具闭包持有引用，
         换对象会让 `view_my_memory` 读到旧记忆）。全量事件重放前用它复位。"""
-        for agent in self.agents.values():
-            agent.memory.clear()
+        for inst in self.instances.values():
+            inst.agent.memory.clear()
 
     def derive_memories(self, events: Iterable[dict[str, Any]]) -> None:
         """把一段事件折叠进角色记忆（M0：记忆由事件重建，快照只是兼容缓存）。
@@ -403,26 +531,44 @@ class CharacterAgentManager:
             payload = ev.get("payload") or {}
             if etype == EVENT_PROPOSAL:
                 name = payload.get("proposed_by")
-                agent = self.agents.get(str(name)) if name else None
-                if agent is None:
+                inst = self.instances.get(str(name)) if name else None
+                if inst is None:
                     continue
-                agent.record_proposal(str(payload.get("description", "")) or "（无提议）")
+                inst.agent.record_proposal(str(payload.get("description", "")) or "（无提议）")
             elif etype == EVENT_CHARACTER_SPEECH:
                 speaker = payload.get("speaker")
-                agent = self.agents.get(str(speaker)) if speaker else None
-                if agent is None:
+                inst = self.instances.get(str(speaker)) if speaker else None
+                if inst is None:
                     continue
                 text = str(payload.get("text", ""))
                 if text:
-                    agent.record_speech(text)
+                    inst.agent.record_speech(text)
             elif etype == EVENT_CHARACTER_CREATED:
                 # 干涉新建角色的 provenance 记忆（「为何在此」）：与剧本角色
                 # 一样走事件折叠，回溯到创建之前该记忆随角色一起消失
                 name = payload.get("name")
-                agent = self.agents.get(str(name)) if name else None
-                if agent is None:
+                inst = self.instances.get(str(name)) if name else None
+                if inst is None:
                     continue
                 origin = payload.get("origin")
                 brief = str(payload.get("public_background", ""))
                 if origin == "player_intervention" and brief:
-                    agent.memory.add_personal_note(f"你因玩家的干涉而登场：{brief}")
+                    inst.agent.memory.add_personal_note(f"你因玩家的干涉而登场：{brief}")
+
+
+class _AgentFacade:
+    """兼容垫片：让 `manager.agents[name].memory / .identity` 继续可访问。
+
+    每次访问都路由到实例当前的 `agent`——重放替换内部对象时不会出现陈旧引用。
+    """
+
+    def __init__(self, inst: CharacterInstance) -> None:
+        self._inst = inst
+
+    @property
+    def memory(self) -> CharacterMemory:
+        return self._inst.agent.memory
+
+    @property
+    def identity(self) -> CharacterIdentity:
+        return self._inst.agent.identity

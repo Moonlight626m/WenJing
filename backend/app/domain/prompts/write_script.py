@@ -1,4 +1,4 @@
-"""剧本书写节点 prompt v3（stage1 生成链路；段落落库，输出契约与代码同步）。
+"""剧本书写节点 prompt v5（stage1 生成链路；段落落库，输出契约与代码同步）。
 
 段落构成（section）：
 - role：教学场景定位与忠实性总纲；
@@ -13,6 +13,15 @@ BRANCH_OUTPUT_CONTRACT 与 branch_rules 另起第二遍调用按规格补写
 （单场失败降级为无分支，不拖垮主干）。visual_notes / interaction_point
 由节点侧从划分草稿确定性回填，不依赖主干 LLM 抄写。
 
+v4 变更：beat 拆成 `description`（玩家可见的场面叙述，播放时作旁白）与
+`goal`（戏剧目标，只作运行时 agent 上下文）。v3 把两者写进同一字段，
+「目标：…」被当作旁白播到玩家面前。
+
+v5 变更：场景必须保持**单一时空**——开场只写本场景此刻的地点与时间，
+不得在同一个场景里跨年、跨城；原文结尾的时间跳跃（如"我北来后"）由划分
+阶段单独成场。书信/回忆里的引语写在旁白里，不要让写信人作为在场角色说话
+（Stage3 的在场名单与配图都按场景派生）。
+
 输出契约常量（OUTPUT_CONTRACT / BRANCH_OUTPUT_CONTRACT）必须与
 contracts.script 同步，按裁决留在代码。
 本节点不给 few-shot 范例（spec 裁决）：以判据与负面清单引导。
@@ -22,7 +31,7 @@ from __future__ import annotations
 
 NODE = "write_script"
 STAGE = "script_gen"
-VERSION = "v3"
+VERSION = "v5"
 PROMPT_VERSION = f"{NODE}.{VERSION}"
 
 OUTPUT_CONTRACT = """\
@@ -37,13 +46,15 @@ OUTPUT_CONTRACT = """\
      "speech_style": {"era_layer": "语言时代层", "sentence_rhythm": "句长与节奏",
        "address_terms": "称谓习惯", "catchphrases": "口头禅与语气词",
        "emotion_expression": "情绪表达方式", "sample_lines": ["示例台词"]} 或 null,
-     "knowledge_boundary": {"knows": ["知道的事"], "not_knows": ["不知道的事"]},
+     "knowledge_boundary": {"knows": ["知道的事"]},
      "is_player_playable": {"value": 布尔值, "reason": "判断理由"}}
   ],
   "scenes": [
     {"scene_id": 整数（从 1 递增）, "title": "字符串", "participants": ["人物名"],
      "beats": [
-       {"beat_id": 整数（从 1 全局递增）, "description": "字符串",
+       {"beat_id": 整数（从 1 全局递增）,
+        "description": "玩家可见的场面叙述（播放时作旁白）",
+        "goal": "戏剧目标（不播给玩家，供角色 agent 理解处境）",
         "is_key_event": 布尔值,
         "evidence_refs": [{"source_type": "original_text", "excerpt": "原文摘录",
           "paragraph_index": 整数, "char_start": 整数, "char_end": 整数}]}
@@ -83,6 +94,10 @@ SCENE_RULES = """\
 【场景与舞台指示】
 - 场景开场按 who / where / when / mood 四要素写：人物、地点、时间、氛围，\
 一段 2-4 句；
+- 一个场景只写**此刻此地**：开场交代的地点与时间必须在整场里保持不变；\
+原文的时间跳跃（"我北来后""多年后"）与地点转移由划分阶段的独立场景承担，\
+不要在同一场景的开场或 beat 里顺延跨年、跨城；
+- 书信、电报、回忆里的引语写成旁白（"信中说……"），不要让写信人作为在场人物开口；
 - 开场只写可看见、可听见的东西（视觉、动作、声音线索），不写抽象心理分析；
 - 舞台指示用括注式短指令，只约束当下可执行的动作与语气\
 （如"（低头整理行李，不看对方）"）；不用镜头术语；\
@@ -91,8 +106,11 @@ SCENE_RULES = """\
 
 BEAT_RULES = """\
 【beat 描述与留白（面向角色扮演运行时）】
-- beat description 写"事件骨架 + 戏剧目标"：谁想要什么、障碍是什么、\
-推进到哪里；不要在描述里预写结局性台词——对白由角色 agent 在游玩时生成；
+- beat description 是**玩家可见的旁白**：只写谁在场、在做什么、看得见听得见的\
+动作与环境，用连贯的书面叙述；不写创作备注，不出现"目标：…"这类作者说明；
+- beat goal 是**不播给玩家的戏剧目标**：谁想要什么、障碍是什么、这一拍推进到\
+哪里，供角色 agent 理解当下处境；
+- 不要在 description / goal 里预写结局性台词——对白由角色 agent 在游玩时生成；
 - 关键 beat 的 evidence_refs 原样复制【关键事件】给出的证据 JSON；
 - 非关键 beat 只给推进方向，给角色 agent 留出即兴空间；
 - 若输入包含事件划分草稿，其场景/节拍结构与介入点必须遵守。
@@ -113,6 +131,8 @@ participant 不得超规格与规格的参与者名单；
 SELF_CHECK = """\
 【输出前自检】
 - 关键 beat 的顺序是否与【关键事件】一致、evidence_refs 是否齐备？
+- description 是否是玩家可读的场面叙述、没有"目标：…"之类的创作备注？
+- 每个 beat 是否都用独立的 goal 写清了戏剧目标？
 - 每个角色的对白是否符合其设定卡的说话风格、口吻能否区分？
 - 有没有预写结局性台词锁死角色 agent 的即兴空间？
 - scene_id/beat_id/各整数是否为 JSON 整数而非字符串？
@@ -135,7 +155,9 @@ BRANCH_OUTPUT_CONTRACT = """\
   "title": "分支过场标题（字符串）",
   "participants": ["分支中出现的人物名"],
   "beats": [
-    {"beat_id": 整数（分支内从 1 递增）, "description": "字符串",
+    {"beat_id": 整数（分支内从 1 递增）,
+     "description": "玩家可见的场面叙述（播放时作旁白）",
+     "goal": "戏剧目标（不播给玩家）",
      "is_key_event": false, "evidence_refs": []}
   ],
   "visual_notes": {

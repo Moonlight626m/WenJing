@@ -44,6 +44,7 @@ export const GENERATION_NODE_LABELS: Record<string, string> = {
   write_script: "剧本书写",
   write_dialogue: "台词预写",
   final_audit: "总审",
+  design_exploration: "探索地图",
   design_assets: "配图设计",
 };
 

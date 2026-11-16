@@ -108,7 +108,9 @@ divide_events(v4 大纲：beats + branches + options + endings)
   `replay_choice`、`replay_ending_reached`；预写台词落 `character_speech`
   （`source=replay`），Stage3 的 `speech_log` 因此有上下文。
   节点进入与旁白按 narrative 消息下发，选择/结局按 system 消息下发。
-- 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。
+- 玩家所选角色的台词跳过（不替玩家说话），该拍由 beat 描述以旁白呈现。描述只放
+  玩家可见的场面叙述；戏剧目标在 `Beat.goal`，只进运行时 agent 上下文，存量包里
+  混进描述的「目标：…」作者注记由播放器投影时剥掉。
 - 回主干：`return_mode=choice` 的分支播完回到父场景决策点（写一条父场景
   `replay_node_entered` 表示珊瑚回边，交互文案「回到刚才的选择」）；
   `continue` 续接 return_scene / 主干下一场；带 `ending_id` 的分支是终点。
@@ -245,6 +247,9 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 - **记忆是有界窗口**：`working_memory` / `personal_log` / `rejected` 各保留最近
   `CHARACTER_MEMORY_LIMIT`（10）条；`_RState.plot_log` / `speech_log` 各保留最近
   50 条。事件流仍是全量权威，收口只影响读取窗口与快照大小。
+- **本人的近期言行直接进 prompt**：`working_memory` + `personal_log` 的最近 10 条
+  渲染成 `<my_recent>`（`build_character_prompt`）。只靠 `view_my_memory` 工具时
+  模型常常不自查，「我写过一封信」「我刚才说过什么」这类自身经历会在回应里丢失。
 - 角色可见的叙事摘要由 `GameRuntime.plot_entries_for(viewer)` 从活动分支事件派生
   （`plot_advancement` 按场景 participants、`exploration_settle` 按 `present`、
   `scene_switch` 按 `participants`、`replay_*` 公开），`view_plot_log` 取最近窗口；
@@ -296,6 +301,14 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
   不消耗续写回合预算。旧剧本没有地图：契约按阶段允许该命令，但引擎会拒绝。
 - 场景列表来源：`exploration_map.locations`（静态）+ 运行期 `scene_created`
   动态场景（M6，追加在后面）；仍不显示静态剧本场景。
+- **一场景 = 一地点 = 单一时空**：生成期（`divide_events` v5 / `write_script` v5）
+  要求原文的时间跳跃（"多年后""我北来后"）与地点转移单独成场，书信/回忆一律用
+  旁白交代。否则探索地点会把跨时空的两段剧情揉进一个地点：不在场的人被当成在场，
+  导演出「同处一室」的选项，配图也会把上一幕的人画进来。
+- 地点视觉摘要带字段标签（时代与服饰/地点/时间/天气/氛围）：`era` 里的服饰与
+  标志性物件是画师定年代与人物外观的依据；「原文未交代」之类的占位说明会被过滤。
+- 运行期地点配图的描述 = 地点标题 + 视觉摘要 + **实际在场人物** + 此刻动作，
+  参考图取实际在场角色的头像（不是地点静态 `participants`）。
 - 回溯的「拍」在 Stage3 探索下是 `exploration_settle`：回退后地点进度与
   `scene_key` 一起回退（`_sync_exploration_scene_key` 兜底纠正）。
 - 地图是**平铺地点表**（无地点间连边）：静态地点 + 已创建的动态地点都可前往；
@@ -376,9 +389,13 @@ make seed             # 默认 org + 测试账号 + prompts（幂等）
 - `snapshots` 新增 `branch_id/sequence/label/kind`（索引
   `(session_id, branch_id, sequence)`），`sessions` 新增 `head_sequence`；
   `SessionStatusResponse.head_sequence` 不再拿全局事件行 id 充数。
-- 每条命令落一个存档点：`label` 由场景/命令生成（「选择 · 场景：当铺」
+- 每条命令落一个存档点：`label` 写入时由场景/命令生成（「选择 · 场景：当铺」
   「回溯 · 场景：当铺」；旧坐标回溯给出「回溯到 #N」），`kind = command | rollback`。
-  不新增 checkpoint 事件，也不加 `snapshots.asset_id`。
+  回溯页投影时，选择/行动/换景/干涉改用附近玩家动作文本（「选择：扶父亲坐下」，
+  历史快照同样适用）；不新增 checkpoint 事件，也不加 `snapshots.asset_id`。
+- 回溯页降噪：`proposal`（内部意图）与 `offline_hint`（游戏内横幅承担）不投影；
+  同一离线 tick 的多条 `world_fact` 合成一条；Stage2 回放里近似复述 beat 描述的
+  `replay_narration` 按相似度丢弃，保留先到的 beat 描述。
 - `GET /api/sessions/{id}/timeline` 返回 `entries[].event_id/branch_id`、`save_points`、
   `branches`；`?branch_id=` 指向旧分支时返回**只读**视图（`read_only=true`，
   进度原样保留但不可回溯）。回溯页按 `target_event_id` 提交，游戏顶栏补「回溯进度」入口；

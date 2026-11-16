@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.contracts.enums import UsagePurpose
+from app.domain.agents.parsing import extract_json_object
 from app.domain.agents.prompting import build_world_builder_prompt
-from app.domain.game.goals import extract_json_object
 from app.domain.llm import LLMService
 
 logger = logging.getLogger("wenjing.agents.world_builder")

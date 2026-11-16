@@ -154,6 +154,58 @@ def test_derive_exploration_accepts_game_event_shape():
     assert progress.visited == ("harbor", "inn", "market")
 
 
+def test_derive_exploration_starts_where_replay_ended():
+    """Stage2 收束于哪一场，续写就从那个地点开始（而不是地图起点）。
+
+    否则「北来读信」演完点进入续写，人会被瞬移回第一场：在场名单、导演选项
+    与配图全都跟着回到开场。
+    """
+    registry = build_location_registry(
+        ExplorationMap(
+            start_location_key="scene_1",
+            locations=[
+                ExplorationLocation(
+                    location_key="scene_1", title="徐州", participants=["甲", "乙"]
+                ),
+                ExplorationLocation(
+                    location_key="scene_2", title="读信", participants=["甲"]
+                ),
+            ],
+        )
+    )
+    assert registry is not None
+    events = [
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:1"}},
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:2"}},
+        # 收尾落在分支节点上：它属于 scene_2 的空间，不能把基座冲掉
+        {
+            "event_type": "replay_node_entered",
+            "payload": {"scene_key": "scene:2::branch:b1", "node_kind": "branch"},
+        },
+    ]
+    progress = derive_exploration(events, registry)
+    assert progress.current_location_key == "scene_2"
+    assert progress.visited == ("scene_2",)
+
+
+def test_explicit_scene_switch_beats_replay_position():
+    registry = build_location_registry(
+        ExplorationMap(
+            start_location_key="scene_1",
+            locations=[
+                ExplorationLocation(location_key="scene_1", title="徐州", participants=[]),
+                ExplorationLocation(location_key="scene_2", title="读信", participants=[]),
+            ],
+        )
+    )
+    assert registry is not None
+    events = [
+        {"event_type": "replay_node_entered", "payload": {"scene_key": "scene:2"}},
+        {"event_type": "scene_switch", "payload": {"from": "scene_2", "to": "scene_1"}},
+    ]
+    assert derive_exploration(events, registry).current_location_key == "scene_1"
+
+
 def test_present_names_is_locations_intersection():
     registry = build_location_registry(_map())
     assert registry is not None
@@ -236,6 +288,10 @@ async def test_switch_scene_moves_and_present_npcs_react():
     assert [(i.kind, i.scene_key) for i in result.asset_requests] == [
         ("scene_montage", "loc:inn")
     ]
+    # 配图描述要带在场人物与此刻的动作：只给地点摘要，画师不知道画谁、在做什么
+    request = result.asset_requests[0]
+    assert "在场人物：乙、丙" in request.description
+    assert "你走进了「客栈」" in request.description
     speakers = {p["speaker"] for p in _events(rt, EVENT_CHARACTER_SPEECH)}
     assert speakers == {"乙", "丙"}
 
@@ -394,3 +450,46 @@ async def test_director_options_drive_stage3_interaction():
 
     labels = [o["text"] for o in result.active_interaction["options"]]
     assert labels == ["与船夫攀谈", "检查船绳"]
+
+
+async def test_director_options_drop_absent_characters():
+    """导演点名不在当前地点的人时，该选项被丢弃，别的选项保留。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    # 测试剧本用单字名，生产过滤会跳过单字名（避免与普通用字撞车），
+    # 这里直接喂多字名验证过滤规则本身。
+    rt._exploration_present = lambda: ("船夫",)  # type: ignore[method-assign]
+    rt._known_names = lambda: ["船夫", "过路人"]  # type: ignore[method-assign]
+
+    labels = rt._filter_absent_mentions(
+        ["问船夫船何时开", "让过路人带路", "查看船绳"]
+    )
+    assert labels == ["问船夫船何时开", "查看船绳"]
+
+
+async def test_absent_name_inside_longer_present_name_is_not_matched():
+    """单字名「父」出现在在场的「父亲」里时不算点名缺席者。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+    rt._exploration_present = lambda: ("父亲",)  # type: ignore[method-assign]
+    rt._known_names = lambda: ["父亲", "父"]  # type: ignore[method-assign]
+
+    assert rt._filter_absent_mentions(
+        ["向父亲问安", "向父问安"]
+    ) == ["向父亲问安"]
+
+
+async def test_character_speech_splits_stage_direction():
+    """角色回复里的（动作）拆成 stage_direction，台词只留说出口的部分。"""
+    rt = _make_runtime()
+    await _to_stage3(rt)
+
+    async def fake_react(name: str, action, stage: str) -> str:
+        return "（点头）好，这就开船。"
+
+    rt._react = fake_react  # type: ignore[method-assign]
+    await rt.submit(command_id="c-act", kind="choose_option", payload={"option_id": "0"})
+
+    speeches = _events(rt, EVENT_CHARACTER_SPEECH)
+    assert speeches[-1]["text"] == "好，这就开船。"
+    assert speeches[-1]["stage_direction"] == "点头"

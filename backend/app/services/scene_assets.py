@@ -170,6 +170,13 @@ class SceneAssetScheduler:
                 job, AssetJobStatus.FAILED, reason="no designer configured"
             )
             return
+        # 角色一致性参考图（2026-11）：在场角色头像字节。读取失败不阻断生成
+        # （asset_bytes 内部已降级），缺哪张少哪张，退化为纯文生图。
+        references: list[bytes] = []
+        for asset_id in request.reference_asset_ids:
+            data = await designer.asset_bytes(asset_id)
+            if data:
+                references.append(data)
         try:
             record = await designer.design_scene(
                 org_id=request.org_id,
@@ -183,6 +190,7 @@ class SceneAssetScheduler:
                 # 运行期配图同样画师优先：默认路径不检索图库（那只会给玩家塞一张
                 # 与剧情不对应的免费图），检索只保留给教师「检索替换」。
                 prompt_context=request.prompt_context or None,
+                reference_images=tuple(references),
             )
         except asyncio.CancelledError:
             # 任务留在 pending：停机时由 `drain()` 先等它跑完，真被硬取消则留给

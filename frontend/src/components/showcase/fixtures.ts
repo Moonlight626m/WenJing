@@ -7,7 +7,6 @@
  */
 import type {
   ActiveInteraction,
-  Stage3Goal,
   AssetRef,
   GenerationProgress,
   GateReview,
@@ -78,11 +77,13 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
       public_background:
         "闰土是忙月的儿子，紫色的圆脸，头戴一顶小毡帽，颈上套一个明晃晃的银项圈。他会装弶捉小鸟雀，能在雪地里捕鸟，也守过西瓜地。",
       appearance: {
+        gender: "男",
+        age: "十一二岁",
         face: "紫色的圆脸",
         hair: "短发，戴小毡帽",
         clothing: "青布棉袄",
         accessories: "银项圈",
-        build: "十一二岁的少年",
+        build: "结实少年",
       },
       personality_traits: [
         { label: "机敏", evidence: "向一匹猹尽力的刺去", behavior: "遇事先动手再解释" },
@@ -150,6 +151,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
             {
               beat_id: 1,
               description: "月光下，闰土指着瓜地说起猹的狡猾。",
+              goal: "闰土想让城里的少爷见识乡下的世界。",
               is_key_event: false,
               dialogue: [],
               evidence_refs: [],
@@ -157,6 +159,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
             {
               beat_id: 2,
               description: "我学着他的样子握住钢叉，却不敢真刺。",
+              goal: "「我」既想学闰土的样子，又怕真刺到猹。",
               is_key_event: false,
               dialogue: [],
               evidence_refs: [],
@@ -187,6 +190,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 1,
           description: "深蓝的天空中挂着一轮金黄的圆月，下面是海边的沙地。",
+          goal: "闰土想在瓜地里露一手。",
           is_key_event: false,
           dialogue: [],
           evidence_refs: [
@@ -196,6 +200,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 2,
           description: "一个十一二岁的少年，项带银圈，手捏一柄钢叉，向一匹猹尽力的刺去。",
+          goal: "闰土要在生人面前显本事。",
           is_key_event: true,
           dialogue: [],
           evidence_refs: [
@@ -214,6 +219,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 3,
           description: "闰土说捕鸟须大雪下了才好，扫开一块雪，支起竹匾。",
+          goal: "闰土想教「我」一件城里学不到的本事。",
           is_key_event: false,
           dialogue: [],
           evidence_refs: [],
@@ -221,6 +227,7 @@ export const SCRIPT_PACKAGE: ScriptPackage = {
         {
           beat_id: 4,
           description: "我日日盼望新年，新年到，闰土也就到了。",
+          goal: "两个少年都盼着见面。",
           is_key_event: true,
           dialogue: [],
           evidence_refs: [
@@ -340,13 +347,6 @@ export const INTERACTION: ActiveInteraction = {
   hint: "选一项，或自己写下要说的话。",
   scene_options: [],
 };
-
-/** 续写目标：一条已达成、两条未达成，摆出追踪卡与结局卡的进度。 */
-export const STAGE3_GOALS: Stage3Goal[] = [
-  { goal_id: 1, description: "让闰土说出一件只有海边孩子才知道的趣事", achieved: true },
-  { goal_id: 2, description: "让「我」答应正月过后去海边找闰土", achieved: false },
-  { goal_id: 3, description: "在续写中体现两人身份差异带来的隔膜", achieved: false },
-];
 
 /** 一条在途命令：画廊用它摆出「正在推进」的顶栏。sentAt 不参与渲染（顶栏不显示秒数）。 */
 export const PENDING: PendingCommand = {

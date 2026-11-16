@@ -46,6 +46,9 @@ class _FakeWorld:
     def roster(self) -> list[dict[str, Any]]:
         return [{"name": "李白", "public_background": "诗人", "is_player_role": True}]
 
+    def chronicle(self) -> str:
+        return ""
+
 
 class _Memory:
     def __init__(self) -> None:
@@ -229,7 +232,10 @@ def test_identity_prompt_states_behavior_boundaries():
         )
     )
     prompt = identity.to_system_prompt()
-    assert "只能以这个角色的身份" in prompt
+    # system 是共享 base：身份/私有知识不在其中，保证所有角色逐字节一致。
+    assert "杜甫" not in prompt
+    assert "与李白同游" not in prompt
+    assert "你不是 AI 助手" in prompt
     assert "不写旁白" in prompt
     assert "不替玩家说话或行动" in prompt
     assert "不编造未发生的情节" in prompt

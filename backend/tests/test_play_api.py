@@ -248,6 +248,7 @@ def _play_to_terminal(client: TestClient, sid: str, account: dict, *, max_steps:
         assert resp.status_code == 200, resp.text
 
     observed: set[str] = set()
+    stage3_rounds = 0
     for _ in range(max_steps):
         status = client.get(f"/api/sessions/{sid}").json()
         stage = status["stage"]
@@ -265,7 +266,12 @@ def _play_to_terminal(client: TestClient, sid: str, account: dict, *, max_steps:
         elif stage == "stage2_complete":
             body = {"session_id": sid, "kind": "enter_stage3", "payload": {}}
         elif stage == "stage3_extending":
-            body = {"session_id": sid, "kind": "choose_option", "payload": {"option_id": "0"}}
+            # 自由探索没有显式终点：跑两轮后由客户端 exit_game 关闭本局。
+            stage3_rounds += 1
+            if stage3_rounds > 2:
+                body = {"session_id": sid, "kind": "exit_game", "payload": {}}
+            else:
+                body = {"session_id": sid, "kind": "choose_option", "payload": {"option_id": "0"}}
         else:
             raise AssertionError(f"未预期阶段 {stage}")
         _submit(body)

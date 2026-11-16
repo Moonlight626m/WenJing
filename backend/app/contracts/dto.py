@@ -65,6 +65,21 @@ class SessionStatusResponse(ContractModel):
     selected_role: str | None = None
 
 
+class CommandStatusResponse(ContractModel):
+    """GET /api/sessions/{id}/commands/{command_id}：异步命令落地状态。
+
+    roles 页轮询它来区分「还在跑」与「已经失败」——会话状态本身不暴露命令
+    台账，只轮询 stage/selected_role 会让失败一直等到前端超时。
+    `status` 为 None 表示命令未受理（command_id 不属于该会话或从未提交）。
+    `inflight` 表示本进程仍有该命令的后台 task：`received` 且非在途 =
+    上个进程留下的孤儿受理，调用方应换新 command_id 重试。
+    """
+
+    command_id: uuid.UUID
+    status: Literal["received", "succeeded", "failed"] | None = None
+    inflight: bool = False
+
+
 class TimelineEntry(ContractModel):
     """回溯页的一条进度：活动分支上**已发生**的事件投影。
 

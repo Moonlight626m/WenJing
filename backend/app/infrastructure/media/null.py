@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 
 from app.domain.game.asr import Transcript
@@ -23,10 +24,13 @@ from app.domain.game.tts import SynthesizedAudio, VoiceProfile
 
 
 class NullObjectStorage:
-    """不落盘的 `ObjectStoragePort`：put 为空操作，presign 返回空串。"""
+    """不落盘的 `ObjectStoragePort`：put 为空操作，get 返回空字节，presign 返回空串。"""
 
     async def put(self, *, object_key: str, data: bytes, content_type: str) -> None:
         return None
+
+    async def get(self, *, object_key: str) -> bytes:
+        return b""
 
     async def presign(self, *, object_key: str, ttl_seconds: int = 900) -> str:
         return ""
@@ -42,6 +46,7 @@ class NullImageGen:
         kind: AssetKind,
         width: int = 0,
         height: int = 0,
+        reference_images: Sequence[bytes] = (),
     ) -> GeneratedImage:
         return GeneratedImage(image_bytes=b"")
 

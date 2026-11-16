@@ -44,6 +44,9 @@ class WorldView(Protocol):
     def world_facts(self) -> list[dict[str, Any]]:
         """该角色可见的世界事实：公开事实全量 + 只说给它听的私密事实（M6）。"""
 
+    def chronicle(self) -> str:
+        """该角色目睹的编年史（限知视角；不含其他地点/私密事件）。"""
+
 
 class MemoryView(Protocol):
     """角色自身记忆的只读投影（`CharacterMemory` 结构上满足）。"""

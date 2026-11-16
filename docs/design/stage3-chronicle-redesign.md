@@ -13,19 +13,20 @@
    学生端与教师端暂时都挂在同一服务上，但每个实例是**单实例、单局**的。
 2. **记忆模块实例化**：用 `CharacterTemplate`（角色模板）+ `CharacterFactory`
    （角色工厂）创建 `CharacterInstance`，记忆绑定到**实例**而不是账号/session，
-   不再需要在 prompt 里做多租户隔离。存储走 `MemoryStore` 端口，默认可以用
-   本地 SQLite / 实例目录，Postgres 保留给服务端/测试；后续接账号系统再迁移。
+   不再需要在 prompt 里做多租户隔离。存储走 `MemoryStore` 端口，**默认用本地
+   文件系统（每个实例一个目录）**；SQLite 单文件作为低代码替代，Postgres 保留给
+   服务端/测试；后续接账号系统再迁移。
 3. **删除 `GameMasterAgent`**：旧剧本推进与 Stage3 续写目标一并移除；它不负责
    教学纠正，也不应干涉世界演进。
 4. **删除 Stage3 目标体系与轮次上限**：`stage3_goals_set` / `stage3_goal_achieved`、
    `goals.py::derive_goals`、`Verifier.judge_stage3_goals`、`stage3_rounds`、
    前端 GoalTracker 全部退出主链路。
-5. **Stage3 没有显式结束**：不设轮次上限、不设自动收束、不设结局事件。实例在
+5. **Stage3 没有叙事结局**：不设轮次上限、不设自动收束、不写 ending。实例在
    学生关闭设备/教师结束课堂时自然停止；`exit_game` 只作为客户端关闭动作，
-   不是叙事终点。
+   写生命周期转换但不产生叙事终点。
 6. **`Chronicler` 保留**：staff、零工具、不出场、不修改世界。每轮只写**本轮的
    增量段落**（`world_chronicle` 事件），不重写全文；`derive_chronicle` 负责拼接。
-7. **编年史对角色是限知视角**：`chronicle_for(viewer)` 只返回该角色**目睹/在场**
+7. **编年史对角色是限知视角**：`derive_chronicle(events, viewer=…)` 只返回该角色**目睹/在场**
    的增量；全量编年史只给 staff/教师。`knows` 仍是角色私有的秘密/个人经历，
    不进编年史、不给其他角色。
 8. **删除废字段**：`not_knows` 从角色 prompt/生成语义中移除；`Stage3Goal` /
@@ -46,7 +47,7 @@ prompt 里不能混入别人的状态。现在每学生一台设备跑一个实�
 - 记忆不需要跨用户隔离，只需要**实例内角色隔离**（谁在场、谁听过什么）；
 - 角色可以来自**静态模板**，记忆从模板种子 + 本局事件生长，不再依赖复杂的
   账号级记忆检索；
-- 存储可以从 Postgres 降级为本地 SQLite / 实例目录，降低部署门槛；服务端
+- 存储可以从 Postgres 降级为本地文件系统（实例目录），降低部署门槛；服务端
   Postgres 保留给测试、教师端聚合或后续账号系统。
 
 > 注意：这是对上一版「不用文件系统、只用 Postgres」的**有依据的反转**。上一版
@@ -91,10 +92,45 @@ class MemoryStore(Protocol):
     def private_knowledge(self, character: str) -> tuple[str, ...]: ...
 ```
 
-- 默认实现：本地 SQLite / 实例目录（单实例，无并发写入）。
+- 默认实现：本地文件系统（实例目录，见 §1.4）；SQLite 单文件作为低代码替代。
 - 服务端/测试实现：现有 Postgres 事件表；接口不变。
-- 事件仍然是权威；SQLite/文件只是实例内的持久化载体，不是第二份真相。
+- 事件仍然是权威；文件/SQLite 只是实例内的持久化载体，不是第二份真相。
 - 快照、回溯、编年史派生都建立在 `MemoryStore` 之上；换存储不换语义。
+
+### 1.4 文件系统布局与原子性
+
+可以，单实例部署下文件系统是合理默认。推荐布局：
+
+```text
+<instance_root>/<instance_id>/
+  meta.json              # 实例元数据：script_id / player_role / schema_version / created_at
+  events.jsonl           # append-only 事件日志，一行一个 GameEvent
+  snapshots/
+    seq-000001.json      # 状态快照（缓存，latest_event_id 对齐）
+  memory/
+    <character>.json     # 角色记忆缓存（派生，可重建）
+  assets/                # 本地媒体缓存（可选）
+  instance.lock          # 单写者锁
+```
+
+约束：
+
+- **单写者**：一个实例同一时间只允许一个进程写；启动时拿 `instance.lock`，
+  避免两个窗口/进程同时写。
+- **追加语义**：`events.jsonl` 用 `O_APPEND` 写入并 `fsync`；启动时丢弃最后一行
+  不完整 JSON。
+- **快照原子替换**：先写临时文件再 `os.replace`，避免半截快照。
+- **派生不落库**：编年史、角色记忆、资产索引都从事件派生；`memory/` 与
+  `snapshots/` 只是缓存，删掉可重建。
+- **崩溃恢复**：读 `meta.json` → 最新快照 → 重放快照之后的 `events.jsonl`；
+  损坏快照直接忽略。
+- **迁移**：所有读写走 `MemoryStore`，未来换 SQLite/Postgres 不动上层。
+- **教师端**：跨设备聚合通过服务端 API，不要让教师端直接读学生实例目录。
+- **平台**：机房若是 Windows，`os.replace` 仍原子；避免依赖 POSIX-only 文件锁，
+  锁用文件创建/独占打开实现。
+
+如果不想自己处理 JSONL 的追加/恢复，SQLite 单文件是更省事的等价选择：事务、
+WAL、崩溃恢复都是现成的，仍然满足「本地单文件、无服务端」。
 
 ---
 
@@ -158,7 +194,7 @@ class MemoryStore(Protocol):
 - **`derive_chronicle(events, viewer=None)`**：
   - `viewer=None`：全量拼接（staff/教师）；
   - `viewer=name`：只拼接 `present` 包含该角色的增量（限知视角）。
-- **角色只会拿到 `chronicle_for(viewer)`**；全局编年史不进角色 prompt。
+- **角色只会拿到 `derive_chronicle(events, viewer=…)`**；全局编年史不进角色 prompt。
 - 私密 `world_fact`（`visibility=private`）仍只进 audience 角色的工具视图，
   绝不进编年史。
 
@@ -211,7 +247,7 @@ class MemoryStore(Protocol):
 </private_knowledge>
 
 <chronicle>
-{chronicle_for(viewer)}
+{derive_chronicle(events, viewer=…)}
 </chronicle>
 
 <recent>
@@ -226,7 +262,7 @@ class MemoryStore(Protocol):
 
 - 删除 `STAGE_DIRECTIVES["stage2"]`；角色只在 Stage3 运行。
 - 删除 `<not_knows>`。
-- `chronicle_for(viewer)` 为空时整段省略。
+- `derive_chronicle(events, viewer=…)` 为空时整段省略。
 - `view_*` 工具保留作深挖，但不再是每次行动前的必调项；prompt 不再写
   「先查询再行动」。
 
@@ -304,8 +340,31 @@ class MemoryStore(Protocol):
 - 生成期 `design_exploration` 节点：产出 `ExplorationMap`（起点、地点、
   participants、visual_summary），写入 `ScriptPackage.exploration`；位置在
   `final_audit` 之后。**这是删除旧剧本路径的前置条件。**
-- `CharacterTemplate` / `CharacterFactory` / `CharacterInstance` 概念（domain）；
-- `MemoryStore` 端口 + 本地默认实现（SQLite/实例目录）。
+- `CharacterTemplate` / `CharacterFactory` 已落地；`CharacterInstance` 与
+  `MemoryStore` 端口/文件系统实现已落地（2026-11-11，见 §6.1）。
+- `MemoryStore` 端口（`domain/game/memory.py`）+ 文件系统默认实现
+  （`infrastructure/memory_store.py`）：
+  - 端口方法：`open` / `close` / `append_event` / `sync_events` /
+    `read_events` / `chronicle` / `private_knowledge` /
+    `save_private_knowledge`（全 async；限知过滤只在 `chronicle(viewer=…)`，
+    `read_events` 返回镜像全量，见 §3.2）。
+  - 实例目录 `<root>/<instance_id>/`：`meta.json`（剧本标题 + 创建时间 +
+    schema 版本）+ `events.jsonl` + `instance.lock` +
+    `memory/<character>.json`（派生缓存）；`snapshots/` 暂未启用。
+  - `events.jsonl`：`O_APPEND` + `fsync`，崩溃残行在下次打开时隔断；按
+    `(branch_id, event_id)` 增量去重镜像事件流（`GameRuntime._flush_events`），
+    去重键在**落盘成功后**才登记（写失败下一轮重试）；回溯放弃的旧分支行
+    保留可审计。
+  - `instance.lock`：`O_CREAT|O_EXCL` 单写者锁；持有进程已死时按 PID 探测
+    接管（`memory_store_stale_lock_reclaimed`）。PID 探测只在 POSIX 上做——
+    Windows 的 `os.kill(pid, 0)` 会终止进程，故非 POSIX 平台一律保守拒绝
+    接管；创建后、写 PID 前崩溃留下的空锁按年龄（60s）判残留回收。
+  - 配置：`WENJING_MEMORY_BACKEND=null|fs`、`WENJING_MEMORY_FS_ROOT`
+    （组合根装配，`fs` 时会话级句柄缓存复用同一实例目录锁；进程关闭时
+    `SessionApplication.aclose()` 统一释放锁与 fd）。
+  - 角色记忆缓存：命令收尾时 `CharacterInstance.persist_private_knowledge`
+    把有界窗口刷到 `memory/<character>.json`；失败只记日志。缓存缺失时读侧
+    返回空、由运行期下一条命令重写（完整离线重建见 §7）。
 
 ### 5.2 删除 / 停止写入
 
@@ -324,16 +383,19 @@ class MemoryStore(Protocol):
 ### 5.3 结束语义
 
 - Stage2：到达课文结局后，仍可选择「进入 Stage3」或结束本局。
-- Stage3：**没有显式结束事件**。不写 `ended`、不写 ending、不设轮次上限。
-  客户端关闭/教师结束课堂即停止；`exit_game` 只作为关闭动作，不产生叙事结局。
+- Stage3：**没有叙事结局**。不设轮次上限、不写 ending/结局文案、前端不弹结局卡。
+  客户端关闭/教师结束课堂即停止；`exit_game` 只作为关闭动作——写一条生命周期用的
+  `stage_transition {stage:"ended"}` 让会话可恢复、客户端可收束，但该转换不携带任何
+  结局字段。
 - `EndingCard` 只服务 Stage2 结局；Stage3 不再展示。
 
 ---
 
 ## 6. 落地顺序
 
-1. **实例化部署**：`MemoryStore` 端口 + 本地默认实现；`CharacterTemplate` /
-   `CharacterFactory` 收敛现有 `CharacterAgentManager` 的创建路径。
+1. **实例化部署**（✅ 2026-11-11）：`MemoryStore` 端口 + 文件系统默认实现；
+   `CharacterTemplate` / `CharacterFactory` 收敛现有 `CharacterAgentManager`
+   的创建路径（`CharacterInstance` 持 agent + 实例记忆句柄）。
 2. **生成期**：新增 `design_exploration` 节点与校验，让所有新剧本带
    `ExplorationMap`。
 3. **运行期退行路径**：确认新剧本不再走 `exploration=None` 分支后，删除旧剧本
@@ -352,7 +414,7 @@ class MemoryStore(Protocol):
    - 实例/工厂：模板实例化、实例间记忆隔离、MemoryStore 换实现不改语义。
    - 生成期：所有剧本包带 exploration；`design_exploration` reject 重跑。
    - 运行期：无 goals / 无轮次上限 / 无 Stage3 ending；编年史重放/回溯正确。
-   - 知识边界：`knows` 不进编年史；`chronicle_for(viewer)` 只含目睹增量；
+   - 知识边界：`knows` 不进编年史；`derive_chronicle(events, viewer=…)` 只含目睹增量；
      private fact 不进编年史。
    - Prompt：system 指纹、Chronicler 增量与降级、角色 prompt 不含 stage2/not_knows。
    - 确定性 LLM：`FakeLLMService` / `DeterministicAgentLLM` 增加 Chronicler 路由键。
@@ -361,8 +423,9 @@ class MemoryStore(Protocol):
 
 ## 7. 待拍板
 
-1. **本地存储选型**：SQLite 还是实例目录（JSONL + 快照文件）？建议 SQLite
-   作为默认，文件只放大资产；接口都用 `MemoryStore` 屏蔽。
+1. **文件系统细节**：`events.jsonl` 是否按大小轮转、快照频率、是否需要 SQLite
+   替代？建议默认 JSONL + 快照，接口用 `MemoryStore` 屏蔽，后续可换 SQLite。
+   （2026-11-11：JSONL 镜像 + 单写者锁已落地；轮转/`snapshots/`/SQLite 仍未做。）
 2. **教师端如何访问实例**：每个实例本地存储时，教师端是同一服务上的一个视图，
    还是通过服务端聚合？跨设备聚合不要让教师端直接读学生本地文件。
 3. **Stage2 → Stage3 的入口**：课文结局后是否仍允许「结束本局」；进入 Stage3
@@ -373,3 +436,8 @@ class MemoryStore(Protocol):
    主版本删除？
 6. **Educator 的教师端形态**：手动触发粒度（整局/某轮/某场景）、输出是否入库、
    接哪家教育 LLM。
+7. **镜像的回溯语义**（2026-11-11）：`events.jsonl` 保留回溯放弃的旧分支行
+   （可审计），但镜像未持久化分支血缘，`read_events()` / `chronicle()` 按
+   镜像全量派生，不会自动裁剪到活动分支。要离线正确复现活动编年史，需要在
+   镜像里记录分支血缘（或改为按活动路径索引）。角色记忆缓存同理：缺失时只能
+   由运行期重写，尚不能纯离线重建。

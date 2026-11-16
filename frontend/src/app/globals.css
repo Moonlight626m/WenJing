@@ -691,4 +691,11 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* 场景题签的落墨动画末帧是 opacity:0；压到 0.01ms 等于瞬间播完停在透明，
+     而它是舞台上唯一的场景名。这里直接不播，让题签静态可见。 */
+  .animate-slip-brush-v,
+  .animate-slip-brush-h {
+    animation: none !important;
+  }
 }

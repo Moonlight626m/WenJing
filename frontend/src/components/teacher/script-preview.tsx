@@ -105,7 +105,13 @@ function AppearanceLine({ appearance }: { appearance?: Appearance | null }) {
   );
 }
 
-function BeatItem({ beat }: { beat: Beat }) {
+function BeatItem({
+  beat,
+  audience,
+}: {
+  beat: Beat;
+  audience: "teacher" | "student";
+}) {
   return (
     <li>
       {beat.description}
@@ -114,19 +120,31 @@ function BeatItem({ beat }: { beat: Beat }) {
           关键
         </Tag>
       )}
+      {audience === "teacher" && beat.goal && (
+        // 戏剧目标只给教师看（角色 agent 的上下文），学生端不破坏沉浸
+        <span className="ml-2 text-2xs text-ink-faint">
+          目标：{beat.goal}
+        </span>
+      )}
     </li>
   );
 }
 
 /** 场景/分支节拍：默认简洁，完整节拍折叠在 details 里（教师审阅仍可展开）。 */
-function BeatList({ beats }: { beats: Beat[] }) {
+function BeatList({
+  beats,
+  audience,
+}: {
+  beats: Beat[];
+  audience: "teacher" | "student";
+}) {
   const head = beats.slice(0, BEAT_PREVIEW);
   const rest = beats.slice(BEAT_PREVIEW);
   return (
     <>
       <ol className="measure mt-3 flex flex-col gap-1.5 text-sm leading-relaxed text-ink-soft">
         {head.map((beat) => (
-          <BeatItem key={beat.beat_id} beat={beat} />
+          <BeatItem key={beat.beat_id} beat={beat} audience={audience} />
         ))}
       </ol>
       {rest.length > 0 && (
@@ -136,7 +154,7 @@ function BeatList({ beats }: { beats: Beat[] }) {
           </summary>
           <ol className="measure mt-1.5 flex flex-col gap-1.5 text-sm leading-relaxed text-ink-soft">
             {rest.map((beat) => (
-              <BeatItem key={beat.beat_id} beat={beat} />
+              <BeatItem key={beat.beat_id} beat={beat} audience={audience} />
             ))}
           </ol>
         </details>
@@ -274,7 +292,7 @@ export function ScriptPreview({
                 {scene.background_credit && (
                   <CreditSlot label="画面" credit={scene.background_credit} audience={audience} />
                 )}
-                <BeatList beats={scene.beats} />
+                <BeatList beats={scene.beats} audience={audience} />
                 {scene.branches && scene.branches.length > 0 && (
                   <ul className="mt-3 flex flex-col gap-2 border-l-2 border-rule pl-3">
                     {scene.branches.map((branch) => (
@@ -310,7 +328,7 @@ export function ScriptPreview({
                             )}
                           </div>
                         </div>
-                        <BeatList beats={branch.beats} />
+                        <BeatList beats={branch.beats} audience={audience} />
                         {branch.background_credit && (
                           <CreditSlot
                             label={`分支「${branch.title}」`}

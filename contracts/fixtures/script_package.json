@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.4.0",
+  "schema_version": "3.5.0",
   "title": "背影",
   "characters": [
     {
@@ -49,14 +49,14 @@
         "reason": "戏份贯穿全剧，动机清晰可共情"
       },
       "avatar_asset": {
-        "schema_version": "3.4.0",
+        "schema_version": "3.5.0",
         "asset_id": "11111111-1111-4111-8111-111111111111",
         "kind": "avatar",
         "status": "ready"
       },
       "fullbody_asset": null,
       "avatar_credit": {
-        "schema_version": "3.4.0",
+        "schema_version": "3.5.0",
         "author": "某画师",
         "license": "CC0",
         "source_url": "https://example.org/avatar/1111",
@@ -111,6 +111,7 @@
         {
           "beat_id": 1,
           "description": "父亲坚持亲自送行，与脚夫讲价钱、叮嘱路上小心",
+          "goal": "父亲想尽到做父亲的心意，儿子却觉得多余。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -123,7 +124,7 @@
           ],
           "dialogue": [
             {
-              "schema_version": "3.4.0",
+              "schema_version": "3.5.0",
               "speaker": "父亲",
               "text": "我买几个橘子去。你就在此地，不要走动。",
               "stage_direction": "把橘子堆在儿子的皮大衣上"
@@ -133,6 +134,7 @@
         {
           "beat_id": 2,
           "description": "父亲穿过铁道爬上月台为儿子买橘子",
+          "goal": "父亲用行动照顾儿子，不肯让儿子代劳。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -147,6 +149,7 @@
         {
           "beat_id": 3,
           "description": "父子分别，背影混入来来往往的人群",
+          "goal": "离别在即，父子都不擅长表达不舍。",
           "is_key_event": true,
           "evidence_refs": [
             {
@@ -169,7 +172,9 @@
       "interaction_point": {
         "player_role_hint": "儿子",
         "what_player_can_do": "在父亲临行叮嘱时回应、追上去或沉默看着",
-        "must_not_change": [2]
+        "must_not_change": [
+          2
+        ]
       },
       "branches": [
         {
@@ -184,12 +189,14 @@
             {
               "beat_id": 1,
               "description": "儿子等不及，也向铁道边跑去，看见父亲攀爬月台的吃力",
+              "goal": "儿子被父亲的笨拙触动，第一次真正看见父亲的吃力。",
               "is_key_event": false,
               "evidence_refs": []
             },
             {
               "beat_id": 2,
               "description": "父亲回头示意不要跟来，儿子站住，第一次看清父亲的背影",
+              "goal": "父亲不愿儿子看到自己的狼狈，儿子却记住了这个背影。",
               "is_key_event": false,
               "evidence_refs": []
             }
@@ -203,13 +210,13 @@
           },
           "dialogue": [
             {
-              "schema_version": "3.4.0",
+              "schema_version": "3.5.0",
               "speaker": "儿子",
               "text": "爸爸，我来帮你。",
               "stage_direction": "快步奔向铁道边"
             },
             {
-              "schema_version": "3.4.0",
+              "schema_version": "3.5.0",
               "speaker": null,
               "text": "父亲回过头，摆了摆手，示意他站着别动。",
               "stage_direction": ""
@@ -221,7 +228,7 @@
         }
       ],
       "background_asset": {
-        "schema_version": "3.4.0",
+        "schema_version": "3.5.0",
         "asset_id": "22222222-2222-4222-8222-222222222222",
         "kind": "background",
         "status": "pending"
@@ -229,7 +236,7 @@
       "background_credit": null,
       "options": [
         {
-          "schema_version": "3.4.0",
+          "schema_version": "3.5.0",
           "option_id": "opt-1",
           "label": "追上月台，替父亲擦汗",
           "kind": "canonical",
@@ -238,7 +245,7 @@
           "ending_id": null
         },
         {
-          "schema_version": "3.4.0",
+          "schema_version": "3.5.0",
           "option_id": "opt-2",
           "label": "原地等候父亲回来",
           "kind": "canonical",
@@ -261,14 +268,14 @@
   "stage2_ending_beat_id": 3,
   "endings": [
     {
-      "schema_version": "3.4.0",
+      "schema_version": "3.5.0",
       "ending_id": "e1",
       "title": "背影远去",
       "description": "父子在浦口车站分别，父亲的背影混入人群。",
       "kind": "canonical"
     },
     {
-      "schema_version": "3.4.0",
+      "schema_version": "3.5.0",
       "ending_id": "e2",
       "title": "错过的追赶",
       "description": "儿子没能追上父亲，只留下月台上的怅惘。",
@@ -279,7 +286,7 @@
     "start_location_key": "station",
     "locations": [
       {
-        "schema_version": "3.4.0",
+        "schema_version": "3.5.0",
         "title": "浦口车站月台",
         "participants": [
           "父亲",
@@ -293,7 +300,7 @@
         ]
       },
       {
-        "schema_version": "3.4.0",
+        "schema_version": "3.5.0",
         "title": "月台尽头",
         "participants": [
           "儿子"

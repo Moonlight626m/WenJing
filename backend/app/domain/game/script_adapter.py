@@ -8,8 +8,16 @@
 
 from __future__ import annotations
 
+from app.contracts.script import Beat as ContractBeat
 from app.contracts.script import CharacterProfile, ScriptPackage
+from app.domain.game.beat_text import split_goal_note
 from app.domain.game.types import Beat, CharacterSetting, Scene, Script
+
+
+def _engine_beat(beat: ContractBeat) -> Beat:
+    """契约 beat → 引擎 beat；存量包里的「目标：…」注记在此拆成 goal。"""
+    description, goal = split_goal_note(beat.description, beat.goal)
+    return Beat(beat_id=beat.beat_id, description=description, goal=goal)
 
 
 def _speech_style_text(c: CharacterProfile) -> str:
@@ -51,7 +59,7 @@ def script_package_to_script(pkg: ScriptPackage) -> Script:
             scene_id=s.scene_id,
             title=s.title,
             participants=list(s.participants),
-            beats=[Beat(beat_id=b.beat_id, description=b.description) for b in s.beats],
+            beats=[_engine_beat(b) for b in s.beats],
             # 背景稳定引用随包进引擎（#53）：export_state 据游标解析 current_asset
             background_asset=s.background_asset,
         )

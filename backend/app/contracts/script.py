@@ -82,8 +82,13 @@ class Appearance(VersionedContract):
 
     未交代处如实填「原文未交代」，由媒体层渲染为时代中性词——
     严禁编造原文外的辨识性细节（具体五官、时代错位服饰）。
+
+    `gender` / `age` 是**硬锚点**（2026-11 增补）：性别与年龄段决定生图模型的
+    人物先验，只靠 face/clothing 推断会出「男画成女、中年画成青年」的事故。
     """
 
+    gender: str = ""
+    age: str = ""
     face: str = ""
     hair: str = ""
     clothing: str = ""
@@ -144,10 +149,16 @@ class SceneOption(VersionedContract):
 
 
 class Beat(VersionedContract):
-    """单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。"""
+    """单场景内的情节点；关键 beat 带 evidence_refs（原文证据）。
+
+    `description` 是**玩家可见**的场面/事件叙述（播放时原样作为旁白）；
+    `goal` 是给运行时 agent 的戏剧目标（谁想要什么、障碍是什么），不直接播给
+    玩家——两者混在一起会把作者备注漏进对白流（v3 提示词的历史问题）。
+    """
 
     beat_id: int
     description: str
+    goal: str = ""
     is_key_event: bool = False
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     # 生成期预写台词（珊瑚图纯 IO 播放的数据源）：空 = 走运行期 agent 旧路径。
@@ -192,7 +203,8 @@ class InteractionPoint(ContractModel):
 class VisualNotes(VersionedContract):
     """场景视觉锚点（文生图槽位）：只写原文可推断的环境信息。
 
-    未交代处写「原文未交代」或留空；动作留在 beats，此处不含人物行为。
+    未交代处**留空**（不要写「原文未交代」：这串字会原样进配图提示词）；
+    动作留在 beats，此处不含人物行为。
     """
 
     era: str = ""

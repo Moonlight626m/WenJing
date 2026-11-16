@@ -15,7 +15,6 @@ from app.domain.agents.world_builder import (
     KIND_PULL_IN_CHARACTER,
     InterventionIntent,
 )
-from app.domain.game.engine_config import EngineConfig
 from app.domain.game.event import (
     EVENT_CHARACTER_CREATED,
     EVENT_EXPLORATION_SETTLE,
@@ -31,7 +30,6 @@ from app.domain.game.game_runtime import GameRuntime
 
 def _make_runtime(
     *, world_builder_output: str = '{"kind":"reject","reason":"测试环境不做干涉"}',
-    rounds: int = 10,
 ) -> GameRuntime:
     return GameRuntime(
         session_id="intervene-session",
@@ -39,7 +37,6 @@ def _make_runtime(
         llm=FakeLLMService(world_builder_output=world_builder_output),
         event_store=EventStore(),
         exploration_map=_map(),
-        config=EngineConfig(stage3_rounds=rounds),
     )
 
 

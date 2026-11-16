@@ -107,6 +107,17 @@ export function BookIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+/** 对话气泡：左下角「行动面板」的入口（选项与自由输入都在这块里）。 */
+export function DialogueIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M20 5H4v10h3v4l4-4h9Z" />
+      <path d="M7.5 9h9" />
+      <path d="M7.5 12h5.5" />
+    </Icon>
+  );
+}
+
 export function CheckIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Icon {...props}>

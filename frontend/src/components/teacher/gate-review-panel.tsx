@@ -78,8 +78,10 @@ export function GateReviewPanel({
   busy: string | null;
   onResume: (payload: GateResumePayload) => void;
 }) {
-  // 旧行没有审阅载荷：退化为纯指导文本（素材闸门）
-  const gate = review?.gate ?? "materials";
+  // 审阅载荷可能晚于 SSE 暂停帧到达：未就绪时**不猜测**闸门位置。
+  // 旧实现默认成 materials，pre_write/final 会被渲染成素材空面板（看起来像
+  // 「等待审阅的交互没出来」）。
+  const gate = review?.gate ?? null;
   const [lastReview, setLastReview] = useState<GateReview | null>(review);
   const [directives, setDirectives] = useState("");
   const [materialsOpen, setMaterialsOpen] = useState(false);
@@ -146,8 +148,12 @@ export function GateReviewPanel({
     }
     if (gate === "pre_write") {
       const division = review?.division;
+      // 必须整份回传：草稿只重建教师可编辑的两列（标题/参与者），其余字段
+      // （endings 等）原样带上。曾只回传 scenes，导致结局表被清空、下游总审
+      // 以「graph script requires endings」反复打回直到预算耗尽。
       const divisionDraft = division
         ? {
+            ...division,
             scenes: division.scenes.map((scene, i) => ({
               ...scene,
               title: sceneTitles[i]?.trim() || scene.title,
@@ -177,6 +183,20 @@ export function GateReviewPanel({
   }
 
   const isFinal = gate === "final";
+
+  if (gate === null) {
+    return (
+      <section className="flex flex-col gap-4 rounded-lg border border-warn/50 bg-warn-wash/50 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Tag tone="warn">闸门暂停</Tag>
+          <h2 className="text-lg text-ink">等待教师审阅</h2>
+        </div>
+        <p className="measure text-xs text-ink-soft">
+          正在加载审阅内容…若长时间未出现，请刷新页面。
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-warn/50 bg-warn-wash/50 p-4">

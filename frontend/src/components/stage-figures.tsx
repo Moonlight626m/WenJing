@@ -3,14 +3,16 @@
 import { AnimatePresence, m } from "motion/react";
 
 import { useAssetUrl } from "@/lib/asset-url";
+import { useSpeakingSpeakers } from "@/lib/audio-session";
+import { useCastRoster } from "@/lib/cast-roster";
 import type { CharacterProfile } from "@/lib/contracts/types";
-import type { StageCast } from "@/lib/stage-cast";
+import { useGameStore } from "@/stores/gameStore";
 
 const EASE = [0.2, 0.7, 0.2, 1] as const;
 
 /**
- * 一位角色的立绘。素材按「全身立绘 → 头像 → 竖排名牌」逐级降级：
- * 剧本没配图、配图生成中或取图失败，都还有一块写着名字的立牌站在台上。
+ * 一位角色的立绘。剧本目前只生成头像、没有全身立绘，所以没有立绘的角色**不上台**：
+ * 只剩一块浮在画上的名牌，比台上没有人更乱。头像圆框同样不放进场景。
  */
 function Figure({
   name,
@@ -28,8 +30,9 @@ function Figure({
   speaking: boolean;
 }) {
   const { url: fullbodyUrl } = useAssetUrl(profile?.fullbody_asset);
-  const { url: avatarUrl } = useAssetUrl(fullbodyUrl ? null : profile?.avatar_asset);
   const lit = active || !someoneActive;
+  // 没有全身立绘就不上台：只剩一块浮在画上的名牌，比没有人还乱
+  if (!fullbodyUrl) return null;
 
   // 你演的角色用朱砂，其他人用泥金；说话的人脚下再亮一圈青碧地光
   const tone = isPlayer
@@ -57,41 +60,20 @@ function Figure({
         }`}
       />
 
-      {fullbodyUrl ? (
-        // 预签名 URL 短时效、含凭证参数，仅当前视图使用
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={fullbodyUrl}
-          alt=""
-          className="relative max-h-full w-auto max-w-full object-contain drop-shadow-[0_14px_30px_rgba(0,0,0,0.65)]"
-        />
-      ) : avatarUrl ? (
-        <span
-          className={`relative mb-[12%] block aspect-square w-[min(11rem,80%)] overflow-hidden rounded-full border-2 ${tone.border} shadow-[0_18px_40px_-12px_rgba(0,0,0,0.7)]`}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={avatarUrl} alt="" className="h-full w-full object-cover" />
-        </span>
-      ) : (
-        <span
-          className={`relative mb-[10%] grid h-[min(17rem,72%)] w-[clamp(4.25rem,8vw,6.25rem)] place-items-center rounded-2xl border bg-glass backdrop-blur-md ${tone.border} shadow-[0_18px_40px_-14px_rgba(0,0,0,0.7)]`}
-        >
-          <span
-            className={`title-slip font-serif text-[clamp(1.5rem,2.6vw,2.25rem)] tracking-[0.35em] ${tone.text} [text-shadow:0_0_18px_currentColor]`}
-          >
-            {name}
-          </span>
-        </span>
-      )}
+      {/* 预签名 URL 短时效、含凭证参数，仅当前视图使用 */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={fullbodyUrl}
+        alt=""
+        className="relative max-h-full w-auto max-w-full object-contain drop-shadow-[0_14px_30px_rgba(0,0,0,0.65)]"
+      />
 
-      {/* 名牌：有图时名字不在图上，补一块；立牌本身就写着名字，不重复 */}
-      {(fullbodyUrl || avatarUrl) && (
-        <span
-          className={`relative -mt-6 mb-[6%] rounded-full border bg-glass px-3 py-0.5 font-serif text-sm backdrop-blur-md ${tone.border} ${tone.text}`}
-        >
-          {name}
-        </span>
-      )}
+      {/* 名牌压在立绘脚边：有图时名字不在图上，补一块 */}
+      <span
+        className={`relative -mt-6 mb-[6%] rounded-full border bg-glass px-3 py-0.5 font-serif text-sm backdrop-blur-md ${tone.border} ${tone.text}`}
+      >
+        {name}
+      </span>
 
       {/* 地光与声纹：说话的人脚下亮一圈；配音在放时再向外扩两圈 */}
       <span
@@ -116,19 +98,15 @@ function Figure({
  * 旁白时大家一起亮着。跟着指针视差朝同方向轻挪，和背景拉开前后景。
  *
  * 纯装饰（aria-hidden）：谁在说什么由字幕与剧情回顾承担。窄屏不显示，给字幕让地方。
+ *
+ * 自己从 store 取「台上有谁、谁在配音」——不经过游戏页转手，流式台词每来一段
+ * 只重渲这一层，不牵动顶栏与侧栏。
  */
-export function StageFigures({
-  cast,
-  characters,
-  playerRole,
-  speaking,
-}: {
-  cast: StageCast;
-  characters: CharacterProfile[];
-  playerRole: string | null;
-  speaking: readonly string[];
-}) {
-  const byName = new Map(characters.map((c) => [c.name, c]));
+export function StageFigures() {
+  const { cast, listed } = useCastRoster();
+  const speaking = useSpeakingSpeakers();
+  const byName = new Map(listed.map((c) => [c.name, c]));
+  const playerRole = useGameStore((s) => s.playerRole);
 
   return (
     <div

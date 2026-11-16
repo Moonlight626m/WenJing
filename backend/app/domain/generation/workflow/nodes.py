@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from langgraph.types import Send, interrupt
@@ -34,6 +34,8 @@ from app.contracts.script import (
     AssetRef,
     BranchScene,
     CharacterProfile,
+    ExplorationLocation,
+    ExplorationMap,
     Scene,
     ScriptPackage,
 )
@@ -75,8 +77,8 @@ from app.infrastructure.errx import codes, exc_reason, new
 
 logger = logging.getLogger("wenjing.generation.workflow")
 
-MAX_DOUBTER_ROUNDS = 2   # doubter 打回上限（沿用 stage1 MAX_RETRIES 心智）
-MAX_WRITE_RETRIES = 2    # final_audit 打回剧本书写的上限
+# doubter / final_audit 打回不设业务轮次上限：打回意见随回边带回上游无限重做，
+# 直到 doubter 放行或教师终审结束。防死循环靠 runner 的图递归上限兜底。
 MAX_MAIN_CHARACTERS = 4  # 复现层主要人物数（骨架上限；#32 深化筛选）
 
 # 节点内子进度回调：(workflow 节点键, detail 文本)；由 runner 注入，转发给进度 sink
@@ -90,7 +92,7 @@ FINAL_GATE_NODE = "final_gate"
 
 
 def _format_issue(issue: DoubterIssue) -> str:
-    """DoubterIssue → 教师可见的一行文本（进度/闸门投影用）。"""
+    """DoubterIssue → 一行文本（LLM 回喂与失败原因用；教师端走结构化渲染）。"""
     parts = [f"[{issue.severity}] {issue.category} @{issue.field}"]
     if issue.quote:
         parts.append(f"「{issue.quote}」")
@@ -101,6 +103,24 @@ def _format_issue(issue: DoubterIssue) -> str:
     return "".join(parts)
 
 
+def _issue_field(issue: DoubterIssue | str) -> str:
+    """打回问题指向的字段路径（结构校验的纯字符串问题没有字段）。"""
+    if isinstance(issue, str):
+        return ""
+    return getattr(issue, "field", "") or ""
+
+
+def _needs_character_redesign(issues: list[DoubterIssue | str]) -> bool:
+    """打回是否归因于人物设定。
+
+    `final_audit` 的打回原来一律回 `write_script` 重写，但人物设定是
+    `design_characters` 的产物、write_script 不会重写它——`characters[*]` 上的
+    must_fix 会在每一轮原样复现（真实事故：父亲的 `public_background`
+    写反了「谁到徐州奔丧」，两轮打回都在同一字段）。
+    """
+    return any(_issue_field(issue).startswith("characters") for issue in issues)
+
+
 def _feedback_text(issues: list[DoubterIssue]) -> str:
     """结构化问题清单 → 打回意见文本（must-fix 置顶，逐条可执行）。"""
     ordered = sorted(
@@ -108,6 +128,26 @@ def _feedback_text(issues: list[DoubterIssue]) -> str:
     )
     lines = [f"- {_format_issue(i)}" for i in ordered]
     return "以下问题必须逐条修正：\n" + "\n".join(lines)
+
+
+def _overlay_profiles(
+    package: ScriptPackage, merged: list[CharacterProfile]
+) -> ScriptPackage:
+    """把人物设定节点的结构化档案覆盖回剧本包。
+
+    `write_script` 的 LLM 输出里也有 characters，但它只是按上下文重抄一遍：
+    appearance / speech_style / knowledge_boundary 这类结构化字段经常被抄丢
+    （真实事故：重新生成的包里所有角色 appearance=None，画师拿不到外貌锚点，
+    「我」的皮大衣被画成父亲的棉袍）。设定以 `design_characters` 的产物为准，
+    按名覆盖；写作阶段多出来的人物保留在末尾。
+    """
+    if not merged:
+        return package
+    by_name = {profile.name: profile for profile in merged}
+    written = {c.name for c in package.characters}
+    characters = [by_name.get(c.name, c) for c in package.characters]
+    characters.extend(p for p in merged if p.name not in written)
+    return package.model_copy(update={"characters": characters})
 
 
 def _backfill_scenes(
@@ -168,11 +208,11 @@ def _branch_prompt(
     *,
     audit_feedback: str | None = None,
 ) -> str:
-    """分支补写 prompt（write_script v3 第二遍调用）：单分支规格 → BranchScene。
+    """分支补写 prompt（write_script 第二遍调用）：单分支规格 → BranchScene。
 
     `audit_feedback`：doubter 总审打回意见（重写轮才携带）。主干的每轮重写
     都带意见，分支第二遍同样必须带上——否则打回只改主干、分支按原姿势
-    重编，doubter 反复拒绝同一处直到预算耗尽（真实跑《背影》验证过）。
+    重编，doubter 会反复拒绝同一处、打回不收敛（真实跑《背影》验证过）。
     """
     b = bundle if bundle is not None else default_bundle(
         SCRIPT_GEN_STAGE, write_script.NODE, write_script.VERSION, write_script.DEFAULTS
@@ -393,6 +433,73 @@ def _parse_verdict(raw: str) -> DoubterVerdict:
     return verdict
 
 
+_VISUAL_NOISE = "原文未交代"
+
+
+def _visual_note(value: str) -> str:
+    """visual_notes 单个字段 → 可用于配图提示词的文本。
+
+    "原文未交代" 是生成期写的占位说明，原样进提示词只会让画师困惑；留空的字段
+    同理。两者都按「没有这条信息」处理。
+    """
+    text = value.strip().strip("。；;")
+    if not text or _VISUAL_NOISE in text:
+        return ""
+    return text
+
+
+def derive_exploration_map(package: ScriptPackage) -> ExplorationMap:
+    """主场景 → 平铺地点表（确定性、可重跑）。
+
+    - `location_key = scene_{scene_id}`，稳定且与 `loc:` 场景键同一拼法；
+    - 地点标题/在场直接取场景（场景已按单一时空划分，见 divide_events v5）；
+    - 视觉摘要取 `visual_notes` 的非空片段并**带字段标签**（时代与服饰/地点/
+      时间/天气/氛围）：`era` 里的服饰与标志性物件是画师定年代与人物外观的依据，
+      以前漏掉 era，配图就成了现代人；
+    - 起点 = 第一个场景；`ending_brief` 用教学重点收束。
+    """
+    locations: list[ExplorationLocation] = []
+    seen: set[str] = set()
+    known_names = {c.name for c in package.characters}
+    for scene in package.scenes:
+        key = f"scene_{scene.scene_id}"
+        if key in seen:
+            continue
+        seen.add(key)
+        notes = scene.visual_notes
+        visual = ""
+        if notes is not None:
+            labeled = (
+                ("时代与服饰", notes.era),
+                ("地点", notes.location),
+                ("时间", notes.time_of_day),
+                ("天气", notes.weather),
+                ("氛围", notes.mood),
+            )
+            parts: list[str] = []
+            for label, raw in labeled:
+                value = _visual_note(raw)
+                if value:
+                    parts.append(f"{label}：{value}")
+            visual = "；".join(parts)
+        locations.append(
+            ExplorationLocation(
+                location_key=key,
+                title=scene.title,
+                # 只保留剧本里真实存在的角色，避免地点名册出现幽灵人物
+                participants=[n for n in scene.participants if n in known_names],
+                visual_summary=visual or f"{scene.title}的场景",
+            )
+        )
+    if not locations:
+        raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "no scenes for exploration"})
+    return ExplorationMap(
+        start_location_key=locations[0].location_key,
+        locations=locations,
+        ending_brief="；".join(package.teaching_focus[:3]),
+    )
+
+
 class WorkflowNodes:
     """节点集合：以 LLM 服务为依赖闭包，供 build_workflow 装配。"""
 
@@ -568,7 +675,9 @@ class WorkflowNodes:
         round_no = state.get("doubter_round", 0) + 1
         return {
             "doubter_verdict": verdict.verdict,
-            "doubter_issues": [_format_issue(i) for i in verdict.issues],
+            # 结构化问题直接入 state：教师端按 severity/category/field 分块渲染，
+            # LLM 回喂时才经 _feedback_text → _format_issue 拍平。
+            "doubter_issues": list(verdict.issues),
             "doubter_round": round_no,
             "doubter_feedback": (
                 _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
@@ -579,9 +688,8 @@ class WorkflowNodes:
         verdict = state.get("doubter_verdict", "pass")
         if verdict == "pass":
             return MATERIALS_GATE_NODE if self.gate_enabled else "divide_events"
-        if state.get("doubter_round", 0) <= MAX_DOUBTER_ROUNDS:
-            return "collect_materials"
-        return "fail"
+        # 打回不设轮次上限：带意见回 collect_materials 重做，直到考证通过
+        return "collect_materials"
 
     # ===== 教师闸门（#34：素材 / 人物+场景 / 终审三道闸）=====
 
@@ -658,6 +766,11 @@ class WorkflowNodes:
 
         展示事件划分草稿（场景名/参与人物/节拍）与人物设定；教师可编辑
         场景名、人物形象等，编辑稿直接覆盖对应通道传给剧本书写。
+
+        例外：编辑稿的 `endings` 为空而原稿有结局时保留原稿。教师端只有
+        场景名/参与人物的编辑控件，空结局表只可能是客户端回传时丢了字段
+        （丢了会让下游包「有 options 无 endings」，总审被 validate_replay
+        反复打回）。将来开放结局编辑后，需要能区分「未提供」与「清空」。
         """
         division = state.get("division")
         profiles = state.get("merged_profiles") or []
@@ -675,10 +788,21 @@ class WorkflowNodes:
         )
         out: dict[str, Any] = {"directives": self._merge_directives(state, directives)}
         if edits.division is not None:
-            out["division"] = edits.division
+            edited = edits.division
+            # 教师端只编辑场景名/参与者，没有编辑结局的入口：endings 为空而原稿
+            # 有结局，只可能是客户端回传时丢了字段。原样保留，否则 write_script
+            # 之后的包缺结局表，总审会被 validate_replay 无限打回、永远过不了。
+            if not edited.endings and division is not None and division.endings:
+                edited = edited.model_copy(update={"endings": list(division.endings)})
+                logger.warning(
+                    "[script-gen][pre_write_gate] division edit dropped endings; "
+                    "kept originals (%d)",
+                    len(division.endings),
+                )
+            out["division"] = edited
             logger.info(
                 "[script-gen][pre_write_gate] division edited by teacher (scenes=%d)",
-                len(edits.division.scenes),
+                len(edited.scenes),
             )
         if edits.profiles is not None:
             out["merged_profiles"] = edits.profiles
@@ -791,14 +915,13 @@ class WorkflowNodes:
                     + edits.package.model_dump_json()
                 )
             out["audit_feedback"] = "；".join(feedback_parts) or "教师打回，请根据指导重写"
-            # 计入书写轮次（与 doubter 打回同一上限心智）；DoubterEvent 轮次
-            # 投影侧有 min 收口，防超出契约上限。
+            # 计入书写轮次（与 doubter 打回共用 write_retries 计数）
             out["write_retries"] = int(state.get("write_retries", 0)) + 1
         return out
 
     def route_after_final_gate(self, state: WorkflowState) -> str:
-        # 终审打回是教师主动行为，不受 doubter 的 MAX_WRITE_RETRIES 上限
-        # 约束（教学判断优先，#34）；教师可反复打回直到满意。
+        # 终审打回是教师主动行为（教学判断优先，#34）；与 doubter 打回回路
+        # 一样不设轮次上限，教师可反复打回直到满意。
         return "write_script" if state.get("gate_action") == "reject" else "END"
 
     # ===== 场景/角色配图（#48）=====
@@ -824,7 +947,7 @@ class WorkflowNodes:
         if designer is None:
             logger.info("[script-gen][design_assets] no designer wired, skip")
             return {"asset_summary": {"skipped": "no_designer"}}
-        if package is None:  # 防御：打回回路丢失产物时由 fail 节点语义兜底
+        if package is None:  # 防御：打回回路丢失产物时直接失败
             raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
         org_raw = state.get("org_id") or ""
         user_raw = state.get("user_id") or ""
@@ -859,62 +982,9 @@ class WorkflowNodes:
             len(s.branches) for s in package.scenes
         )
         done = 0
-        for scene in package.scenes:
-            done += 1
-            await self._report(
-                "design_assets", f"配图 {done}/{total}：场景「{scene.title}」"
-            )
-            picked = await self._design_one(
-                designer,
-                subject_key=f"scene:{scene.scene_id}",
-                scene_key=f"script:{script_id}:scene:{scene.scene_id}",
-                description=scene_visual_description(scene),
-                kind=generation_kind,
-                org_id=org_id,
-                script_id=script_id,
-                user_id=user_id,
-                label=f"场景「{scene.title}」",
-                prompt_context=_scene_prompt_context(
-                    scene,
-                    scene.participants,
-                    profiles_by_name,
-                    era_hint=_era_hint(state),
-                    kind=generation_kind,
-                ),
-            )
-            if picked is not None:
-                # 降级：失败主体不进剧本包，该场景以纯文本游玩
-                ref, credit = picked
-                updated_scenes[scene.scene_id] = ref
-                scene_credits[scene.scene_id] = credit
-            for branch in scene.branches:
-                done += 1
-                await self._report(
-                    "design_assets", f"配图 {done}/{total}：分支「{branch.title}」"
-                )
-                picked = await self._design_one(
-                    designer,
-                    subject_key=f"scene:{scene.scene_id}::branch:{branch.branch_id}",
-                    scene_key=f"script:{script_id}:scene:{scene.scene_id}"
-                    f"::branch:{branch.branch_id}",
-                    description=scene_visual_description(branch),
-                    kind=generation_kind,
-                    org_id=org_id,
-                    script_id=script_id,
-                    user_id=user_id,
-                    label=f"分支「{branch.title}」",
-                    prompt_context=_scene_prompt_context(
-                        branch,
-                        branch.participants or scene.participants,
-                        profiles_by_name,
-                        era_hint=_era_hint(state),
-                        kind=generation_kind,
-                    ),
-                )
-                if picked is not None:
-                    ref, credit = picked
-                    updated_branches[(scene.scene_id, branch.branch_id)] = ref
-                    branch_credits[(scene.scene_id, branch.branch_id)] = credit
+        # 人物头像先生成（2026-11 角色一致性）：头像字节作为后续所有场面图/
+        # 分支图的参考图（Ark `image`），保证同一角色跨图「同一张脸」。
+        refs_by_name: dict[str, bytes] = {}
         for profile in package.characters:
             done += 1
             await self._report("design_assets", f"配图 {done}/{total}：人物「{profile.name}」")
@@ -938,6 +1008,75 @@ class WorkflowNodes:
                 ref, credit = picked
                 updated_profiles[profile.name] = ref
                 profile_credits[profile.name] = credit
+                # 参考图能力是可选的：测试假件只实现 design_scene 时跳过
+                # （退化为纯文生图），真实 SceneDesigner 恒有 asset_bytes。
+                fetch_bytes = getattr(designer, "asset_bytes", None)
+                data = await fetch_bytes(ref.asset_id) if fetch_bytes else None
+                if data:
+                    refs_by_name[profile.name] = data
+
+        def _refs_for(names: list[str]) -> list[bytes]:
+            return [refs_by_name[n] for n in names if n in refs_by_name]
+
+        for scene in package.scenes:
+            done += 1
+            await self._report(
+                "design_assets", f"配图 {done}/{total}：场景「{scene.title}」"
+            )
+            picked = await self._design_one(
+                designer,
+                subject_key=f"scene:{scene.scene_id}",
+                scene_key=f"script:{script_id}:scene:{scene.scene_id}",
+                description=scene_visual_description(scene),
+                kind=generation_kind,
+                org_id=org_id,
+                script_id=script_id,
+                user_id=user_id,
+                label=f"场景「{scene.title}」",
+                prompt_context=_scene_prompt_context(
+                    scene,
+                    scene.participants,
+                    profiles_by_name,
+                    era_hint=_era_hint(state),
+                    kind=generation_kind,
+                ),
+                reference_images=_refs_for(scene.participants),
+            )
+            if picked is not None:
+                # 降级：失败主体不进剧本包，该场景以纯文本游玩
+                ref, credit = picked
+                updated_scenes[scene.scene_id] = ref
+                scene_credits[scene.scene_id] = credit
+            for branch in scene.branches:
+                done += 1
+                await self._report(
+                    "design_assets", f"配图 {done}/{total}：分支「{branch.title}」"
+                )
+                participants = branch.participants or scene.participants
+                picked = await self._design_one(
+                    designer,
+                    subject_key=f"scene:{scene.scene_id}::branch:{branch.branch_id}",
+                    scene_key=f"script:{script_id}:scene:{scene.scene_id}"
+                    f"::branch:{branch.branch_id}",
+                    description=scene_visual_description(branch),
+                    kind=generation_kind,
+                    org_id=org_id,
+                    script_id=script_id,
+                    user_id=user_id,
+                    label=f"分支「{branch.title}」",
+                    prompt_context=_scene_prompt_context(
+                        branch,
+                        participants,
+                        profiles_by_name,
+                        era_hint=_era_hint(state),
+                        kind=generation_kind,
+                    ),
+                    reference_images=_refs_for(participants),
+                )
+                if picked is not None:
+                    ref, credit = picked
+                    updated_branches[(scene.scene_id, branch.branch_id)] = ref
+                    branch_credits[(scene.scene_id, branch.branch_id)] = credit
 
         out: dict[str, Any] = {
             "package": _apply_assets(
@@ -982,6 +1121,7 @@ class WorkflowNodes:
         user_id: uuid.UUID | None,
         label: str,
         prompt_context: ScenePromptContextDict | None = None,
+        reference_images: Sequence[bytes] = (),
     ) -> tuple[AssetRef, AssetCredit | None] | None:
         """单个主体的配图：READY → (AssetRef, 契约署名)；FAILED/异常 → None。
 
@@ -991,6 +1131,8 @@ class WorkflowNodes:
         `prompt_context` 随请求传给画师层（转写结构化外貌/锚点）；场景、分支与
         人物头像都携带，全员共用同一画风段。生成期自动配图不经检索
         （`design_scene` 默认路径即画师生成，`search_replace` 才是检索入口）。
+        `reference_images`（2026-11）：在场角色的头像字节，作为角色一致性参考图
+        随生成请求下发（Ark `image`）；空序列退化为纯文生图。
         """
         try:
             record = await designer.design_scene(
@@ -1002,6 +1144,7 @@ class WorkflowNodes:
                 script_id=script_id,
                 user_id=user_id,
                 prompt_context=prompt_context,
+                reference_images=reference_images,
             )
         except Exception as exc:  # noqa: BLE001 - 单主体失败不拖垮整单剧本
             logger.warning(
@@ -1522,6 +1665,9 @@ class WorkflowNodes:
                     "role_hint": f"参与 {key_participants.get(c.name, 0)} 个关键事件",
                     "dossier_json": dossier_json,
                     "session_id": state.get("session_id", ""),
+                    # 并行分支也要能打「id + 剧本名」的阶段日志
+                    "script_id": state.get("script_id"),
+                    "script_name": state.get("script_name", ""),
                 },
             )
             for c in selected
@@ -1620,6 +1766,11 @@ class WorkflowNodes:
             on_step=lambda text: self._report("write_script", text),
         )
         package = outcome.script_package
+        # 人物设定以 design_characters 的产物为准：写作模型重抄 characters 时会丢
+        # appearance 等结构化字段，画师就失去了外貌锚点。
+        package = _overlay_profiles(
+            package, list(state.get("merged_profiles") or [])
+        )
         # 视觉锚点与介入点确定性回填（branch-montage-dm §4）：主干 LLM 只按
         # 场景结构写作，visual_notes / interaction_point 以划分草稿为准——
         # 不依赖模型记得抄写。回填只在该场景没有产出时补；教师编辑过的
@@ -1674,7 +1825,7 @@ class WorkflowNodes:
         written: dict[tuple[int, str], BranchScene] = {}
         # 重写轮的打回意见同样要约束分支补写：主干按意见修正，分支若不带
         # 意见会按原姿势重编同类问题（visual_notes 编造/事件顺序越界），
-        # doubter 反复拒绝同一处直到预算耗尽。
+        # doubter 会反复拒绝同一处、打回不收敛。
         feedback = state.get("audit_feedback")
         for scene_no, spec in work:
             try:
@@ -1764,14 +1915,26 @@ class WorkflowNodes:
             "title": scene.title,
             "participants": list(scene.participants),
             "beats": [
-                {"beat_id": beat.beat_id, "description": beat.description}
+                {
+                    "beat_id": beat.beat_id,
+                    "description": beat.description,
+                    # 戏剧目标：写台词时用来推敲潜台词，不直接说出口
+                    "goal": beat.goal,
+                }
                 for beat in scene.beats
             ],
             "branches": [
                 {
                     "branch_id": branch.branch_id,
                     "label": branch.label,
-                    "beats": [beat.description for beat in branch.beats],
+                    "beats": [
+                        {
+                            "beat_id": beat.beat_id,
+                            "description": beat.description,
+                            "goal": beat.goal,
+                        }
+                        for beat in branch.beats
+                    ],
                 }
                 for branch in scene.branches
             ],
@@ -1847,8 +2010,9 @@ class WorkflowNodes:
         prompt = doubter.build_user_message(
             node_name="write_script",
             artifact_schema_hint="ScriptPackage{title, characters(appearance), scenes+beats"
-            "(visual_notes, interaction_point, branches), teaching_focus,"
-            " playable_roles, stage2_ending_beat_id}",
+            "(description=玩家可见叙述, goal=这一拍谁想要什么/障碍（给角色 agent，"
+            "不播给玩家，非事实断言）), visual_notes, interaction_point, branches},"
+            " teaching_focus, playable_roles, stage2_ending_beat_id}",
             artifact_json=package.model_dump_json(),
             source_digest=self._source_digest(state),
             bundle=await self._bundle(doubter),
@@ -1864,37 +2028,57 @@ class WorkflowNodes:
         )
         return {
             "audit_verdict": verdict.verdict,
-            "audit_issues": [_format_issue(i) for i in verdict.issues],
+            "audit_issues": list(verdict.issues),
             "write_retries": retries,
             "audit_feedback": (
                 _feedback_text(verdict.issues) if verdict.verdict == "reject" else None
             ),
         }
 
+    async def design_exploration(self, state: WorkflowState) -> dict[str, Any]:
+        """为定稿剧本派生 Stage3 自由探索地图（M4 生成期）。
+
+        当前实现是**确定性派生**：每个主场景对应一个地点，标题/在场/视觉锚点
+        直接取自场景；不额外花 LLM 钱，也不会因模型发挥产生不存在的地点。
+        教师已编辑或重跑带回地图时保持原样（幂等）。
+
+        位置在 final_audit 之后、design_assets 之前：只有故事事实通过总审的包才
+        配地图；打回轮次不产生地图。
+        """
+        package = state.get("package")
+        if package is None:
+            raise new(codes.CNT_GENERATION_FAILED, extra={"reason": "package missing"})
+        if package.exploration is not None:
+            return {"package": package}
+        exploration = derive_exploration_map(package)
+        logger.info(
+            "[script-gen][design_exploration] locations=%d start=%s",
+            len(exploration.locations),
+            exploration.start_location_key,
+        )
+        return {"package": package.model_copy(update={"exploration": exploration})}
+
+    def redesign_characters(self, state: WorkflowState) -> dict[str, Any]:
+        """总审打回人物设定时的回边落点。
+
+        节点本身不改状态：它只提供一条可被条件边命中的入边，真正的 fan-out 由
+        `design_characters` 的 Send 条件边发出（Send 只能从条件边出）。
+        """
+        return {}
+
     def route_after_audit(self, state: WorkflowState) -> str:
         verdict = state.get("audit_verdict", "pass")
         if verdict == "pass":
-            # #48：总审通过先配图；design_assets 再按拓扑接终审闸（gate on）或 END
-            return "design_assets"
-        if state.get("write_retries", 0) <= MAX_WRITE_RETRIES:
-            return "write_script"
-        return "fail"
-
-    # ===== 终止 =====
-
-    async def fail(self, state: WorkflowState) -> dict[str, Any]:
-        """打回耗尽的显式失败终点：异常上抛，runner 标记 attempt 失败。"""
-        issues = state.get("doubter_issues") or state.get("audit_issues") or []
-        reason = "；".join(issues) or "doubter 打回次数耗尽"
-        raise new(codes.CNT_GENERATION_FAILED, extra={"reason": reason})
-
+            # 总审通过先派生探索地图，再配图；design_assets 之后接终审闸或 END
+            return "design_exploration"
+        if _needs_character_redesign(list(state.get("audit_issues") or [])):
+            return "redesign_characters"
+        return "write_script"
 
 __all__ = [
     "MATERIALS_GATE_NODE",
     "PRE_WRITE_GATE_NODE",
     "FINAL_GATE_NODE",
     "WorkflowNodes",
-    "MAX_DOUBTER_ROUNDS",
-    "MAX_WRITE_RETRIES",
     "DoubterVerdict",
 ]

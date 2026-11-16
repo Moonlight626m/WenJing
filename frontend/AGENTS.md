@@ -66,27 +66,70 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ### 游玩页版式（视觉小说式）
 
 `components/game-screen.tsx` 是整块舞台：顶栏 `GameHud` → 左列是舞台视口（`StageFigures`
-立绘层 + `CastDock` 头像组 + `SubtitleTrack` 对白带）和抉择卡，右列是 `TranscriptPanel`
-剧情回顾（「剧情」页 = 消息流 + 回溯栏，「原文」页 = 课文对照，「角色」页 = 人物档案）。幕间过场 `ActCurtain`、
-结局卡 `EndingCard` 浮在最上层。
+立绘层 + 贴底的 `SubtitleTrack` 对白带）和左下角的行动面板（`InteractionCard`），右列是
+`TranscriptPanel` 剧情回顾（顶部「在场」头像组 + `scene_options` 存在时的「场景移动 /
+干涉世界」按钮；「剧情」页 = 消息流 + 回溯栏，「原文」页 = 课文对照，「角色」页 = 人物档案）。
+幕间过场 `ActCurtain`、结局卡 `EndingCard` 浮在最上层。窄屏侧栏默认收起，展开的行动面板上
+另有一对同名的直达按钮（点了展开侧栏并切到对应面板；`panel` 状态由 `GameScreen` 持有）。
 
-- **立绘按「全身立绘 → 头像 → 竖排名牌」降级**；台上最多三人，取最近开口的
+- **消息流订阅下沉到叶子组件**（`SubtitleTrack` / `StageFigures` / `StoryTab` / `CastTab`）：
+  游玩页本身只订阅阶段、场景、pending 这类低频量。`stream_*` 每来一段都会触发一次
+  store 更新，若在 `GameScreen` 顶层订阅 `messages`/`streams`，整页连同侧栏一起重渲。
+  消息正文 `ContentMessage` 是 `memo` 的（消息只追加不修改，旧条目引用不变）。
+- **整块行动面板按轮自动收放**：场景信息、选项、自由输入都在同一块玻璃框里；提交动作
+  后**自动收起**，下一轮交互点就绪时**自动弹出**，想单看舞台也能手动收（左下角圆钮，
+  `aria-label` 以「展开行动面板」开头，轮到你时带「（轮到你行动）」后缀并点一颗朱砂）。
+  收放记的是「哪一张卡被收起」——交互点 id 或阶段卡 `phase:{stage}`——所以新键一到
+  就自动展开，不用 effect 追状态。`InteractionCard` 无交互点也无阶段命令时连圆钮都
+  不渲染。
+- **面板高度封顶 + 内部滚动**（`max-h-[min(58dvh,34rem)]`，滚动放在内层 `<div>`）。
+  外层留给 `glow-border` 的伪元素定位——伪元素会随滚动一起走，不能把它裁在滚动容器里。
+  页面根节点用 `h-dvh`，横屏/地址栏收放时面板不会被视口裁掉。
+- **面板内的行动选项也默认收起**：只留一行「选择行动（N 个可选）」，点开才铺开选项并
+  启用数字键直选（收起时按数字会盲选，因此不绑定）。每轮新卡（按 `interaction_id`
+  设 key）回到收起态；自由输入草稿存在面板外层，收起/换卡都不丢。
+
+- **立绘按「全身立绘 → 不上台」降级**；台上最多三人，取最近开口的
   （`lib/stage-cast.ts`，纯函数）。说话人取在途流，否则看最后一条非系统消息。
+  剧本目前只生成头像：没有全身立绘的角色不放进场景（也不放头像圆框）——只剩一块
+  浮在画面上的名牌比没有人更乱。
+- **主字幕只播角色发言**：`SubtitleTrack` 只收 `character_speech`，旁白/系统提示留在
+  侧栏消息流；台词里的 `（动作）` 拆成独立动作行（`lib/stage-direction.ts`，后端
+  `domain/game/speech_text.py` 落库时同口径拆分）。
+- **流式行由持久发言就地收尾**：`character_speech` 到达时，同角色的 `stream:*` 行
+  **保留 key 与 DOM**，只把文本补成完整版、撤下光标，停留 2.5s 后照常淡出
+  （`useSubtitleQueue` 的 `settleStreamLine`）。换成消息 key 会重挂节点、`animate-rise-in`
+  再播一遍，表现就是同一句话说两遍（先流式、再整句）。认行要求同角色：文本也相等
+  时最可信，文本有出入（标点、动作括号切分不同）时仍按角色兜底。
 - **剧情回顾在 ≥1024px 默认展开、窄屏是抽屉**。E2E 的默认视口是 1280×720，`core-flow`
   依赖消息行与回溯下拉框在首屏可见——改默认展开的断点前先看它。
+- **「剧情」页默认不铺角色提议**：`proposal` 是角色的内部意图，默认从事件记录里滤掉；
+  有提议时右上角出现「显示角色提议（N）」，打开才铺开（状态放在 `TranscriptPanel`，
+  切页不丢）。这是一层**视图过滤**，前端拿不到验证判定（`verification` 不投影），
+  所以「显示」= 铺开全部提议（含被驳回/重提的）。最终方案在选项里：**有探索地图的
+  剧本**在 Stage3 由 Director 设计选项，已验提议只是导演产出为空（或点名缺席者被
+  过滤）时的兜底（`_stage3_interaction`）；Stage2 与无地图的旧剧本走的
+  `_legacy_design_interaction` 才是把验过的提议原文直接当选项。
 - **页面上只能有一个 `<select>`**（回溯栏）：`core-flow` 用 `page.locator("select")` 定位，
   多一个就撞 strict mode。消息行里的回溯按钮可读名是「回溯到这一句」，故意避开
   `/回到 #\d+/`。
 - **幕间过场全程 `pointer-events-none`**，不挡点击；每会话每幕在一个标签页里只演一次
   （sessionStorage）。
+- **WS 连上不等于能玩**：`gameStore.sessionInitialized` 只在收到权威 `session_init` 后为
+  true，断线即复位。Stage3 的离线 tick 会在 `session_init` 之前补算，期间旧交互点禁用，
+  空舞台显示「正在重建世界…」（`lib/session-status.ts`）。
 - **配音中的说话人**来自 `AudioTrackPlayer`（收到 `<audio>` 的 `playing` 才算，静音时为空），
   用 `useSpeakingSpeakers()` 订阅；只用来点亮光环，不是音量电平。
 - **特效档位**：`uiStore.effects`（本机 localStorage 记住），`useEffectsLevel()` 取实际档位，
   系统「减少动态效果」时强制简洁。简洁档下粒子、视差、墨晕不渲染，CSS 循环停住，毛玻璃
   换成不模糊的实底（`[data-effects="lite"]`）。档位写在 `GameScreen` 与选角页的根节点上。
-- **续写目标**（`GoalTracker`）只在续写阶段与终局出现。目标快照随 `session_init` 与三类
-  系统消息（定下目标、达成目标、回溯）的 `payload.stage3_goals` 下发，store 见到就整份替换
-  （`asGoals`）；回溯消息也带快照，回到续写之前会清空。
+- **没有续写目标**：Stage3 已删除 goals / 轮次上限；`GoalTracker` 与 `payload.stage3_goals`
+  不再存在（契约里的空字段只为历史会话保留读兼容）。
+- **结局卡只服务 Stage2**：进入过 Stage3 的会话关闭时不弹 `EndingCard`；判定用系统消息
+  携带的结构化 `stage` 字段（`stage === "stage3_extending"`），不解析中文文案。
+- **Stage3 不显示「确认结局」**：`confirm_ending` 是旧契约里的收束命令，仍冻结在
+  `ALLOWED_COMMANDS` 里；续写阶段没有叙事结局，`InteractionCard` 在
+  `stage3_extending` 下隐藏它，关闭本局走 `exit_game`。
 - **剧情回顾的「原文」页**只列已经演到的场景（`scene:{id}` 定位当前场景），还没演到的课文
   不提前展示；续写与终局时全部展开。`paragraph_index` 从 0 起，显示时加 1。
 - **选项的 `proposed_by`** 标出「谁的主意」；系统选项（进入续写 / 到此结束）为 null。

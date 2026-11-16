@@ -39,6 +39,7 @@ class GenerationNode(StrEnum):
     WRITE_SCRIPT = "write_script"
     WRITE_DIALOGUE = "write_dialogue"
     FINAL_AUDIT = "final_audit"
+    DESIGN_EXPLORATION = "design_exploration"
     DESIGN_ASSETS = "design_assets"
 
 
@@ -84,12 +85,19 @@ class DoubterVerdict(VersionedContract):
 
 
 class DoubterEvent(VersionedContract):
-    """doubter 裁决记录：打回时带逐条问题（教师端可见）。"""
+    """doubter 裁决记录：打回时带逐条问题（教师端可见）。
+
+    `issues` 两种形状并存：结构化 `DoubterIssue`（doubter 模型产出）与纯字符串
+    （确定性规则校验，如 `validate_replay` 的结构问题——它们没有 severity/
+    category/field）。历史落库的 progress 是 `list[str]`，union 保证旧行仍能校验。
+    展示形状交给前端：string 走「规则校验」样式，模型走问题卡片。
+    """
 
     node: GenerationNode
     verdict: str = Field(pattern=r"^(pass|reject)$")
-    issues: list[str] = Field(default_factory=list)
-    round: int = Field(ge=1, le=3, default=1)
+    issues: list[DoubterIssue | str] = Field(default_factory=list)
+    # 打回没有轮次上限（恢复/重做可一直进行），这里只约束下界
+    round: int = Field(ge=1, default=1)
 
 
 class GenerationProgress(VersionedContract):

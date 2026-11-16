@@ -13,7 +13,6 @@ import type {
   PlayerCommand,
   Scene,
   ScriptPackage,
-  Stage3Goal,
   StageValue,
 } from "@/lib/contracts/types";
 import { buildCommand } from "@/lib/session-cache";
@@ -36,6 +35,8 @@ export interface ChatMessage {
   speaker: string | null;
   /** 领域事件类型（投影 payload 的 event_type）：区分离线提示/世界事实/干涉结果等。 */
   eventType?: string | null;
+  /** 阶段转换消息携带的目标阶段（结构化标记，不解析中文文案）。 */
+  stage?: string | null;
   /** 重演台词的舞台提示（动作/神态）。 */
   stageDirection?: string | null;
   /** 运行期角色（character_created / pull_in_character）。 */
@@ -192,24 +193,6 @@ function asStage(value: string): StageValue {
   return STAGES.includes(value as StageValue) ? (value as StageValue) : "init";
 }
 
-/**
- * 消息载荷里的续写目标快照 → 目标列表；不是目标快照（字段缺失或形状不对）返回 null，
- * 调用方据此保持原值。空数组是合法快照（回溯到续写之前）。
- */
-export function asGoals(raw: unknown): Stage3Goal[] | null {
-  if (!Array.isArray(raw)) return null;
-  return raw
-    .filter(
-      (g): g is Record<string, unknown> =>
-        typeof g === "object" && g !== null && typeof g.goal_id === "number"
-    )
-    .map((g) => ({
-      goal_id: g.goal_id as number,
-      description: typeof g.description === "string" ? g.description : "",
-      achieved: g.achieved === true,
-    }));
-}
-
 function maxSeq(messages: ChatMessage[]): number {
   return messages.reduce((acc, m) => Math.max(acc, m.seq), 0);
 }
@@ -227,8 +210,6 @@ interface GameStore {
   characters: CharacterProfile[];
   /** 剧本的场景与情节点（带原文证据）：剧情回顾的「原文」页据此对照课文。 */
   scenes: Scene[];
-  /** 续写目标（从事件派生，session_init 与目标/回溯类系统消息都带完整快照）。 */
-  stage3Goals: Stage3Goal[];
   /** 当前场景稳定键（#53）：背景切换/淡入的判定来源。 */
   sceneKey: string | null;
   /** 当前场景标题（#53）：随 plot_advancement 更新。 */
@@ -243,6 +224,8 @@ interface GameStore {
   allowedCommands: CommandKind[];
   pending: PendingCommand | null;
   connection: Connection;
+  /** 是否已收到当前连接上的权威 `session_init`。断线即复位：离线 tick 会先补算。 */
+  sessionInitialized: boolean;
   sender: Sender | null;
   /** 音频是否静音（#63）。只影响本地播放，不影响服务端合成与计量。 */
   audioMuted: boolean;
@@ -321,7 +304,6 @@ export const useGameStore = create<GameStore>((set, get) => {
     playableRoles: [],
     characters: [],
     scenes: [],
-    stage3Goals: [],
     sceneKey: null,
     sceneTitle: null,
     currentAsset: null,
@@ -332,11 +314,15 @@ export const useGameStore = create<GameStore>((set, get) => {
     allowedCommands: [],
     pending: null,
     connection: "idle",
+    sessionInitialized: false,
     sender: null,
     audioMuted: false,
 
     resetSession: (sessionId) => {
       clearResendTimer();
+      // 音频是模块级单例，不挂在 React 树上：换会话时上一局的配音不会自己停。
+      // 走 store 的 bargeIn 而不是直接调 audioSession：停在途音轨要顺手告诉服务端别再发。
+      get().bargeIn();
       set({
         sessionId,
         stage: "init",
@@ -344,20 +330,32 @@ export const useGameStore = create<GameStore>((set, get) => {
         playerRole: null,
         plotLog: [],
         scriptId: null,
-        stage3Goals: [],
+        scriptTitle: null,
+        playableRoles: [],
+        characters: [],
+        scenes: [],
+        selectedRole: null,
         messages: [],
         streams: [],
         interaction: null,
         allowedCommands: [],
         pending: null,
         connection: "connecting",
+        sessionInitialized: false,
         sceneKey: null,
         sceneTitle: null,
         currentAsset: null,
       });
     },
 
-    setConnection: (connection) => set({ connection }),
+    setConnection: (connection) =>
+      set((state) => ({
+        connection,
+        // 断线后权威快照失效；重连时服务端会先补算离线 tick 再发 session_init，
+        // 这期间旧交互点不能继续提交。
+        sessionInitialized:
+          connection === "connected" ? state.sessionInitialized : false,
+      })),
 
     setSender: (sender) => set({ sender }),
 
@@ -430,11 +428,40 @@ export const useGameStore = create<GameStore>((set, get) => {
         return;
       }
 
+      if (msg.type === "timeline_reset") {
+        // 回溯重写了活动时间线：丢弃旧分支的本地消息与流缓冲。同一批次随后
+        // 会整段重放新分支（含回滚目标之前的继承前缀），按抵达顺序重建。
+        markCommandSettled();
+        // 旧分支的旁白不能压在新时间线上（音频单例不认识「分支」这个概念）
+        get().bargeIn();
+        set({
+          messages: [],
+          streams: [],
+          interaction: null,
+          allowedCommands: [],
+          stage: asStage(String(payload.stage ?? get().stage)),
+          branchId:
+            typeof payload.branch_id === "string"
+              ? payload.branch_id
+              : get().branchId,
+        });
+        return;
+      }
+
       if (msg.type === "session_init") {
         const ix = (payload.active_interaction as ActiveInteraction | null) ?? null;
+        // 断线期间活动分支可能被回溯改写过：新分支的 seq 与旧时间线无关，
+        // 必须清空本地消息并从 0 全量重建，否则旧水位会把新分支历史挡在门外。
+        const nextBranch =
+          typeof payload.branch_id === "string" ? payload.branch_id : null;
+        const branchChanged =
+          get().branchId !== null &&
+          nextBranch !== null &&
+          nextBranch !== get().branchId;
         set({
           stage: asStage(String(payload.stage ?? "init")),
-          branchId: typeof payload.branch_id === "string" ? payload.branch_id : null,
+          branchId: nextBranch,
+          sessionInitialized: true,
           playerRole:
             typeof payload.player_role === "string" ? payload.player_role : null,
           plotLog: Array.isArray(payload.plot_log)
@@ -442,11 +469,11 @@ export const useGameStore = create<GameStore>((set, get) => {
             : [],
           scriptId:
             typeof payload.script_id === "number" ? payload.script_id : get().scriptId,
-          stage3Goals: asGoals(payload.stage3_goals) ?? [],
           interaction: ix,
           allowedCommands: (Array.isArray(payload.allowed_commands)
             ? payload.allowed_commands
             : []) as CommandKind[],
+          messages: branchChanged ? [] : get().messages,
           // 场景背景（#53）：权威快照携带，重连即恢复当前背景与场景标题
           // 重连的权威快照：在途流属于**上一条连接**，一并丢弃（字幕的收束
           // 由随后的 character_speech 事件负责，不靠流缓冲）
@@ -461,12 +488,21 @@ export const useGameStore = create<GameStore>((set, get) => {
               ? (payload.current_asset as AssetRef)
               : null,
         });
-        // 权威重建后按本地确认水位请求补发（首连为 0 → 服务端从 DB 全量重建）。
-        // session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
+        // 断线前发出的命令可能还悬着：重连后立即用同一 command_id 重发（服务端按
+        // 命令台账幂等，已落地的直接回放结果），不必等满 120s 的超时定时器。
+        const pending = get().pending;
+        const sender = get().sender;
+        if (pending && sender) {
+          sender({ type: "submit_command", command: pending.command });
+          set({ pending: { ...pending, sentAt: Date.now() } });
+          scheduleResend();
+        }
+        // 权威重建后按本地确认水位请求补发（首连/分支变化为 0 → 服务端从 DB
+        // 全量重建）。session_init 本身不计入确认水位（服务端补发协议排除引导消息）。
         get()
           .sender?.({
             type: "resync_request",
-            last_confirmed_seq: maxSeq(get().messages),
+            last_confirmed_seq: branchChanged ? 0 : maxSeq(get().messages),
           });
         return;
       }
@@ -501,9 +537,6 @@ export const useGameStore = create<GameStore>((set, get) => {
       let sceneTitle = state.sceneTitle;
       let currentAsset = state.currentAsset;
       let streams = state.streams;
-      // 目标快照随「定下目标 / 达成目标 / 回溯」三类系统消息下发，见到就整份替换
-      const stage3Goals = asGoals(payload.stage3_goals) ?? state.stage3Goals;
-
       // 终局批次可能多条消息共享同一 seq（如"进入阶段：ended"+"已结束"），
       // 去重键需包含文本，否则第二条会被误判重复
       const text0 = typeof payload.text === "string" ? payload.text : "";
@@ -533,6 +566,7 @@ export const useGameStore = create<GameStore>((set, get) => {
             speaker,
             eventType:
               typeof payload.event_type === "string" ? payload.event_type : null,
+            stage: typeof payload.stage === "string" ? payload.stage : null,
             stageDirection:
               typeof payload.stage_direction === "string"
                 ? payload.stage_direction
@@ -564,9 +598,12 @@ export const useGameStore = create<GameStore>((set, get) => {
           }
         }
         if (msg.type === "system") {
-          const stageMatch = /进入阶段：(\S+)/.exec(text);
-          if (stageMatch) {
-            stage = asStage(stageMatch[1]);
+          const nextStage =
+            typeof payload.stage === "string"
+              ? payload.stage
+              : /进入阶段：(\S+)/.exec(text)?.[1];
+          if (nextStage) {
+            stage = asStage(nextStage);
             // 换阶段后上一阶段的交互点作废，允许命令按契约表重算。引擎停在阶段之间
             // （如还原演完、等学生决定是否续写）时后端不发交互点消息，不重算就会
             // 一直挂着旧选项、拿不到 enter_stage3。同批若有新交互点，它排在后面会覆盖这里。
@@ -589,7 +626,6 @@ export const useGameStore = create<GameStore>((set, get) => {
         sceneKey,
         sceneTitle,
         currentAsset,
-        stage3Goals,
       });
 
       // 确认水位推进：通知服务端修剪本连接 outbox
@@ -601,8 +637,10 @@ export const useGameStore = create<GameStore>((set, get) => {
     },
 
     submitCommand: (kind, payload, label) => {
-      const { sessionId, sender, pending, allowedCommands } = get();
+      const { sessionId, sender, pending, allowedCommands, sessionInitialized } =
+        get();
       if (!sessionId || !sender || pending) return; // 单飞行：等待当前命令响应
+      if (!sessionInitialized) return; // 权威快照未到：旧交互点可能已过期
       if (!allowedCommands.includes(kind)) return;
       const command = buildCommand(sessionId, kind, payload);
       sender({ type: "submit_command", command });

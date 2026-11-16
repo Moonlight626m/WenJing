@@ -15,5 +15,4 @@ class EngineConfig:
     max_rollback_steps: int = 100       # 最大回退步数
     max_concurrent_llm: int = 5         # 最大并行 LLM 调用数
     llm_timeout_seconds: int = 30
-    stage3_rounds: int = 3              # MVP 续写有限轮次（目标导向收敛占位）
     max_events_in_memory: int = 5000    # 内存中最大事件数

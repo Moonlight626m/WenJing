@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import uuid
 
 sys.path.insert(0, ".")
 
@@ -22,8 +21,8 @@ async def main() -> int:
     from app.composition import get_container
     from app.domain.generation.workflow.nodes import WorkflowNodes
     from app.infrastructure.llm.factory import ModelServiceFactory
-    from app.infrastructure.models.script import Script as ScriptRecord
     from app.infrastructure.models.org import Org
+    from app.infrastructure.models.script import Script as ScriptRecord
 
     container = get_container()
     await container.open()
@@ -38,8 +37,9 @@ async def main() -> int:
         org = (await s.execute(select(Org).limit(1))).scalar_one()
     org_id = str(org.id)
 
-    from app.contracts.script import ScriptPackage
     import json
+
+    from app.contracts.script import ScriptPackage
 
     data = script.script_data
     if isinstance(data, str):

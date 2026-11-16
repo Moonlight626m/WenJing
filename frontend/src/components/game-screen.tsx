@@ -1,19 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { useAssetUrl } from "@/lib/asset-url";
-import { useSpeakingSpeakers } from "@/lib/audio-session";
-import { listedCharacters, mergeRuntimeCharacters, stageCast } from "@/lib/stage-cast";
+import { sceneStatus, sceneStatusText } from "@/lib/session-status";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useGameStore } from "@/stores/gameStore";
 import { useEffectsLevel, useUiStore } from "@/stores/uiStore";
 import { ActCurtain } from "@/components/act-curtain";
-import { CastDock } from "@/components/cast-dock";
 import { EndingCard } from "@/components/ending-card";
 import { GameHud } from "@/components/game-hud";
 import { GameStage } from "@/components/game-stage";
-import { GoalTracker } from "@/components/goal-tracker";
 import { InteractionCard } from "@/components/interaction-card";
 import { sceneHasOriginal, sceneIdOf } from "@/components/original-text-panel";
 import { StageFigures } from "@/components/stage-figures";
@@ -29,8 +26,8 @@ import { MotionRoot } from "@/components/ui/motion-root";
  * ┌ 顶栏 ─────────────────────────────────────────────┐
  * │ 头像组                                  ┌ 剧情回顾 ┐│
  * │      立绘层（台上最多三人，说话的人上前）  │ 剧情/角色 ││
- * │ ── 对白字幕带 ──────────────────────     │ 消息流   ││
- * │ ┌ 抉择卡 ─────────────────────────┐    │ 回溯栏   ││
+ * │ ── 对白字幕带（贴舞台底）──────────       │ 消息流   ││
+ * │ (○) 行动面板默认收起，只有左下角一颗圆钮  │ 回溯栏   ││
  * └─────────────────────────────────────────────────────┘
  * ```
  *
@@ -41,22 +38,23 @@ export function GameScreen() {
   const sessionId = useGameStore((s) => s.sessionId);
   const stage = useGameStore((s) => s.stage);
   const scriptTitle = useGameStore((s) => s.scriptTitle);
-  const messages = useGameStore((s) => s.messages);
-  const streams = useGameStore((s) => s.streams);
-  const characters = useGameStore((s) => s.characters);
-  const playableRoles = useGameStore((s) => s.playableRoles);
   const playerRole = useGameStore((s) => s.playerRole);
   const connection = useGameStore((s) => s.connection);
+  const sessionInitialized = useGameStore((s) => s.sessionInitialized);
   const pending = useGameStore((s) => s.pending);
   const sceneKey = useGameStore((s) => s.sceneKey);
   const sceneTitle = useGameStore((s) => s.sceneTitle);
   const currentAsset = useGameStore((s) => s.currentAsset);
   const scenes = useGameStore((s) => s.scenes);
-  const stage3Goals = useGameStore((s) => s.stage3Goals);
-  const interaction = useGameStore((s) => s.interaction);
   const hydrateEffects = useUiStore((s) => s.hydrateEffects);
   const effects = useEffectsLevel();
-  const speaking = useSpeakingSpeakers();
+  // 舞台上还什么都没有（消息与在途流都空）：订阅成布尔量，免得每来一段流式台词
+  // 都让整页连同顶栏、侧栏一起重渲——真正需要逐帧更新的只有字幕与立绘。
+  const empty = useGameStore(
+    (s) => s.messages.length === 0 && s.streams.length === 0
+  );
+  // WS 连上不等于能玩：Stage3 的 session_init 会先补算离线 tick（最多 3 轮 LLM）。
+  const status = sceneStatus(connection, sessionInitialized);
 
   // 背景稳定引用 → 预签名 URL（#53）：按 current_asset 变化现取（短时效），
   // 取不到就交给 GameStage 降级为无图渐变，不阻塞游玩。
@@ -71,31 +69,20 @@ export function GameScreen() {
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const transcriptOpen = userOpen ?? wide;
   const [tab, setTab] = useState<TranscriptTab>("story");
+  // 侧栏操作面板：场景移动 / 干涉世界。窄屏上侧栏默认收起，抉择卡上有直达入口，
+  // 所以面板状态放在这里——点入口时一次把「展开侧栏 + 切到对应面板」做掉。
+  const [panel, setPanel] = useState<"move" | "intervene" | null>(null);
 
-  const cast = stageCast(messages, streams);
-  // 剧本角色 + 运行期登场（M6 动态角色）；后端补结构化档案前先按消息流兜底
-  const runtimeCast = useMemo(
-    () =>
-      mergeRuntimeCharacters(
-        listedCharacters(characters, playableRoles),
-        messages,
-        playerRole
-      ),
-    [characters, playableRoles, messages, playerRole]
-  );
-  const listed = runtimeCast.characters;
-  // 当前在场：交互点的换景列表里 is_current 那一项（静态地点名单）
-  const presentNames = useMemo(() => {
-    const current = interaction?.scene_options?.find((scene) => scene.is_current);
-    return current ? new Set(current.participants) : null;
-  }, [interaction]);
   const currentScene = scenes.find((sc) => sc.scene_id === sceneIdOf(sceneKey));
-  const showGoals =
-    stage3Goals.length > 0 && (stage === "stage3_extending" || stage === "ended");
 
   function openTranscript(next: TranscriptTab) {
     setTab(next);
     setUserOpen(true);
+  }
+
+  function openOperations(next: "move" | "intervene") {
+    openTranscript("story");
+    setPanel(next);
   }
 
   return (
@@ -120,26 +107,7 @@ export function GameScreen() {
           <div className="relative flex min-h-0 flex-1 gap-3 p-3 md:gap-4 md:p-4">
             <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
               <div className="relative min-h-0 flex-1">
-                <StageFigures
-                  cast={cast}
-                  characters={listed}
-                  playerRole={playerRole}
-                  speaking={speaking}
-                />
-                <CastDock
-                  characters={listed}
-                  dynamic={runtimeCast.dynamic}
-                  present={presentNames}
-                  playableRoles={playableRoles}
-                  playerRole={playerRole}
-                  active={cast.active}
-                  speaking={speaking}
-                />
-                {showGoals && (
-                  <div className="absolute top-16 left-3 z-20 max-h-[calc(100%-4.5rem)] max-w-[calc(100%-1.5rem)] overflow-y-auto rounded-2xl">
-                    <GoalTracker goals={stage3Goals} defaultCollapsed={!wide} />
-                  </div>
-                )}
+                <StageFigures />
                 {sceneHasOriginal(currentScene) && (
                   <button
                     type="button"
@@ -150,20 +118,30 @@ export function GameScreen() {
                     对照原文
                   </button>
                 )}
-                {messages.length === 0 && streams.length === 0 && (
-                  <p className="absolute inset-0 grid place-items-center text-sm text-ink-faint">
-                    等待剧情开始…
-                  </p>
+                {empty && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="absolute inset-0 grid place-items-center"
+                  >
+                    <p className="flex flex-col items-center gap-1 text-sm text-ink-faint">
+                      <span>{sceneStatusText(status)}</span>
+                      {status === "restoring" && (
+                        <span className="text-2xs">
+                          离线期间世界仍在演进，正在补算。
+                        </span>
+                      )}
+                    </p>
+                  </div>
                 )}
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10">
-                  <SubtitleTrack
-                    messages={messages}
-                    streams={streams}
-                    playerRole={playerRole}
-                  />
+                  <SubtitleTrack />
                 </div>
               </div>
-              <InteractionCard />
+              <InteractionCard
+                showOperations={!transcriptOpen}
+                onRequestOperations={openOperations}
+              />
             </section>
 
             <TranscriptPanel
@@ -171,7 +149,13 @@ export function GameScreen() {
               overlay={!wide}
               tab={tab}
               onTabChange={setTab}
-              onClose={() => setUserOpen(false)}
+              onClose={() => {
+                setUserOpen(false);
+                // 收起侧栏就收起操作面板：重开时不该停在上次的换景/干涉里
+                setPanel(null);
+              }}
+              panel={panel}
+              onPanelChange={setPanel}
             />
           </div>
         </GameStage>

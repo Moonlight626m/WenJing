@@ -36,12 +36,15 @@ from app.contracts.runtime import (
 )
 from app.contracts.script import AssetRef
 from app.domain.game.assets import RuntimeAssets, derive_scene_assets
+from app.domain.game.beat_text import split_goal_note
 from app.domain.game.event import (
     EVENT_CHARACTER_CREATED,
     EVENT_EXPLORATION_SETTLE,
     EVENT_INTERVENTION_REJECTED,
     EVENT_INTERVENTION_REQUESTED,
     EVENT_OFFLINE_HINT,
+    EVENT_PLAYER_ACTION,
+    EVENT_PROPOSAL,
     EVENT_PULL_IN_CHARACTER,
     EVENT_REPLAY_CHOICE,
     EVENT_REPLAY_ENDING_REACHED,
@@ -52,6 +55,7 @@ from app.domain.game.event import (
     EVENT_SCENE_SWITCH,
     EVENT_STAGE3_GOAL_ACHIEVED,
     EVENT_STAGE3_GOALS_SET,
+    EVENT_WORLD_CHRONICLE,
     EVENT_WORLD_FACT,
     GameEvent,
 )
@@ -60,6 +64,7 @@ from app.domain.game.goals import GoalState, apply_goal_event
 from app.domain.game.media import AssetKind, AssetStatus
 from app.infrastructure.db.event_store import PersistentEventStore, branch_uuid, event_uuid
 from app.infrastructure.models.snapshot import Snapshot as SnapshotRecord
+from app.services.command_labels import ACTION_COMMAND_LABELS
 from app.services.session_store import snapshot_sequence_on_path
 
 # 内存事件类型 → 契约 EventType
@@ -277,7 +282,9 @@ _MESSAGE_CATEGORY_MAP: dict[str, str] = {
     # asset_ready 事件会被静默丢弃，前端永远等不到背景替换。
     "asset_ready": "asset_ready",
 }
-_SILENT_EVENTS = frozenset({"verification", "player_action"})
+_SILENT_EVENTS = frozenset(
+    {"verification", "player_action", EVENT_WORLD_CHRONICLE}
+)
 
 
 def _system_text(event_type: str, p: dict[str, Any]) -> str:
@@ -326,7 +333,7 @@ def _is_private_fact(event_type: str, p: dict[str, Any]) -> bool:
 
 
 def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
-    """事件 → 用户可见文本（WS 消息与回溯页共用，避免两处口径漂移）。"""
+    """事件 → 用户可见文本（WS 消息与回溯页共用这套拼写，过滤/去重各自处理）。"""
     if event_type == "replay_node_entered":
         prefix = "分支" if p.get("node_kind") == "branch" else "场景"
         return f"{prefix}：{p.get('scene_title', '')}"
@@ -335,7 +342,12 @@ def _event_text(event_type: str, p: dict[str, Any], category: str) -> str:
         suffix = f"（在场：{present}）" if present else ""
         return f"你来到了「{p.get('scene_title', '')}」{suffix}"
     if category == "narrative":
-        return str(p.get("summary") or p.get("text") or "")
+        text = str(p.get("summary") or p.get("text") or "")
+        if event_type == EVENT_REPLAY_NARRATION:
+            # 历史事件里存的是 v3 时代的旁白（把「目标：…」注记也带上了），
+            # 读取侧兜底：断线重连/回溯看到的历史消息同样是干净的
+            text = split_goal_note(text)[0]
+        return text
     if category == "character_speech":
         return str(p.get("text", ""))
     return _system_text(event_type, p)
@@ -386,7 +398,11 @@ def project_messages(
             if p.get("stage_direction"):
                 payload["stage_direction"] = str(p["stage_direction"])
         elif category == "narrative":
-            payload["text"] = _event_text(ev.event_type, p, category)
+            text = _event_text(ev.event_type, p, category)
+            if not text:
+                # 存量包里有整条都是作者注记的旁白：没有可播的内容
+                continue
+            payload["text"] = text
             # 场景切换信息（#53）：前端据此更新背景/场景标题。
             # current_asset 也随事件下发——实时跨场景时不必等重连的 session_init
             if p.get("scene_key"):
@@ -397,6 +413,9 @@ def project_messages(
                 payload["current_asset"] = p["current_asset"]
         else:
             payload["text"] = _event_text(ev.event_type, p, category)
+        if ev.event_type == "stage_transition" and p.get("stage"):
+            # 结构化阶段标记：前端据此判断「是否进入过续写」，不靠解析中文文案
+            payload["stage"] = p["stage"]
         # 目标变化与回溯都带一份完整目标快照：前端直接替换，回溯到续写之前也会清空
         if ev.event_type in (EVENT_STAGE3_GOALS_SET, EVENT_STAGE3_GOAL_ACHIEVED, EVENT_ROLLBACK):
             payload["stage3_goals"] = [g.model_dump(mode="json") for g in project_goals(goals)]
@@ -451,6 +470,64 @@ def _stage_from_path(path: Sequence[GameEvent], fallback: str) -> str:
     return stage
 
 
+#: 回溯页叙事去重窗口：同一场景最近 N 条叙事内比较，避免跨幕误杀。
+_NARRATION_WINDOW = 5
+#: 字符二元组 Jaccard 阈值；实测重复旁白 ≥0.41，正常相邻旁白 <0.35。
+_NARRATION_SIMILARITY = 0.4
+_NARRATION_NOISE = frozenset("，。；：、“”‘’！？!?.,;:「」『』（）()—- \t\n\r")
+
+
+def _normalize_narration(text: str) -> str:
+    return "".join(ch for ch in text if ch not in _NARRATION_NOISE)
+
+
+def _narration_grams(text: str) -> set[str]:
+    return {text[index : index + 2] for index in range(len(text) - 1)}
+
+
+def _is_repeated_narration(text: str, recent_normalized: Sequence[str]) -> bool:
+    """与同场景前几条回放旁白重复（包含关系或高二元组重合）。
+
+    Stage2 回放会为 beat 描述和 `speaker=null` 的旁白台词各发一条
+    `replay_narration`，模型又把后者写成前者的近似复述；这里保留先到的
+    beat 描述，丢掉后到的复述。`recent_normalized` 须是归一化后的文本。
+    """
+    normalized = _normalize_narration(text)
+    if not normalized:
+        return False
+    grams = _narration_grams(normalized)
+    for other in recent_normalized:
+        if normalized in other or other in normalized:
+            # 短句被长句包含时要求长度接近，避免「夜深了」吞掉一整段叙事
+            shortest, longest = sorted((len(normalized), len(other)))
+            if shortest / longest >= 0.5:
+                return True
+            continue
+        other_grams = _narration_grams(other)
+        if not grams or not other_grams:
+            continue
+        overlap = len(grams & other_grams) / len(grams | other_grams)
+        if overlap >= _NARRATION_SIMILARITY:
+            return True
+    return False
+
+
+def _snapshot_action_label(path: Sequence[GameEvent], sequence: int) -> str | None:
+    """快照附近最近一次玩家动作文本，供存档点标签使用。
+
+    存档点的入参只有命令与场景，`choose_option` 每回合都落一个，标签会全变成
+    「选择 · 同一场景」；动作文本才区分得开。历史快照也走这里，不必回填。
+    干涉不写 `player_action`，取 `intervention_requested.text`。
+    """
+    for index in range(min(sequence, len(path) - 1), -1, -1):
+        event = path[index]
+        if event.event_type not in (EVENT_PLAYER_ACTION, EVENT_INTERVENTION_REQUESTED):
+            continue
+        text = str((event.payload or {}).get("text") or "").strip()
+        return text[:40] or None
+    return None
+
+
 def project_timeline(
     session_id: uuid.UUID,
     store: Any,
@@ -461,7 +538,7 @@ def project_timeline(
     snapshots: Sequence[SnapshotRecord] = (),
     branch_int: int | None = None,
 ) -> SessionTimelineResponse:
-    """分支事件流 → 回溯页进度（与 WS 消息同一条投影口径）。
+    """分支事件流 → 回溯页进度（与 WS 消息同源，回溯页额外降噪）。
 
     `branch_int` 为空时取活动分支；给了别的分支就是**只读**视图（回溯/放弃后
     的旧进度仍可审计，但不能从旧分支继续玩）。只遍历分支时间线：剧本包里
@@ -470,6 +547,10 @@ def project_timeline(
 
     只有叙事节拍可作回溯目标：回溯按 beat 游标恢复，目标落在台词或系统提示上
     会让「回到哪一幕」不可预期。
+
+    降噪（2026-11-14）：`proposal` 是内部意图、`offline_hint` 由游戏内横幅承担，
+    都不进时间线；同一离线 tick 的 `world_fact` 合成一条；Stage2 回放里近似复述
+    beat 描述的旁白按相似度丢弃（保留先到的 beat 描述）。
     """
     path = (
         store.active_events()
@@ -495,10 +576,17 @@ def project_timeline(
     scene_key: str | None = None
     scene_title: str | None = None
     plot_asset: AssetRef | None = None
+    recent_narratives: list[str] = []
+    recent_scene: str | None = None
+    fact_entries: dict[str, TimelineEntry] = {}
     for seq, ev in enumerate(path):
         p = ev.payload or {}
         # 私密世界事实不进时间线：回溯页与公屏同一条过滤口径
         if _is_private_fact(ev.event_type, p):
+            continue
+        # 提议是内部意图，真正发生的是 world_fact；离线提示交给游戏内横幅，
+        # 时间线不再重复（每次重连都会追加一条，文案还一样）。
+        if ev.event_type in (EVENT_PROPOSAL, EVENT_OFFLINE_HINT):
             continue
         if ev.event_type in (
             "plot_advancement",
@@ -523,28 +611,51 @@ def project_timeline(
         scened = category != "system"
         speaker = p.get("speaker") if category == "character_speech" else None
         steps = latest - ev.event_id
-        entries.append(
-            TimelineEntry(
-                sequence=seq,
-                event_id=event_uuid(session_id, ev.branch_id, ev.event_id),
-                branch_id=branch_uuid(session_id, ev.branch_id),
-                kind=MessageCategory(category),
-                text=_event_text(ev.event_type, p, category),
-                speaker=str(speaker) if speaker else None,
-                scene_key=scene_key if scened else None,
-                scene_title=scene_title if scened else None,
-                current_asset=(
-                    (runtime_assets.current(scene_key) or plot_asset)
-                    if scened
-                    else None
-                ),
-                rollbackable=(
-                    not read_only
-                    and category == "narrative"
-                    and 0 < steps <= max_rollback_steps
-                ),
-            )
+        entry = TimelineEntry(
+            sequence=seq,
+            event_id=event_uuid(session_id, ev.branch_id, ev.event_id),
+            branch_id=branch_uuid(session_id, ev.branch_id),
+            kind=MessageCategory(category),
+            text=_event_text(ev.event_type, p, category),
+            speaker=str(speaker) if speaker else None,
+            scene_key=scene_key if scened else None,
+            scene_title=scene_title if scened else None,
+            current_asset=(
+                (runtime_assets.current(scene_key) or plot_asset)
+                if scened
+                else None
+            ),
+            rollbackable=(
+                not read_only
+                and category == "narrative"
+                and 0 < steps <= max_rollback_steps
+            ),
         )
+        if category == "narrative":
+            if not entry.text.strip():
+                # 整条都是作者注记、剥完为空：既不该展示，也不能进去重窗口
+                # （空串是任何字符串的子串，会把同场景后续叙事全吞掉）。
+                continue
+            if ev.event_type != EVENT_REPLAY_NARRATION:
+                entries.append(entry)
+                continue
+            if scene_key != recent_scene:
+                recent_narratives.clear()
+                recent_scene = scene_key
+            if _is_repeated_narration(entry.text, recent_narratives):
+                continue
+            recent_narratives.append(_normalize_narration(entry.text))
+            if len(recent_narratives) > _NARRATION_WINDOW:
+                del recent_narratives[0]
+        elif ev.event_type == EVENT_WORLD_FACT and p.get("tick_id"):
+            # 一个离线 tick 的多个 NPC 行动合成一条，避免同一段缺席时间刷屏。
+            tick_id = str(p["tick_id"])
+            existing = fact_entries.get(tick_id)
+            if existing is not None:
+                existing.text = f"{existing.text}；{entry.text}"
+                continue
+            fact_entries[tick_id] = entry
+        entries.append(entry)
     branch_of = {
         branch_uuid(session_id, meta.branch_id): meta.branch_id
         for meta in store.branches
@@ -559,13 +670,21 @@ def project_timeline(
         if sequence is None:
             continue
         event = path[sequence]
+        label = row.label or "存档点"
+        kind = row.kind or "command"
+        # 选择/行动/换景/干涉的存档点用动作文本区分；历史快照也在这里现算。
+        word = label.split(" · ", 1)[0]
+        if kind == "command" and word in ACTION_COMMAND_LABELS:
+            action = _snapshot_action_label(path, sequence)
+            if action:
+                label = f"{word}：{action}"
         save_points.append(
             SavePoint(
                 branch_id=branch_uuid(session_id, ev_branch),
                 sequence=sequence,
                 event_id=event_uuid(session_id, event.branch_id, event.event_id),
-                label=row.label or "存档点",
-                kind=row.kind or "command",
+                label=label,
+                kind=kind,
                 created_at=row.created_at,
             )
         )
@@ -598,15 +717,11 @@ def project_timeline(
     )
 
 
-def messages_from_update(
-    session_id: uuid.UUID, store: Any, update: RuntimeUpdate
-) -> list[dict[str, Any]]:
-    """一次命令推进 → 本批应发布的消息（仅新事件 + 交互点/终态）。"""
-    new_seqs = {ref.sequence for ref in update.new_events}
-    msgs = [m for m in project_messages(session_id, store) if m["seq"] in new_seqs]
+def _interaction_tail(update: RuntimeUpdate) -> list[dict[str, Any]]:
+    """命令批次的尾部：新交互点或终态提示（都带 seq）。"""
     ix = update.state.active_interaction
     if ix is not None:
-        msgs.append(
+        return [
             {
                 "type": "interaction",
                 "seq": update.state.last_sequence,
@@ -616,16 +731,41 @@ def messages_from_update(
                     "allowed_commands": [k.value for k in update.state.allowed_commands()],
                 },
             }
-        )
-    elif update.terminal:
-        msgs.append(
+        ]
+    if update.terminal:
+        return [
             {
                 "type": "system",
                 "seq": update.state.last_sequence,
                 "payload": {"category": "system", "text": "本局演绎已结束"},
             }
-        )
-    return msgs
+        ]
+    return []
+
+
+def messages_from_update(
+    session_id: uuid.UUID, store: Any, update: RuntimeUpdate
+) -> list[dict[str, Any]]:
+    """一次命令推进 → 本批应发布的消息（仅新事件 + 交互点/终态）。
+
+    回溯是例外：它重写了活动分支，只发新事件会让客户端清空旧时间线后丢掉
+    继承前缀（回溯目标之前的剧情）。此时先发一条 `timeline_reset` 控制消息，
+    再整段重放新分支的活动事件——客户端清空本地时间线后按顺序重建。
+    """
+    tail = _interaction_tail(update)
+    if any(ref.event_type is EventType.ROLLBACK_EXECUTED for ref in update.new_events):
+        reset = {
+            "type": "timeline_reset",
+            "seq": update.state.last_sequence,
+            "payload": {
+                "branch_id": str(update.state.branch_id),
+                "stage": update.state.stage,
+            },
+        }
+        return [reset, *project_messages(session_id, store), *tail]
+    new_seqs = {ref.sequence for ref in update.new_events}
+    msgs = [m for m in project_messages(session_id, store) if m["seq"] in new_seqs]
+    return [*msgs, *tail]
 
 
 def project_status(
